@@ -90,20 +90,65 @@ const _AGENTS_BEGIN = "<!-- PLUTOSPACE:BEGIN (managed — this block is regenera
 const _AGENTS_END = "<!-- PLUTOSPACE:END -->"
 
 const _AGENTS_BODY = """
-## Pluto notebooks (live collaborative sessions)
+## Working on Pluto notebooks
 
-Notebooks (`*.jl` with Pluto cell markers) in this folder may be OPEN in a live lazy-mode
-SpaceStation server. You can work in that same session with your normal tools:
+**Almost everything you do in a notebook is plain Julia coding you already know how to do** —
+writing functions, wrangling data, fixing bugs, making plots, refactoring. A Pluto notebook is just
+a **plain Julia file** (`*.jl` starting with `### A Pluto.jl notebook ###`); **edit it with your
+normal file tools** (Read/Edit/Write the `.jl` directly). There is no special API for changing a
+notebook, and `pluto-collab` (below) is only for *running* your edits, not for making them. Do not
+overthink it: it's ordinary Julia in ordinary cells.
 
-- Edit a notebook `.jl` directly — edits only mark cells **stale**; nothing runs until asked, and
-  the human sees the staleness live in their browser.
+The only Pluto-specific parts are a few lightweight conventions wrapped around that Julia code —
+learn them so your edits land in the right cell and stay valid:
+
+- **Cells** are delimited by `# ╔═╡ <uuid>` markers. A cell's code runs from its marker to the next
+  one. The `<uuid>` is that cell's stable id (a v4 UUID) — used everywhere else in the file.
+- **Cell order and fold state** live in the `# ╔═╡ Cell order:` block at the END of the file. It
+  lists every cell's UUID in the order it appears in the notebook, each line prefixed by a pipe that
+  sets whether that cell's **code (its input) is shown or folded**:
+  - `# ╠═<uuid>` → code **shown**
+  - `# ╟─<uuid>` → code **hidden / folded** (input collapsed; the normal state for Markdown / prose
+    cells, which then display only their rendered output)
+- The **Cell order block is authoritative** for display order — not where the `# ╔═╡ <uuid>`
+  definition physically sits above.
+
+### How to make common changes (edit the `.jl`)
+
+- **Show or hide a cell's code:** flip that cell's prefix in the Cell order block between `╠═` (show)
+  and `╟─` (fold). Do not touch the cell's code — this only changes visibility.
+- **Move / reorder a cell:** move its `# ╠═<uuid>` (or `# ╟─<uuid>`) line up or down within the Cell
+  order block to the new position. That is what reorders it. (Keeping the `# ╔═╡ <uuid>` definitions
+  in the same order is tidy but the Cell order block is what actually decides.)
+- **Add a cell:** add a `# ╔═╡ <new-uuid>` block with the code, AND a matching `# ╠═<new-uuid>`
+  (or `# ╟─<new-uuid>`) line at the right spot in the Cell order block. Any fresh unique UUID works.
+- **Delete a cell:** remove BOTH its `# ╔═╡ <uuid>` code block AND its line in the Cell order block.
+- **Cell metadata** (optional) sits on `# ╠═╡ key = value` lines directly after the `# ╔═╡ <uuid>`
+  marker — e.g. `disabled = true`, `skip_as_script = true`, `always_stale = true`. A `disabled` cell
+  additionally has its code wrapped in `#=╠═╡ … ╠═╡ =#`.
+
+Pluto is **reactive**: what runs, and in what order, follows variable dependencies (topological), not
+file order — and each variable/function is defined in exactly **one** cell (duplicate definitions
+error; wrap multiple statements in a `begin … end` or `let … end` block). So reordering or folding
+cells never changes what executes, only how the notebook reads.
+
+**Bottom line:** write Julia the way you always do. The only extra habits are — keep each definition
+in one cell, put multi-statement cells in `begin`/`let` blocks, and when you add, remove, or move a
+cell, update the `# ╔═╡ Cell order:` block to match.
+
+### Running your edits (live collaborative session)
+
+Notebooks here may be OPEN in a live lazy-mode SpaceStation server shared with a human. Editing the
+`.jl` only marks the changed cells (and everything downstream) **stale** — nothing runs until asked,
+and the human sees the staleness in their browser within ~1s. To apply your changes:
+
 - `pluto-collab status <nb.jl>` — per-cell state (stale / cold / errored / output).
 - `pluto-collab run <nb.jl> --stale` — run exactly what's outdated (blocks; exit 1 on error).
   **Never re-run the whole notebook.**
 - `pluto-collab restart <nb.jl>` — restart the kernel and re-run everything. Use ONLY to recover a
   **dead/exited worker** ("Process exited" / `TerminatedWorkerException`); interrupt/run can't revive one.
-- Every output is also in `<nb.jl>.pluto-cache.toml` (plain TOML; a deletable cache).
-- Cell ids are the UUIDs in `# ╔═╡ <uuid>` markers; keep the `# ╔═╡ Cell order:` block in sync.
+- Every cell's output is also mirrored in `<nb.jl>.pluto-cache.toml` (plain TOML; a deletable cache
+  you can read without running anything).
 
 `pluto-collab` is on your PATH. Inside a SpaceStation terminal the live server is in
 `PLUTOSPACE_PORT` / `PLUTOSPACE_SECRET`, so `pluto-collab` targets it automatically.
