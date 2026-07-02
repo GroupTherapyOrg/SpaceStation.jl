@@ -32,7 +32,7 @@ jobs:
 
             - uses: julia-actions/cache@v3
 
-            - name: Install Pluto.jl packages
+            - name: Install SpaceStation.jl packages
               run: |
                   julia --project=$GITHUB_WORKSPACE -e "using Pkg; Pkg.instantiate()"
 
@@ -48,14 +48,14 @@ jobs:
             - name: Run tests
               working-directory: ./test/frontend
               run: |
-                julia --project=$GITHUB_WORKSPACE -e 'import Pluto
-                  # Run Pluto.jl server in the background
-                  options = Pluto.Configuration.from_flat_kwargs(; 
+                julia --project=$GITHUB_WORKSPACE -e 'import SpaceStation
+                  # Run SpaceStation.jl server in the background
+                  options = SpaceStation.Configuration.from_flat_kwargs(; 
                     port=parse(Int, ENV["PLUTO_PORT"]), 
                     require_secret_for_access=false,
                   )
-                  🍭 = Pluto.ServerSession(; options)
-                  server = Pluto.run!(🍭)
+                  🍭 = SpaceStation.ServerSession(; options)
+                  server = SpaceStation.run!(🍭)
 
                   run(`npm run test`)
                   
