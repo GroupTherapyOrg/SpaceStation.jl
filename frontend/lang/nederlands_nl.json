@@ -261,7 +261,7 @@
     "t_edit_or_run_local_description": "(Aanbevolen als je je werk wilt opslaan.)",
     "t_edit_or_run_download_notebook": "Download de notebook:",
     "t_edit_or_run_copy_notebook_url": "Kopieer de notebook-URL:",
-    "t_edit_or_run_run_pluto": "Start Pluto",
+    "t_edit_or_run_run_pluto": "Start SpaceStation",
     "t_edit_or_run_run_pluto_description": "Zie ook: <a target='_blank' href='{{url}}'>Julia en Pluto installatie-instructies</a>",
     "t_edit_or_run_open_the_notebook_file": "Open het notebookbestand",
     "t_edit_or_run_open_the_notebook_file_description": "Typ de bestandsnaam in het <em>Open</em> veld.",

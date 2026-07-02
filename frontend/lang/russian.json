@@ -277,7 +277,7 @@
     "t_edit_or_run_local_description": "(Рекомендуется, если вы хотите сохранять изменения.)",
     "t_edit_or_run_download_notebook": "Скачайте документ:",
     "t_edit_or_run_copy_notebook_url": "Скопируйте URL документа:",
-    "t_edit_or_run_run_pluto": "Запустить Pluto",
+    "t_edit_or_run_run_pluto": "Запустить SpaceStation",
     "t_edit_or_run_run_pluto_description": "См. также: <a target='_blank' href='{{url}}'>Как установить Julia и Pluto</a>",
     "t_edit_or_run_open_the_notebook_file": "Открыть файл документа",
     "t_edit_or_run_open_the_notebook_file_description": "Введите сохранённое имя файла в поле <em>открыть</em>.",

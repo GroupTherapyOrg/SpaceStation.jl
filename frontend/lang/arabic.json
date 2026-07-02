@@ -289,7 +289,7 @@
     "t_edit_or_run_local_description": "(موصى به إذا كنت تريد حفظ تغييراتك.)",
     "t_edit_or_run_download_notebook": "تنزيل الدفتر:",
     "t_edit_or_run_copy_notebook_url": "نسخ رابط الدفتر:",
-    "t_edit_or_run_run_pluto": "تشغيل Pluto",
+    "t_edit_or_run_run_pluto": "تشغيل SpaceStation",
     "t_edit_or_run_run_pluto_description": "راجع أيضاً: <a target='_blank' href='{{url}}'>كيفية تثبيت Julia و Pluto</a>",
     "t_edit_or_run_open_the_notebook_file": "افتح ملف الدفتر",
     "t_edit_or_run_open_the_notebook_file_description": "اكتب اسم الملف المحفوظ في خانة <em>فتح</em>.",

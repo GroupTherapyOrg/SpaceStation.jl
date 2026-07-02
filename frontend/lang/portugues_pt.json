@@ -214,7 +214,7 @@
     "t_edit_or_run_local_description": "(Recomendado se quiseres guardar as alterações.)",
     "t_edit_or_run_download_notebook": "Descarregar o notebook:",
     "t_edit_or_run_copy_notebook_url": "Copiar o URL do notebook:",
-    "t_edit_or_run_run_pluto": "Executar Pluto",
+    "t_edit_or_run_run_pluto": "Executar SpaceStation",
     "t_edit_or_run_run_pluto_description": "Ver também: <a target='_blank' href='{{url}}'>Como instalar Julia e Pluto</a>",
     "t_edit_or_run_open_the_notebook_file": "Abrir o ficheiro do notebook",
     "t_edit_or_run_open_the_notebook_file_description": "Escreve o nome do ficheiro guardado na caixa <em>Abrir</em>.",

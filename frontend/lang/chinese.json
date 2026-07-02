@@ -214,7 +214,7 @@
     "t_edit_or_run_local_description": "（如果您想保存更改，建议使用。）",
     "t_edit_or_run_download_notebook": "下载笔记本：",
     "t_edit_or_run_copy_notebook_url": "复制笔记本 URL：",
-    "t_edit_or_run_run_pluto": "运行 Pluto",
+    "t_edit_or_run_run_pluto": "运行 SpaceStation",
     "t_edit_or_run_run_pluto_description": "另请参阅：<a target='_blank' href='{{url}}'>如何安装 Julia 和 Pluto</a>",
     "t_edit_or_run_open_the_notebook_file": "打开笔记本文件",
     "t_edit_or_run_open_the_notebook_file_description": "在<em>打开</em>框中输入保存的文件名。",

@@ -321,7 +321,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
         <div class="bubble opener-card">
             <header>
                 <img class="land-logo opener-logo" src=${logo_url} alt="SpaceStation" />
-                <h1>Pluto<span class="land-accent">Space</span></h1>
+                <h1>Space<span class="land-accent">Station</span></h1>
                 <p class="subtitle">Open a folder as your workspace — notebooks inside it open as tabs.</p>
                 ${on_cancel == null ? null : html`<button class="opener-cancel" title="Close — back to your workspace" onClick=${on_cancel}><span class="opener-cancel-icon"></span></button>`}
             </header>
@@ -1338,7 +1338,7 @@ const Land = () => {
                             <img class="land-logo" src=${logo_url} alt="SpaceStation" />
                         </button>
                         <div class="header-text">
-                            <h1 title=${workspace?.root ?? ""}>Pluto<span class="land-accent">Space</span></h1>
+                            <h1 title=${workspace?.root ?? ""}>Space<span class="land-accent">Station</span></h1>
                         </div>
                         <div class="header-buttons">
                             <div class="header-menu" ref=${menu_ref}>

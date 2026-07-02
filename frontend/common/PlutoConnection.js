@@ -458,7 +458,7 @@ const alert_if_not_authenticated = async (/** @type {string | URL} */ ws_url, ex
             const response = await fetch(auth_url)
             if (response.status === 403 || response.status === 401) {
                 if (!is_desktop() || (await is_backend_server_loaded()))
-                    alert("This window has lost authentication to the Pluto server. Please refresh the page to continue.")
+                    alert("This window has lost authentication to the SpaceStation server. Please refresh the page to continue.")
             }
         }
     }

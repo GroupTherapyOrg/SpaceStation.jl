@@ -214,7 +214,7 @@
     "t_edit_or_run_local_description": "(Συνιστάται αν θέλετε να αποθηκεύσετε τις αλλαγές σας.)",
     "t_edit_or_run_download_notebook": "Κατεβάστε το σημειωματάριο:",
     "t_edit_or_run_copy_notebook_url": "Αντιγράψτε το URL του σημειωματαρίου:",
-    "t_edit_or_run_run_pluto": "Εκτέλεση Pluto",
+    "t_edit_or_run_run_pluto": "Εκτέλεση SpaceStation",
     "t_edit_or_run_run_pluto_description": "Δείτε επίσης: <a target='_blank' href='{{url}}'>Πώς να εγκαταστήσετε τη Julia και το Pluto</a>",
     "t_edit_or_run_open_the_notebook_file": "Ανοίξτε το σημειωματάριο από το αρχείο",
     "t_edit_or_run_open_the_notebook_file_description": "Πληκτρολογήστε το αποθηκευμένο όνομα αρχείου στο πλαίσιο <em>άνοιγμα</em>.",

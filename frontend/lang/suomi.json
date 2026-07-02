@@ -278,7 +278,7 @@
     "t_edit_or_run_local_description": "(Suositeltavaa, jos haluat tallentaa muutoksesi.)",
     "t_edit_or_run_download_notebook": "Lataa työkirja:",
     "t_edit_or_run_copy_notebook_url": "Kopioi työkirjan URL:",
-    "t_edit_or_run_run_pluto": "Aja Pluto",
+    "t_edit_or_run_run_pluto": "Aja SpaceStation",
     "t_edit_or_run_run_pluto_description": "Katso myös: <a target='_blank' href='{{url}}'>How to install Julia and Pluto</a>",
     "t_edit_or_run_open_the_notebook_file": "Avaa työkirjatiedosto",
     "t_edit_or_run_open_the_notebook_file_description": "Kirjoita tallennetun tiedoston nimi <em>Avaa</em>‑kenttään.",

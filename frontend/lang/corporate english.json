@@ -225,7 +225,7 @@
     "t_edit_or_run_local_description": "(Optimal for persistent strategic modifications.)",
     "t_edit_or_run_download_notebook": "Acquire the deliverable:",
     "t_edit_or_run_copy_notebook_url": "Clone the deliverable URL:",
-    "t_edit_or_run_run_pluto": "Run Pluto",
+    "t_edit_or_run_run_pluto": "Run SpaceStation",
     "t_edit_or_run_run_pluto_description": "Also see: <a target='_blank' href='{{url}}'>How to install Julia and Pluto</a>",
     "t_edit_or_run_open_the_notebook_file": "Access the deliverable asset",
     "t_edit_or_run_open_the_notebook_file_description": "Input the archived filename in the <em>access</em> interface.",

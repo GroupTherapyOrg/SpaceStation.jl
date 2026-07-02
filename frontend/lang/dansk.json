@@ -271,7 +271,7 @@
     "t_edit_or_run_local_description": "(Anbefales, hvis du vil gemme dine ændringer.)",
     "t_edit_or_run_download_notebook": "Download notebooken:",
     "t_edit_or_run_copy_notebook_url": "Kopiér notebook-URL:",
-    "t_edit_or_run_run_pluto": "Kør Pluto",
+    "t_edit_or_run_run_pluto": "Kør SpaceStation",
     "t_edit_or_run_run_pluto_description": "Se også: <a target='_blank' href='{{url}}'>Sådan installerer du Julia og Pluto</a>",
     "t_edit_or_run_open_the_notebook_file": "Åbn notebook-filen",
     "t_edit_or_run_open_the_notebook_file_description": "Skriv det gemte filnavn i <em>Åbn</em>-feltet.",

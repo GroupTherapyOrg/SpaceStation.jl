@@ -222,7 +222,7 @@
     "t_edit_or_run_local_description": "(Doporučeno pokud si chceš ukládat změny.)",
     "t_edit_or_run_download_notebook": "Stáhnout sešit:",
     "t_edit_or_run_copy_notebook_url": "Kopírovat URL sešitu:",
-    "t_edit_or_run_run_pluto": "Spustit Pluto",
+    "t_edit_or_run_run_pluto": "Spustit SpaceStation",
     "t_edit_or_run_run_pluto_description": "Také koukni na: <a target='_blank' href='{{url}}'>Jak nainstalovat Julii a Pluto</a>",
     "t_edit_or_run_open_the_notebook_file": "Otevřít soubor sešitu",
     "t_edit_or_run_open_the_notebook_file_description": "Zadej název uloženého souboru v <em>otevírací</em> oblasti.",

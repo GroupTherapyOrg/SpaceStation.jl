@@ -244,7 +244,7 @@
     "t_edit_or_run_local_description": "(Polecane jeżeli chcesz zachować zmiany.)",
     "t_edit_or_run_download_notebook": "Ściągnij ten notatnik:",
     "t_edit_or_run_copy_notebook_url": "Skopiuj URL do notatnika:",
-    "t_edit_or_run_run_pluto": "Uruchom Pluto",
+    "t_edit_or_run_run_pluto": "Uruchom SpaceStation",
     "t_edit_or_run_run_pluto_description": "Zobacz także: <a target='_blank' href='{{url}}'>Jak zainstalować Julie i Pluto</a>",
     "t_edit_or_run_open_the_notebook_file": "Otwórz plik notatnika",
     "t_edit_or_run_open_the_notebook_file_description": "Wpisz nazwę zapisanego pliku w polu <em>otwórz</em>.",
