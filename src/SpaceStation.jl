@@ -1,19 +1,19 @@
 """
-PlutoSpace 🟢🟣🔴 — a workspace for Pluto.jl notebooks, built for humans and agents together.
+SpaceStation 🟢🟣🔴 — a workspace for Pluto.jl notebooks, built for humans and agents together.
 
 Start it with:
 
 ```julia
-julia> PlutoSpace.run()
+julia> SpaceStation.run()
 ```
 
 …then open a folder as your workspace. Built on (and fully compatible with) Pluto.jl.
 """
-module PlutoSpace
+module SpaceStation
 
 # Everything inside is Pluto: the alias keeps every internal `Pluto.…` reference,
 # `import ..Pluto`, and user habit (`Pluto.run()`) working unchanged.
-const Pluto = PlutoSpace
+const Pluto = SpaceStation
 
 if isdefined(Base, :Experimental) && isdefined(Base.Experimental, Symbol("@max_methods"))
     @eval Base.Experimental.@max_methods 1
@@ -170,10 +170,10 @@ function __init__()
         if !isfile(fn)
             @info """
 
-              Welcome to PlutoSpace $(PLUTO_VERSION_STR) 🎈🏝
+              Welcome to SpaceStation $(PLUTO_VERSION_STR) 🎈🏝
               Start a notebook server using:
 
-            julia> PlutoSpace.run()
+            julia> SpaceStation.run()
 
               Have a look at the FAQ:
               https://github.com/fonsp/Pluto.jl/wiki

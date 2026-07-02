@@ -1,5 +1,5 @@
 using Test
-import PlutoSpace: Pluto, Notebook, ServerSession, SessionActions, Cell, update_run!
+import SpaceStation: Pluto, Notebook, ServerSession, SessionActions, Cell, update_run!
 
 @testset "Output cache sidecar" begin
     🍭 = ServerSession()

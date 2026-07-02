@@ -1,6 +1,6 @@
 
-using PlutoSpace.WorkspaceManager: WorkspaceManager, poll
-using PlutoSpace; import PlutoSpace as Pluto
+using SpaceStation.WorkspaceManager: WorkspaceManager, poll
+using SpaceStation; import SpaceStation as Pluto
 
 
 without_pluto_version(s) = replace(s, r"# v.*" => "")

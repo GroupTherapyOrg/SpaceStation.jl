@@ -1,7 +1,7 @@
-// E2E test for the PlutoSpace /terminal websocket protocol (attach meta → replay → marker,
+// E2E test for the SpaceStation /terminal websocket protocol (attach meta → replay → marker,
 // resize semantics, shell-exit teardown). Drives a REAL server + REAL shell — start one first:
 //
-//   julia --project=. -e 'import PlutoSpace; PlutoSpace.run(port=7799, launch_browser=false)'
+//   julia --project=. -e 'import SpaceStation; SpaceStation.run(port=7799, launch_browser=false)'
 //   PLUTO_SECRET=<secret> node test/terminal_e2e.mjs 7799
 //
 // The secret is in the launch URL the server prints, or in its connection file:

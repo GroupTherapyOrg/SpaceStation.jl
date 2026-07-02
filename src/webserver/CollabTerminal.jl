@@ -1,5 +1,5 @@
 ###
-# The PlutoSpace integrated terminal: a WebSocket ⇄ PTY bridge with PERSISTENT sessions.
+# The SpaceStation integrated terminal: a WebSocket ⇄ PTY bridge with PERSISTENT sessions.
 #
 # A client connects a websocket to `/terminal?tid=<id>` (authenticated with the normal
 # Pluto secret — cookie or ?secret=…). The shell session belongs to the `tid`, not the
@@ -138,7 +138,7 @@ function _spawn_workspace_shell(session::ServerSession, dir::String; rows::Int=2
     # was installed) prepended to PATH defensively.
     port = session.options.server.port
     banner = string(
-        "\e[1m🟢🟣🔴 PlutoSpace live session\e[0m — notebooks in this folder are collaborative.\r\n",
+        "\e[1m🟢🟣🔴 SpaceStation live session\e[0m — notebooks in this folder are collaborative.\r\n",
         "Edit a notebook .jl and its cells go stale in the browser; run exactly what changed:\r\n",
         "  \e[36mpluto-collab status <nb.jl>\e[0m   ·   \e[36mpluto-collab run <nb.jl> --stale\e[0m\r\n\r\n",
     )
@@ -215,7 +215,7 @@ function _get_or_create_terminal(session::ServerSession, tid::String; requested_
         # Per-instance temp dir (the time_ns suffix keeps it unique): switching workspace retires this
         # shell and starts a new one with the same tid, and we must not let the retired shell's teardown
         # delete the new shell's pasted files.
-        paste_dir = joinpath(tempdir(), "plutospace-paste-$(_safe_tid(tid))-$(time_ns())")
+        paste_dir = joinpath(tempdir(), "spacestation-paste-$(_safe_tid(tid))-$(time_ns())")
         t = CollabTerminal(_spawn_workspace_shell(session, target; rows=rows, cols=cols), UInt8[], false, Set{Any}(), ReentrantLock(), @async(nothing), target, paste_dir)
         t.pump = @asynclog begin
             for data in t.pty.output

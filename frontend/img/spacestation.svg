@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<!-- PlutoSpace: the same three circles as Pluto's mark (identical fills, strokes, radii,
+<!-- SpaceStation: the same three circles as Pluto's mark (identical fills, strokes, radii,
      and overlap ratio) — rearranged from a floating stack into a mound, with a small blue
      twinkle (a hue Pluto's palette doesn't use) for the "space". The dots, landed. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="34 34 72 72" width="72" height="72">

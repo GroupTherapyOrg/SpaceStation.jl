@@ -55,8 +55,8 @@ EOF
 write_nb V1
 
 julia --project="$REPO" -e "
-    import PlutoSpace
-    PlutoSpace.run(port=$PORT, launch_browser=false, require_secret_for_open_links=true,
+    import SpaceStation
+    SpaceStation.run(port=$PORT, launch_browser=false, require_secret_for_open_links=true,
                    on_code_change=\"lazy\", workspace_use_distributed=false, notebook=\"$NB\")" >>"$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 

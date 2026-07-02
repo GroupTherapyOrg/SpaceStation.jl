@@ -12,7 +12,7 @@ export const guess_notebook_location = async (path_or_url) => {
         if (!["http:", "https:", "ftp:", "ftps:"].includes(u.protocol)) {
             throw "Not a web URL"
         }
-        // PlutoSpace: special handling for pluto.land (the Pluto team's hosting service) removed.
+        // SpaceStation: special handling for pluto.land (the Pluto team's hosting service) removed.
         if (u.host === "gist.github.com") {
             console.log("Gist URL detected")
             const parts = u.pathname.substring(1).split("/")

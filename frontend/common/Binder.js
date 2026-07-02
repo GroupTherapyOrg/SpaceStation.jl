@@ -83,7 +83,7 @@ export const request_binder = (build_url, { on_log }) =>
         }
     })
 
-// PlutoSpace: telemetry to the Pluto team's analytics (stats.plutojl.org) has been removed.
+// SpaceStation: telemetry to the Pluto team's analytics (stats.plutojl.org) has been removed.
 // Kept as a no-op so existing call sites stay valid.
 export const count_stat = (page) => {}
 

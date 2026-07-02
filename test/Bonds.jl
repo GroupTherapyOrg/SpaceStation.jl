@@ -1,6 +1,6 @@
 using Test
-import PlutoSpace as Pluto
-import PlutoSpace: update_run!, update_save_run!, WorkspaceManager, ClientSession, ServerSession, Notebook, Cell
+import SpaceStation as Pluto
+import SpaceStation: update_run!, update_save_run!, WorkspaceManager, ClientSession, ServerSession, Notebook, Cell
 import Malt
 
 @testset "Bonds" begin

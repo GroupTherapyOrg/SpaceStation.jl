@@ -32,7 +32,7 @@ jobs:
         with:
             version: "1.10" # our lowest supported version
 
-      - name: Install Pluto.jl packages
+      - name: Install SpaceStation.jl packages
         run: |
             julia --project=$GITHUB_WORKSPACE -e "using Pkg; Pkg.instantiate()"
 
@@ -47,11 +47,11 @@ jobs:
           chrome-version: 'latest'
 
       - run: |
-          julia --project=$GITHUB_WORKSPACE -e 'import Pluto
+          julia --project=$GITHUB_WORKSPACE -e 'import SpaceStation
 
-            nb = Pluto.Notebook([
-              Pluto.Cell("Text(x)"),
-              Pluto.Cell("""
+            nb = SpaceStation.Notebook([
+              SpaceStation.Cell("Text(x)"),
+              SpaceStation.Cell("""
             @bind x html"\""
             <script>
             currentScript.value = "hello from " + navigator.userAgent
@@ -61,12 +61,12 @@ jobs:
               """)
             ])
 
-            sesh = Pluto.ServerSession()
+            sesh = SpaceStation.ServerSession()
 
-            Pluto.SessionActions.add(sesh, nb)
+            SpaceStation.SessionActions.add(sesh, nb)
 
             @info "Running notebook..."
-            Pluto.update_save_run!(sesh, nb, nb.cells; run_async=false)
+            SpaceStation.update_save_run!(sesh, nb, nb.cells; run_async=false)
             @info "Running notebook done"
 
 
@@ -78,7 +78,7 @@ jobs:
 
             url = "http://localhost:$(sesh.options.server.port)/edit?secret=$(sesh.secret)&id=$(nb.notebook_id)"
 
-            process = Pluto.run!(sesh)
+            process = SpaceStation.run!(sesh)
 
             @info "Server started"
             sleep(3)

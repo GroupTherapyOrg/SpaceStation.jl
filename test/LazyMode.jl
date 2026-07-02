@@ -1,6 +1,6 @@
 using Test
-import PlutoSpace: Pluto, Notebook, ServerSession, SessionActions, Cell, update_run!, update_save_run!
-using PlutoSpace.WorkspaceManager: poll
+import SpaceStation: Pluto, Notebook, ServerSession, SessionActions, Cell, update_run!, update_save_run!
+using SpaceStation.WorkspaceManager: poll
 
 @testset "Lazy mode (on_code_change = \"lazy\")" begin
     🍭 = ServerSession()

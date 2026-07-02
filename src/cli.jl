@@ -1,35 +1,35 @@
-# cli.jl — the `plutospace` command (a proper Julia app via Pkg.Apps).
+# cli.jl — the `spacestation` command (a proper Julia app via Pkg.Apps).
 #
-# Install:  julia> import Pkg; Pkg.Apps.add(url="https://github.com/GroupTherapyOrg/PlutoSpace.jl")
-# Then:     $ plutospace                     # workspace opener (pick a folder)
-#           $ plutospace .                   # current folder as workspace
-#           $ plutospace ~/project           # that folder as workspace
-#           $ plutospace notebook.jl         # open one notebook
-#           $ plutospace --autorun …         # classic Pluto reactivity instead of lazy
-#           $ plutospace --port 1234 …
-#           $ plutospace --no-browser …
+# Install:  julia> import Pkg; Pkg.Apps.add(url="https://github.com/GroupTherapyOrg/SpaceStation.jl")
+# Then:     $ spacestation                     # workspace opener (pick a folder)
+#           $ spacestation .                   # current folder as workspace
+#           $ spacestation ~/project           # that folder as workspace
+#           $ spacestation notebook.jl         # open one notebook
+#           $ spacestation --autorun …         # classic Pluto reactivity instead of lazy
+#           $ spacestation --port 1234 …
+#           $ spacestation --no-browser …
 
 function (@main)(args)
     args = filter(a -> a != "--", collect(String, args))
 
     if "--help" in args || "-h" in args
         println("""
-        PlutoSpace 🟢🟣🔴 — a workspace for Pluto.jl notebooks, for humans and agents together.
+        SpaceStation 🟢🟣🔴 — a workspace for Pluto.jl notebooks, for humans and agents together.
 
         Usage:
-          plutospace                    open the workspace picker in your browser
-          plutospace <folder>           open a folder as the workspace
-          plutospace <notebook.jl>      open a single notebook
-          plutospace --port <n>         pick a port
-          plutospace --autorun          classic Pluto reactivity (default is lazy/collab mode)
-          plutospace --no-browser       don't open the browser
-          plutospace --agents-md        seed the workspace's AGENTS.md/CLAUDE.md so coding agents
+          spacestation                    open the workspace picker in your browser
+          spacestation <folder>           open a folder as the workspace
+          spacestation <notebook.jl>      open a single notebook
+          spacestation --port <n>         pick a port
+          spacestation --autorun          classic Pluto reactivity (default is lazy/collab mode)
+          spacestation --no-browser       don't open the browser
+          spacestation --agents-md        seed the workspace's AGENTS.md/CLAUDE.md so coding agents
                                        discover the pluto-collab workflow (managed, idempotent block)
 
         In lazy mode (the default), file edits — yours or an agent's — mark cells stale
         instead of running them; outputs are cached in <notebook>.jl.pluto-cache.toml and
-        survive restarts. The `pluto-collab` CLI is installed on your PATH next to `plutospace`,
-        and any terminal opened inside PlutoSpace exports PLUTOSPACE_PORT / PLUTOSPACE_SECRET so a
+        survive restarts. The `pluto-collab` CLI is installed on your PATH next to `spacestation`,
+        and any terminal opened inside SpaceStation exports PLUTOSPACE_PORT / PLUTOSPACE_SECRET so a
         coding agent's `pluto-collab` targets this live session automatically.
         """)
         return 0

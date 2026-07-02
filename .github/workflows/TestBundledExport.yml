@@ -22,11 +22,11 @@ jobs:
                   import Pkg
                   Pkg.activate(".")
                   Pkg.instantiate()
-                  import Pluto
+                  import SpaceStation
                   using Test
                   
-                  @test_logs Pluto.generate_html()
-                  @test_logs Pluto.generate_html(offline_bundle=true)
-                  @test_logs Pluto.generate_index_html()
+                  @test_logs SpaceStation.generate_html()
+                  @test_logs SpaceStation.generate_html(offline_bundle=true)
+                  @test_logs SpaceStation.generate_index_html()
                   '
 

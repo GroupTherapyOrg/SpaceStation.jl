@@ -1,10 +1,10 @@
 ###
-# Local multi-workspace: the hub server spawns ONE child PlutoSpace server per local workspace folder
+# Local multi-workspace: the hub server spawns ONE child SpaceStation server per local workspace folder
 # (its own OS process, own port, own secret), each opened in its own browser tab. This is the SSH-remote
 # model (see CollabRemote.jl) MINUS the SSH hop and tunnel — everything is already local: julia and the
 # project are here, there's no bootstrap/install, and the browser reaches the child on 127.0.0.1 directly.
 #
-# The point: each child is a vanilla `PlutoSpace.run(workspace=…)` — an individual server behaves exactly
+# The point: each child is a vanilla `SpaceStation.run(workspace=…)` — an individual server behaves exactly
 # like Pluto always has. ALL the multi-workspace orchestration lives out here in the wrapper, never inside
 # Pluto. (Per-port cookie scoping — see Authentication.jl — lets the hub and every child coexist in the
 # browser, each with its own secret.)
@@ -66,7 +66,7 @@ end
 # _remote_connect_task! but local: no SSH, no install — just spawn `julia --project=… -e 'run(workspace=…)'`
 # and wait for its connection file to appear, then hand back port + secret.
 function _local_spawn_task!(s::LocalSession)
-    logfile = joinpath(tempdir(), "plutospace-workspace-$(getpid())-$(string(hash(s.path), base=16)).log")
+    logfile = joinpath(tempdir(), "spacestation-workspace-$(getpid())-$(string(hash(s.path), base=16)).log")
     try
         # Already up (tab reopened, or a previous hub left it running)? Reattach — never duplicate.
         existing = _find_local_server(s.path)
@@ -79,10 +79,10 @@ function _local_spawn_task!(s::LocalSession)
         end
 
         s.state = "starting"
-        s.detail = "starting a PlutoSpace server for $(basename(s.path))"
+        s.detail = "starting a SpaceStation server for $(basename(s.path))"
 
         # Reproduce the hub's own environment for the child: same julia, same active project, so the child
-        # imports PlutoSpace from a precompiled depot (fast — no recompile). The workspace path rides in an
+        # imports SpaceStation from a precompiled depot (fast — no recompile). The workspace path rides in an
         # ENV var, never interpolated into the -e code, so any folder name survives intact.
         proj = something(Base.active_project(), "")
         projdir = isempty(proj) ? pkgdir(@__MODULE__) : dirname(proj)
@@ -90,7 +90,7 @@ function _local_spawn_task!(s::LocalSession)
         env["PLUTOSPACE_CHILD_WORKSPACE"] = s.path
         delete!(env, "JULIA_LOAD_PATH")  # don't leak the app's load path into the child (matches worker/terminal hygiene)
         delete!(env, "PLUTOSPACE_TUNNELED")  # a local child is directly reachable on localhost — never mark it tunneled
-        code = "m = try Base.require(Main, :PlutoSpace) catch; Base.require(Main, :Pluto) end; m.run(workspace=ENV[\"PLUTOSPACE_CHILD_WORKSPACE\"], launch_browser=false)"
+        code = "m = try Base.require(Main, :SpaceStation) catch; Base.require(Main, :Pluto) end; m.run(workspace=ENV[\"PLUTOSPACE_CHILD_WORKSPACE\"], launch_browser=false)"
         cmd = setenv(`$(Base.julia_cmd()) --project=$(projdir) -e $(code)`, env)
         s.proc = Base.run(pipeline(cmd; stdin=devnull, stdout=logfile, stderr=logfile); wait=false)
         # Cancelled in the window before/just-after spawn? Don't leave the child orphaned.

@@ -1,4 +1,4 @@
-# PTYWindows.jl — ConPTY-backed PTY for the PlutoSpace integrated terminal.
+# PTYWindows.jl — ConPTY-backed PTY for the SpaceStation integrated terminal.
 #
 # The Windows counterpart to PTY.jl (which is openpty()/posix_spawnp() and Unix-only).
 # Windows has no openpty; its pseudo-console API is ConPTY (CreatePseudoConsole,
@@ -7,7 +7,7 @@
 # kernel32 with `ccall`, exposing the exact same surface as PTY.jl — pty_spawn, pty_write,
 # pty_resize!, pty_close!, pty_alive, and a `pty.output` Channel{Vector{UInt8}} — so
 # CollabTerminal.jl works identically on both platforms. Exactly one of PTY.jl /
-# PTYWindows.jl is included, chosen by `@static Sys.iswindows()` in PlutoSpace.jl.
+# PTYWindows.jl is included, chosen by `@static Sys.iswindows()` in SpaceStation.jl.
 #
 # Wiring (mirrors Microsoft's EchoCon sample):
 #   • Two anonymous pipes: one we WRITE keystrokes into, one we READ shell output from.
@@ -227,7 +227,7 @@ function pty_spawn(cmd::Vector{String}; rows::Int=24, cols::Int=80,
         unsafe_store!(Ptr{UInt32}(pointer(si)), UInt32(_STARTUPINFOEXW_SIZE))
         unsafe_store!(Ptr{Ptr{Cvoid}}(pointer(si) + _STARTUPINFOEXW_ATTRLIST_OFFSET),
                       Ptr{Cvoid}(pointer(attr)))
-        # Critical for a redirected parent: PlutoSpace's own stdout/stderr are usually a
+        # Critical for a redirected parent: SpaceStation's own stdout/stderr are usually a
         # pipe/log, not a real console. Without this the child inherits THOSE handles instead
         # of attaching to the pseudo-console, so its output never reaches us — a blank terminal.
         # STARTF_USESTDHANDLES with the std handles left NULL (they're zero-filled here) blocks

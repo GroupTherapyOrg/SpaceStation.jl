@@ -1,10 +1,10 @@
 # using LibGit2
 import Pkg
 using Test
-using PlutoSpace.Configuration: CompilerOptions
-import PlutoSpace: update_save_run!, update_run!, WorkspaceManager, ClientSession, ServerSession, Notebook, Cell, project_relative_path, SessionActions, load_notebook
-import PlutoSpace.PkgUtils
-import PlutoSpace.PkgCompat
+using SpaceStation.Configuration: CompilerOptions
+import SpaceStation: update_save_run!, update_run!, WorkspaceManager, ClientSession, ServerSession, Notebook, Cell, project_relative_path, SessionActions, load_notebook
+import SpaceStation.PkgUtils
+import SpaceStation.PkgCompat
 import Malt
 import TOML
 
