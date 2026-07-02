@@ -106,6 +106,10 @@ SpaceStation server. You can work in that same session with your normal tools:
 
 `pluto-collab` is on your PATH. Inside a SpaceStation terminal the live server is in
 `PLUTOSPACE_PORT` / `PLUTOSPACE_SECRET`, so `pluto-collab` targets it automatically.
+
+`pluto-collab` needs bash/curl (Unix). On Windows — or anywhere those are missing — use the
+identical built-in form `spacestation collab <command> …` (same commands, arguments, and exit
+codes; no external dependencies).
 """
 
 _agents_block() = string(_AGENTS_BEGIN, "\n\n", strip(_AGENTS_BODY), "\n\n", _AGENTS_END, "\n")

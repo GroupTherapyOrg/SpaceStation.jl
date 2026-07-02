@@ -94,6 +94,7 @@ else
     include("./webserver/PTY.jl")         # openpty/posix_spawn-backed PTY (macOS, Linux, BSD)
 end
 include("./AgentSurface.jl")
+include("./collab_cli.jl")
 include("./webserver/CollabTerminal.jl")
 include("./webserver/CollabAPI.jl")
 include("./webserver/CollabRemote.jl")

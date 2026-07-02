@@ -319,6 +319,18 @@ function register_collab_api!(router, session::ServerSession)
         fmt_text = _api_wants_text(query)
         notebook = _api_notebook_from_query(session, query)
         notebook === nothing && return _api_error(404, "notebook not found — is it open in this server? (pass ?path=/abs/path.jl or ?id=<uuid>)", fmt_text)
+        # Sync from disk BEFORE reporting, so `status` reflects the current file — not whatever the
+        # in-memory notebook was before the background watcher's ~0.4s debounce caught up. This makes
+        # the agent flow deterministic: edit the .jl, then `status` immediately shows the right cells
+        # STALE. save=false keeps it read-only (no .jl rewrite); in lazy mode a sync only marks stale,
+        # never runs — the two-tier "edit stages, run applies" contract is preserved exactly.
+        if !isempty(notebook.path) && isfile(notebook.path)
+            try
+                synced_update_from_file(session, notebook; save=false, run_async=false)
+            catch e
+                @warn "notebook status: syncing from file before reporting failed" exception = (e, catch_backtrace())
+            end
+        end
         if fmt_text
             HTTP.Response(200, ["Content-Type" => "text/plain; charset=utf-8"], _api_notebook_text(notebook, session))
         else
@@ -405,7 +417,7 @@ function register_collab_api!(router, session::ServerSession)
         # concurrent watcher load (which then sees no diff). Skipped when the file was never saved.
         if !isempty(notebook.path) && isfile(notebook.path)
             try
-                update_from_file(session, notebook; run_async=false)
+                synced_update_from_file(session, notebook; run_async=false)
             catch e
                 @warn "notebook/run: syncing the notebook from its file before running failed" exception = (e, catch_backtrace())
             end

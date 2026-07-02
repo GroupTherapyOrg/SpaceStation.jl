@@ -12,6 +12,13 @@
 function (@main)(args)
     args = filter(a -> a != "--", collect(String, args))
 
+    # `spacestation collab …` — the cross-platform agent CLI (works where bash/curl don't, e.g. a
+    # Windows PowerShell terminal). Dispatched before the launch parsing so `collab` is never
+    # mistaken for a folder to open.
+    if !isempty(args) && args[1] == "collab"
+        return collab_cli_main(args[2:end], pwd())
+    end
+
     if "--help" in args || "-h" in args
         println("""
         SpaceStation 🟢🟣🔴 — a workspace for Pluto.jl notebooks, for humans and agents together.
@@ -25,6 +32,9 @@ function (@main)(args)
           spacestation --no-browser       don't open the browser
           spacestation --agents-md        seed the workspace's AGENTS.md/CLAUDE.md so coding agents
                                        discover the pluto-collab workflow (managed, idempotent block)
+          spacestation collab <cmd> …     talk to a live session from any terminal (status / run
+                                       --stale / output / figure / …); cross-platform, no bash needed.
+                                       See: spacestation collab help
 
         In lazy mode (the default), file edits — yours or an agent's — mark cells stale
         instead of running them; outputs are cached in <notebook>.jl.pluto-cache.toml and

@@ -121,24 +121,46 @@ those cells go **amber within a second**, then runs them. No MCP, no plugins —
 <img src="assets/pspace-lazy-edits-dark.png" width="920" alt="Split view: a coding agent (Claude Code) editing the notebook on the right while SpaceStation shows the affected cells go stale on the left">
 </div>
 
-The whole agent surface is boring plumbing:
+The agent surface is deliberately **two-tiered** — editing and executing are separate steps:
 
-- a **connection file** at `~/.local/state/pluto/servers/<port>.json` (port + secret — the Jupyter idiom),
-- a plain **HTTP API** at `/api/v1/…`,
-- the [`pluto-collab`](bin/pluto-collab) CLI (just `curl` + `sed`) — the whole tool an agent needs to drive a notebook:
+1. **Edit → _stage._** The agent edits the `.jl` with its normal file tools. That only marks the
+   changed cells (and everything downstream) **stale** — *nothing runs*. The human watches them turn
+   amber within a second.
+2. **Run → _apply._** An explicit `run --stale` executes **exactly the stale closure and nothing
+   more.** Separating stage from apply is the whole point: you review what's about to run, expensive
+   cells don't fire on every keystroke, and the session stays reproducible.
+
+It's boring plumbing — no MCP, no plugins:
+
+- a **connection file** at `~/.local/state/pluto/servers/<node>-<port>.json` (port + secret — the Jupyter idiom),
+- a plain **HTTP API** at `/api/v1/…` (curl-able, authed with `?secret=…`),
+- a tiny **CLI**, in two equivalent front-ends:
 
 ```sh
-pluto-collab status notebook.jl              # per-cell state: stale / cold / errored / output
-pluto-collab run    notebook.jl --stale      # run exactly what's outdated (blocking; exit 1 on error)
-pluto-collab output notebook.jl --cell <id>  # read a cell's full output
-pluto-collab figure notebook.jl --cell <id>  # save a cell's plot to an image file
+pluto-collab        status nb.jl     # Unix shorthand — a bash script (curl + sed)
+spacestation collab status nb.jl     # any platform incl. Windows PowerShell — built into the app, no deps
+
+# the flow (either front-end — same commands, arguments, and exit codes):
+… status nb.jl               # REVIEW: per-cell STALE / COLD / ERRORED / output (reflects the file right now)
+… run    nb.jl --stale       # APPLY:  run exactly what's outdated (blocks; exit 1 on error)
+… output nb.jl --cell <id>   # read a cell's full, untruncated output
+… figure nb.jl --cell <id>   # save a cell's rendered plot to an image the agent can actually look at
 ```
 
-So an agent doesn't just edit and run — it can **read the results back**, including saving a rendered
-plot as an image it can actually look at. Runs requested over HTTP go through the **same execution queue** as browser clicks — both sides see
-each other's cells turn amber → running → green live. Staleness is verified against content-addressed
-**execution keys**, so reverting an edit un-stales a cell with no run at all. See
-**[COLLAB.md](COLLAB.md)** for the full story and an `AGENTS.md` stanza you can drop into any repo.
+`pluto-collab` needs bash + curl (Unix); **`spacestation collab …` is the identical command set built
+into the app** with no external dependencies, so the surface works the same in a Windows terminal.
+Inside a SpaceStation terminal, `PLUTOSPACE_PORT` / `PLUTOSPACE_SECRET` point either one at the live
+session automatically.
+
+Two guarantees make the loop reliable:
+
+- **`status` always reflects the file.** It re-syncs from disk on every call, so *immediately* after
+  an edit it reports the true stale set — the review step never lags the ~½-second file watcher.
+- **Runs share the browser's execution queue.** HTTP runs go through the same path as browser clicks,
+  so both sides see cells turn amber → running → green live. Staleness is verified against
+  content-addressed **execution keys**, so reverting an edit un-stales a cell with no run at all.
+
+See **[COLLAB.md](COLLAB.md)** for the full story and an `AGENTS.md` stanza you can drop into any repo.
 
 ---
 

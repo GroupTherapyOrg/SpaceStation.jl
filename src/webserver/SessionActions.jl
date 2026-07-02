@@ -1,6 +1,6 @@
 module SessionActions
 
-import ..Pluto: Pluto, Status, ServerSession, Notebook, Cell, emptynotebook, tamepath, new_notebooks_directory, without_pluto_file_extension, numbered_until_new, cutename, readwrite, update_save_run!, update_nbpkg_cache!, update_from_file, wait_until_file_unchanged, putnotebookupdates!, putplutoupdates!, load_notebook, clientupdate_notebook_list, WorkspaceManager, try_event_call, NewNotebookEvent, OpenNotebookEvent, ShutdownNotebookEvent, @asynclog, ProcessStatus, maybe_convert_path_to_wsl, move_notebook!, Throttled, is_lazy, load_output_cache!
+import ..Pluto: Pluto, Status, ServerSession, Notebook, Cell, emptynotebook, tamepath, new_notebooks_directory, without_pluto_file_extension, numbered_until_new, cutename, readwrite, update_save_run!, update_nbpkg_cache!, update_from_file, synced_update_from_file, wait_until_file_unchanged, putnotebookupdates!, putplutoupdates!, load_notebook, clientupdate_notebook_list, WorkspaceManager, try_event_call, NewNotebookEvent, OpenNotebookEvent, ShutdownNotebookEvent, @asynclog, ProcessStatus, maybe_convert_path_to_wsl, move_notebook!, Throttled, is_lazy, load_output_cache!
 using FileWatching
 import ..Pluto.DownloadCool: download_cool
 import HTTP
@@ -145,9 +145,11 @@ function add(session::ServerSession, notebook::Notebook; run_async::Bool=true)
                 sleep(0.1) ## There seems to be a synchronization issue if your OS is VERYFAST
                 wait_until_file_unchanged(notebook.path, .3)
                 
-                # call update_from_file. If it returns false, that means that the notebook file was corrupt, so we try again, a maximum of 10 times.
+                # call update_from_file (under the file-sync lock, so it can't race the run/status
+                # syncs). If it returns false, that means that the notebook file was corrupt, so we
+                # try again, a maximum of 10 times.
                 for _ in 1:10
-                    if update_from_file(session, notebook)
+                    if synced_update_from_file(session, notebook)
                         break
                     end
                 end

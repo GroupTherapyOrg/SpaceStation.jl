@@ -776,6 +776,31 @@ function update_from_file(session::ServerSession, notebook::Notebook; kwargs...)
 	return true
 end
 
+# Per-notebook lock serializing every hot-reload from disk. Three callers now sync a notebook from
+# its file — the background file watcher, `POST /api/v1/notebook/run` (sync-before-run), and
+# `GET /api/v1/notebook` (sync-before-status) — and update_from_file mutates cells_dict / cell_order
+# without a lock of its own. Two syncs interleaving at an IO yield (the file read) could apply diffs
+# against inconsistent state. This lock makes each sync atomic w.r.t. the others; in lazy mode a sync
+# only marks cells stale, so the lock is held briefly.
+const _FILE_SYNC_LOCKS = Dict{UUID,ReentrantLock}()
+const _FILE_SYNC_LOCKS_LOCK = ReentrantLock()
+_file_sync_lock(notebook::Notebook) = lock(_FILE_SYNC_LOCKS_LOCK) do
+	get!(ReentrantLock, _FILE_SYNC_LOCKS, notebook.notebook_id)
+end
+
+"""
+	synced_update_from_file(session, notebook; kwargs...) -> Bool
+
+[`update_from_file`](@ref) under the notebook's file-sync lock. Use this from every concurrent
+caller (watcher / run / status) so hot reloads don't race. `kwargs` pass through to update_from_file
+(and on to `update_save_run!`) — notably `save=false` for read-only status syncs and `run_async`.
+"""
+function synced_update_from_file(session::ServerSession, notebook::Notebook; kwargs...)::Bool
+	lock(_file_sync_lock(notebook)) do
+		update_from_file(session, notebook; kwargs...)
+	end
+end
+
 function update_skipped_cells_dependency!(notebook::Notebook, topology::NotebookTopology=notebook.topology)
     skipped_cells = filter(is_skipped_as_script, notebook.cells)
     indirectly_skipped = collect(topological_order_cached(topology, skipped_cells))

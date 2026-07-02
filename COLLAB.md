@@ -49,6 +49,17 @@ SpaceStation.run()        # lazy collab mode is the default
    pluto-collab status notebook.jl --json     # same, structured
    ```
 
+   **Cross-platform:** `pluto-collab` is a bash script (needs `curl`/`sed`, i.e. Unix). The exact
+   same commands are also built into the app as `spacestation collab <cmd> …` — pure Julia, no
+   external dependencies — so the agent surface works identically in a Windows PowerShell/cmd
+   terminal. Either form uses `PLUTOSPACE_PORT`/`PLUTOSPACE_SECRET` when set (inside a SpaceStation
+   terminal) and the connection file otherwise.
+
+   **`status` reflects the file, always.** It re-syncs the notebook from disk on every call, so an
+   agent that edits `nb.jl` and immediately runs `status` sees the correct stale set right away —
+   it never has to wait for the ~½-second file watcher to catch up. (Syncing is read-only in lazy
+   mode: it marks cells stale, never runs or rewrites the file.)
+
    Runs requested over HTTP go through the same execution queue as browser runs — you watch
    the agent's cells turn amber → running → green live in your browser, and vice versa.
 
