@@ -5,7 +5,7 @@
 &nbsp;SpaceStation.jl
 </h1>
 
-### A workspace for Pluto notebooks — built for humans and agents, *together.*
+### A workspace for Pluto notebooks — for humans and agents.
 
 [Pluto.jl](https://github.com/fonsp/Pluto.jl) gives you a reactive notebook.
 **SpaceStation gives you the *space* around it:** a folder workspace, tabbed notebooks and files,
@@ -110,12 +110,12 @@ your SSH setup.
 
 ## 🤝 Lazy mode: humans and agents on one live session
 
-This is the one that's hard to fake. SpaceStation's default isn't autorun: editing a cell — **in the
-browser *or* on disk** — marks it (and everything downstream) **stale** instead of running it, so a
-run executes **exactly the stale closure and nothing more.** That makes it safe for a human in the
-browser and **any coding agent in any terminal** to work on the **same live notebook** at once —
-same kernel, same state. The agent edits the `.jl` with its normal file tools; the human watches
-those cells go **amber within a second**, then runs them. No MCP, no plugins — just a small CLI, [`pluto-collab`](bin/pluto-collab).
+SpaceStation's default isn't autorun. Editing a cell — **in the browser *or* on disk** — marks it
+(and everything downstream) **stale** instead of running it, so a run executes only the stale
+closure. Because of that, a human in the browser and a coding agent in a terminal can work on the
+**same live notebook** at once — same kernel, same state. The agent edits the `.jl` with its normal
+file tools; the affected cells turn **amber within a second** in the browser, and a run applies them.
+No MCP, no plugins — just a small CLI, [`pluto-collab`](bin/pluto-collab).
 
 <div align="center">
 <img src="assets/screenshots/lazy-stale-dark.png" width="920" alt="Lazy mode in SpaceStation: after an edit to the report cell, only it and its dependent turn amber (stale) while the expensive samples and smoothed cells stay green — two notebook tabs and the integrated terminal are open">
@@ -126,11 +126,11 @@ The agent surface is deliberately **two-tiered** — editing and executing are s
 1. **Edit → _stage._** The agent edits the `.jl` with its normal file tools. That only marks the
    changed cells (and everything downstream) **stale** — *nothing runs*. The human watches them turn
    amber within a second.
-2. **Run → _apply._** An explicit `run --stale` executes **exactly the stale closure and nothing
-   more.** Separating stage from apply is the whole point: you review what's about to run, expensive
-   cells don't fire on every keystroke, and the session stays reproducible.
+2. **Run → _apply._** An explicit `run --stale` executes only the stale closure. Separating stage
+   from apply is deliberate: you review what's about to run, expensive cells don't fire on every
+   keystroke, and the session stays reproducible.
 
-It's boring plumbing — no MCP, no plugins:
+The mechanism is plain — no MCP, no plugins:
 
 - a **connection file** at `~/.local/state/pluto/servers/<node>-<port>.json` (port + secret — the Jupyter idiom),
 - a plain **HTTP API** at `/api/v1/…` (curl-able, authed with `?secret=…`),
@@ -144,7 +144,7 @@ spacestation collab status nb.jl     # any platform incl. Windows PowerShell —
 … status nb.jl               # REVIEW: per-cell STALE / COLD / ERRORED / output (reflects the file right now)
 … run    nb.jl --stale       # APPLY:  run exactly what's outdated (blocks; exit 1 on error)
 … output nb.jl --cell <id>   # read a cell's full, untruncated output
-… figure nb.jl --cell <id>   # save a cell's rendered plot to an image the agent can actually look at
+… figure nb.jl --cell <id>   # save a cell's rendered plot to an image file
 ```
 
 `pluto-collab` needs bash + curl (Unix); **`spacestation collab …` is the identical command set built
@@ -160,7 +160,7 @@ Two guarantees make the loop reliable:
   so both sides see cells turn amber → running → green live. Staleness is verified against
   content-addressed **execution keys**, so reverting an edit un-stales a cell with no run at all.
 
-See **[COLLAB.md](COLLAB.md)** for the full story and an `AGENTS.md` stanza you can drop into any repo.
+See **[COLLAB.md](COLLAB.md)** for the full details and an `AGENTS.md` stanza you can drop into any repo.
 
 ---
 
@@ -168,9 +168,9 @@ See **[COLLAB.md](COLLAB.md)** for the full story and an `AGENTS.md` stanza you 
 
 Every notebook is **two files**: the `.jl` (your code — the source of truth, unchanged from vanilla
 Pluto) and a plain-TOML **`<notebook>.jl.pluto-cache.toml`** sidecar holding every cell's output plus
-its execution key. That sidecar is the whole trick: reopen a notebook and **every output is restored
-instantly** from it — no recompute. Vanilla Pluto has no output persistence; it either re-runs
-everything on open or shows nothing.
+its execution key. Reopen a notebook and **every output is restored instantly** from that sidecar —
+no recompute. Vanilla Pluto has no output persistence; it either re-runs everything on open or shows
+nothing.
 
 <table>
 <tr>
@@ -183,7 +183,7 @@ everything on open or shows nothing.
 </tr>
 </table>
 
-<div align="center"><em>Same notebook, same fresh restart — the sidecar is the whole difference. Restored cells are trusted <strong>only when their execution keys prove</strong> the code and upstream results are unchanged; impure cells (<code>rand()</code>, the clock, I/O) opt out with <code>always_stale = true</code>.</em></div>
+<div align="center"><em>Same notebook, same fresh restart — the sidecar is the only difference. Restored cells are trusted <strong>only when their execution keys match</strong> the current code and upstream results; impure cells (<code>rand()</code>, the clock, I/O) opt out with <code>always_stale = true</code>.</em></div>
 
 ---
 
