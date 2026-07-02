@@ -1,53 +1,53 @@
 <div align="center">
 
 <h1 align="center">
-<img src="frontend/img/plutospace.svg" width="26" alt="">
-&nbsp;PlutoSpace.jl
+<img src="frontend/img/spacestation.svg" width="26" alt="">
+&nbsp;SpaceStation.jl
 </h1>
 
 ### A workspace for Pluto notebooks — built for humans and agents, *together.*
 
 [Pluto.jl](https://github.com/fonsp/Pluto.jl) gives you a reactive notebook.
-**PlutoSpace gives you the *space* around it:** a folder workspace, tabbed notebooks and files,
+**SpaceStation gives you the *space* around it:** a folder workspace, tabbed notebooks and files,
 a real terminal, point-and-click SSH remotes, outputs that survive restarts, and first-class
 **human + agent collaboration** on one live session — all on the unmodified Pluto editor.
 
 <br>
 
-<img src="assets/pspace-plotnb-dark.png" width="900" alt="The PlutoSpace workspace: file-tree sidebar, tabbed notebooks, table of contents, and a WasmMakie plot rendered inline">
+<img src="assets/pspace-plotnb-dark.png" width="900" alt="The SpaceStation workspace: file-tree sidebar, tabbed notebooks, table of contents, and a WasmMakie plot rendered inline">
 
 </div>
 
 ## Install & run
 
-PlutoSpace installs as a **Julia [Pkg App](https://pkgdocs.julialang.org/dev/apps/)** — one command
-puts a real `plutospace` executable on your `PATH`, so it launches like any CLI tool (no
+SpaceStation installs as a **Julia [Pkg App](https://pkgdocs.julialang.org/dev/apps/)** — one command
+puts a real `spacestation` executable on your `PATH`, so it launches like any CLI tool (no
 `julia -e …`, no manual `import`):
 
 ```julia
-julia> import Pkg; Pkg.Apps.add(url="https://github.com/GroupTherapyOrg/PlutoSpace.jl")
+julia> import Pkg; Pkg.Apps.add(url="https://github.com/GroupTherapyOrg/SpaceStation.jl")
 ```
 
 ```sh
-$ plutospace               # workspace picker
-$ plutospace ~/project     # open a folder as a workspace
-$ plutospace notebook.jl   # open a single notebook
-$ plutospace --help
+$ spacestation               # workspace picker
+$ spacestation ~/project     # open a folder as a workspace
+$ spacestation notebook.jl   # open a single notebook
+$ spacestation --help
 ```
 
-Prefer it as a library? `import PlutoSpace; PlutoSpace.run()` works too (every `Pluto.run` keyword
+Prefer it as a library? `import SpaceStation; SpaceStation.run()` works too (every `Pluto.run` keyword
 applies). Lazy/collab mode is the default; add `--autorun` for classic Pluto reactivity.
 
 > Want to try everything below hands-on? There's a ready-made demo workspace with a guided
-> shot list: **[plutospace-demo](https://github.com/GroupTherapyOrg/plutospace-demo)**.
+> shot list: **[spacestation-demo](https://github.com/GroupTherapyOrg/spacestation-demo)**.
 
 ---
 
-# What PlutoSpace adds to Pluto
+# What SpaceStation adds to Pluto
 
 Everything in this section is something **vanilla Pluto doesn't have.** The notebook engine,
 editor, reactivity, `@bind`, packages, and the `.jl` file format are all Pluto's — and notebooks
-stay **byte-for-byte compatible in both directions.** PlutoSpace only adds the space around them.
+stay **byte-for-byte compatible in both directions.** SpaceStation only adds the space around them.
 
 | | |
 |---|---|
@@ -59,12 +59,12 @@ stay **byte-for-byte compatible in both directions.** PlutoSpace only adds the s
 
 ## 📁 Open a folder as a workspace
 
-PlutoSpace starts where an IDE does: a **VS Code-style "Open Folder"** hub with recent
+SpaceStation starts where an IDE does: a **VS Code-style "Open Folder"** hub with recent
 workspaces, a filesystem browser, and (if you have SSH hosts) one-click remotes. Pick a folder
 and its file tree becomes your sidebar — notebooks and files open as tabs beside it.
 
 <div align="center">
-<img src="assets/pspace-work-light.png" width="820" alt="The PlutoSpace workspace opener: recent workspaces, a folder browser, and SSH remotes">
+<img src="assets/pspace-work-light.png" width="820" alt="The SpaceStation workspace opener: recent workspaces, a folder browser, and SSH remotes">
 </div>
 
 ---
@@ -76,7 +76,7 @@ files open in tabs too, edited with the same CodeMirror — including the per-no
 `*.pluto-cache.toml` sidecar, which is just readable TOML. Add and delete files right from the tree.
 
 <div align="center">
-<img src="assets/pspace-tab-files-dark.png" width="900" alt="Several tabs open in PlutoSpace, including a notebook's .pluto-cache.toml sidecar shown as plain-text TOML">
+<img src="assets/pspace-tab-files-dark.png" width="900" alt="Several tabs open in SpaceStation, including a notebook's .pluto-cache.toml sidecar shown as plain-text TOML">
 </div>
 
 ---
@@ -90,7 +90,7 @@ exports `PLUTOSPACE_PORT`/`PLUTOSPACE_SECRET` and puts `pluto-collab` on `PATH`,
 launched here just works.
 
 <div align="center">
-<img src="assets/pspace-terminal-dark.png" width="880" alt="The integrated terminal docked to the right of the editor, showing the PlutoSpace session banner and a shell prompt">
+<img src="assets/pspace-terminal-dark.png" width="880" alt="The integrated terminal docked to the right of the editor, showing the SpaceStation session banner and a shell prompt">
 </div>
 
 ---
@@ -98,19 +98,19 @@ launched here just works.
 ## 🌐 SSH remote workspaces
 
 Click a host from your `~/.ssh/config` and the **entire workspace** — files, kernels, terminal, the
-agent API — runs on that machine over an SSH tunnel. First contact installs PlutoSpace on the
+agent API — runs on that machine over an SSH tunnel. First contact installs SpaceStation on the
 remote; after that it reconnects instantly. The VS Code Remote-SSH model, with zero config beyond
 your SSH setup.
 
 <div align="center">
-<img src="assets/pspace-ssh-light.png" width="560" alt="Connecting to a remote host over SSH from the PlutoSpace workspace opener">
+<img src="assets/pspace-ssh-light.png" width="560" alt="Connecting to a remote host over SSH from the SpaceStation workspace opener">
 </div>
 
 ---
 
 ## 🤝 Lazy mode: humans and agents on one live session
 
-This is the one that's hard to fake. PlutoSpace's default isn't autorun: editing a cell — **in the
+This is the one that's hard to fake. SpaceStation's default isn't autorun: editing a cell — **in the
 browser *or* on disk** — marks it (and everything downstream) **stale** instead of running it, so a
 run executes **exactly the stale closure and nothing more.** That makes it safe for a human in the
 browser and **any coding agent in any terminal** to work on the **same live notebook** at once —
@@ -118,7 +118,7 @@ same kernel, same state. The agent edits the `.jl` with its normal file tools; t
 those cells go **amber within a second**, then runs them. No MCP, no plugins — just a small CLI, [`pluto-collab`](bin/pluto-collab).
 
 <div align="center">
-<img src="assets/pspace-lazy-edits-dark.png" width="920" alt="Split view: a coding agent (Claude Code) editing the notebook on the right while PlutoSpace shows the affected cells go stale on the left">
+<img src="assets/pspace-lazy-edits-dark.png" width="920" alt="Split view: a coding agent (Claude Code) editing the notebook on the right while SpaceStation shows the affected cells go stale on the left">
 </div>
 
 The whole agent surface is boring plumbing:
@@ -167,30 +167,30 @@ everything on open or shows nothing.
 
 ## Relationship to Pluto.jl
 
-PlutoSpace is a friendly fork of [Pluto.jl](https://github.com/fonsp/Pluto.jl). The notebook engine,
+SpaceStation is a friendly fork of [Pluto.jl](https://github.com/fonsp/Pluto.jl). The notebook engine,
 editor, file format, and reactivity are Pluto's, and notebooks remain fully compatible in both
 directions. For everything about notebooks themselves (reactivity, `@bind`, packages, exporting),
 see the [Pluto documentation](https://plutojl.org/). 🎈
 
-PlutoSpace adds the *space around* the notebooks: workspaces, tabs, terminal, remotes, persistence,
+SpaceStation adds the *space around* the notebooks: workspaces, tabs, terminal, remotes, persistence,
 and first-class human + agent collaboration. `--autorun` gives you classic Pluto reactivity
 whenever you want it, byte-for-byte.
 
-**PlutoSpace is developed and owned by Dale Black / [GroupTherapyOrg](https://github.com/GroupTherapyOrg).
+**SpaceStation is developed and owned by Dale Black / [GroupTherapyOrg](https://github.com/GroupTherapyOrg).
 It is an independent fork and is NOT developed, maintained, or endorsed by the Pluto.jl team** — please
-direct PlutoSpace questions, issues, and feedback to this repository, not to the Pluto developers.
+direct SpaceStation questions, issues, and feedback to this repository, not to the Pluto developers.
 
 ## Status
 
-⚠️ **Early and experimental.** PlutoSpace is under active development by a small team; expect rough
+⚠️ **Early and experimental.** SpaceStation is under active development by a small team; expect rough
 edges and breaking changes. Issues and ideas are welcome on this repo.
 
 ## AI disclosure
 
-Much of PlutoSpace's code is written with AI assistance (Claude). Commits are co-authored accordingly.
+Much of SpaceStation's code is written with AI assistance (Claude). Commits are co-authored accordingly.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). PlutoSpace is developed and owned by Dale Black / GroupTherapyOrg.
+MIT — see [LICENSE](LICENSE). SpaceStation is developed and owned by Dale Black / GroupTherapyOrg.
 It builds on **Pluto.jl** (© the Pluto.jl authors — Fons van der Plas and contributors, MIT), which
 retains its own copyright; the original Pluto license is preserved in [LICENSE](LICENSE).

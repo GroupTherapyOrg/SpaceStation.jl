@@ -1,12 +1,12 @@
-name = "PlutoSpace"
-uuid = "1c32774c-6937-4dfe-ba9c-80ee9278c633"
+name = "SpaceStation"
+uuid = "9559e6e6-ccab-48cc-a1b8-a141fc5a67a0"
 license = "MIT"
 version = "0.1.0"
 authors = ["Dale Black"]
-# PlutoSpace is a fork of Pluto.jl (© the Pluto.jl authors — Fons van der Plas and
+# SpaceStation is a fork of Pluto.jl (© the Pluto.jl authors — Fons van der Plas and
 # contributors); see LICENSE for the original Pluto copyright and attribution.
 
-[apps.plutospace]
+[apps.spacestation]
 
 [deps]
 Base64 = "2a0f44e3-6c83-55bd-87e4-b1978d98bd5f"

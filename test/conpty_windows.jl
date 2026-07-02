@@ -1,6 +1,6 @@
 # Standalone Windows ConPTY smoke test for src/webserver/PTYWindows.jl.
 #
-# Runs the ConPTY PTY layer directly (no PlutoSpace package load, no deps to instantiate —
+# Runs the ConPTY PTY layer directly (no SpaceStation package load, no deps to instantiate —
 # PTYWindows.jl only needs Base + kernel32), so Windows CI iterates fast and pinpoints where
 # terminal output is lost: the ConPTY core (Test 1) vs. the PowerShell/banner invocation the
 # real _spawn_workspace_shell uses (Tests 2–3). Rich diagnostics are printed either way.

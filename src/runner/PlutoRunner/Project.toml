@@ -1,6 +1,6 @@
 name = "PlutoRunner"
 uuid = "dc6b355a-2368-4481-ae6d-ae0351418d79"
-authors = ["Dale Black"]  # part of the PlutoSpace fork; original Pluto.jl attribution in /LICENSE
+authors = ["Dale Black"]  # part of the SpaceStation fork; original Pluto.jl attribution in /LICENSE
 version = "30.31.32"
 
 [deps]

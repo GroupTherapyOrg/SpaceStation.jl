@@ -1,5 +1,5 @@
 ###
-# The collab HTTP API: how external tools (coding agents, scripts, CI) talk to a LIVE PlutoSpace server.
+# The collab HTTP API: how external tools (coding agents, scripts, CI) talk to a LIVE SpaceStation server.
 #
 # Design constraints (deliberate):
 #  - Plain HTTP + the existing Pluto secret for auth (`?secret=...` or cookie) — curl-able from
@@ -54,7 +54,7 @@ collab_registry_dir() = joinpath(get(ENV, "XDG_STATE_HOME", joinpath(homedir(), 
 
 # Tag the registry filename with the node's hostname: "<node>-<port>.json".
 # On a shared $HOME (an HPC cluster mounts the same NFS home on every compute node) this one
-# directory is shared by every node's PlutoSpace server. A bare "<port>.json" name collides across
+# directory is shared by every node's SpaceStation server. A bare "<port>.json" name collides across
 # nodes — each node's server independently grabs the same default port (1234), so the second writer
 # silently clobbers the first, and discovery/cleanup can't tell whose file is whose. The hostname
 # prefix gives each node its own filenames; on a single local machine it's just a constant prefix.
@@ -109,7 +109,7 @@ function remove_collab_registry_file(port::Integer)
     catch end
 end
 
-# --- the workspace tree (PlutoSpace) ---
+# --- the workspace tree (SpaceStation) ---
 
 "Does this file look like a Pluto notebook? (`.jl` extension + the Pluto header on line 1)"
 function _is_pluto_notebook_file(path::String)::Bool
@@ -549,7 +549,7 @@ function register_collab_api!(router, session::ServerSession)
 
     function serve_api_workspace(request::HTTP.Request)
         ws = session.options.server.workspace_folder
-        ws === nothing && return _api_error(404, "this server has no workspace folder — start with PlutoSpace.run(workspace=\"/path\")", false)
+        ws === nothing && return _api_error(404, "this server has no workspace folder — start with SpaceStation.run(workspace=\"/path\")", false)
         root = tamepath(ws)
         isdir(root) || return _api_error(404, "workspace folder does not exist: $root", false)
         body = _json(Pair[
@@ -584,7 +584,7 @@ function register_collab_api!(router, session::ServerSession)
         isdir(dirname(path)) || return _api_error(400, "no such directory: $(dirname(path))", false)
         try
             # atomic, like the notebook save path
-            tmp = path * ".plutospace_tmp"
+            tmp = path * ".spacestation_tmp"
             write(tmp, request.body)
             mv(tmp, path; force=true)
         catch e

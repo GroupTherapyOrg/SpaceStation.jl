@@ -58,8 +58,8 @@ EOF
 
 start_server() {
     julia --project="$REPO" -e "
-        import PlutoSpace
-        PlutoSpace.run(
+        import SpaceStation
+        SpaceStation.run(
             port=$PORT,
             launch_browser=false,
             require_secret_for_open_links=true,

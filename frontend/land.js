@@ -1,4 +1,4 @@
-// PlutoSpace — the workspace hub: a file browser + tabbed notebooks, all running on a
+// SpaceStation — the workspace hub: a file browser + tabbed notebooks, all running on a
 // stock Pluto server. Every tab is the UNMODIFIED Pluto editor in an iframe (its own
 // websocket, its own state); the hub itself only talks to existing server endpoints:
 //   GET  ./api/v1/workspace        workspace file tree (404 → no workspace open yet)
@@ -27,7 +27,7 @@ const basename = (p) => p.split("/").pop()
 // One canonical homebase: the launcher tab names itself this, so a workspace's "home" button can focus it
 // (or reopen it if it was closed) via window.open(url, HOMEBASE_WINDOW_NAME) — instead of every workspace
 // spawning its own disconnected in-tab launcher.
-const HOMEBASE_WINDOW_NAME = "plutospace-homebase"
+const HOMEBASE_WINDOW_NAME = "spacestation-homebase"
 const homebase_self_url = () => window.location.origin + window.location.pathname + window.location.search
 // Tag a workspace URL with this homebase's address (in the #fragment — never sent to the server) so the
 // workspace it opens knows where "home" is.
@@ -35,9 +35,9 @@ const with_homebase = (url) => (url == null ? url : `${url}#homebase=${encodeURI
 
 // `new URL(..., import.meta.url)` works unbundled in the browser AND gets rewritten by
 // the bundler — a string src would 404 in frontend-dist where filenames are hashed.
-const logo_url = new URL("img/plutospace.svg", import.meta.url).href
+const logo_url = new URL("img/spacestation.svg", import.meta.url).href
 
-const RECENT_KEY = "plutospace recent workspaces"
+const RECENT_KEY = "spacestation recent workspaces"
 const get_recent_workspaces = () => {
     try {
         const r = JSON.parse(localStorage.getItem(RECENT_KEY) ?? "[]")
@@ -52,7 +52,7 @@ const remember_workspace = (path) => {
 
 // Terminals live in the terminal panel as their own tabs. Their shells persist on the server
 // (keyed by tid), so we remember each terminal's tid + label and reattach on reload.
-const TERMINALS_KEY = "plutospace terminals"
+const TERMINALS_KEY = "spacestation terminals"
 const restore_terminals = () => {
     try {
         const saved = JSON.parse(localStorage.getItem(TERMINALS_KEY) ?? "[]")
@@ -66,7 +66,7 @@ const restore_terminals = () => {
 // How long to wait for an SSH connection before giving up (seconds). A busy ProxyJump login node can
 // need well over the old 8s default just to relay the compute node's banner — so this is user-tunable
 // from homebase. Mirrors the server's clamp (see SSH_CONNECT_TIMEOUT in CollabRemote.jl).
-const SSH_TIMEOUT_KEY = "plutospace ssh connect timeout"
+const SSH_TIMEOUT_KEY = "spacestation ssh connect timeout"
 const SSH_TIMEOUT_DEFAULT = 25
 const clamp_ssh_timeout = (v) => Math.max(3, Math.min(180, Math.round(Number(v) || SSH_TIMEOUT_DEFAULT)))
 const get_ssh_timeout = () => {
@@ -125,7 +125,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
     const [ssh_hosts, set_ssh_hosts] = useState(/** @type {Array<String>} */ ([]))
     const [ssh_timeout, set_ssh_timeout] = useState(get_ssh_timeout)
     const [remote_states, set_remote_states] = useState(/** @type {Record<String, {state: String, detail: String, url: String?}>} */ ({}))
-    // Picking a LOCAL folder spawns a child PlutoSpace server (its own process + tab), exactly like an
+    // Picking a LOCAL folder spawns a child SpaceStation server (its own process + tab), exactly like an
     // SSH remote — so this opener is "homebase": it never leaves to become a workspace, it launches them.
     const [local_states, set_local_states] = useState(/** @type {Record<String, {state: String, detail: String, url: String?}>} */ ({}))
     const [running, set_running] = useState(
@@ -320,7 +320,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
     return html`<div class="workspace-opener">
         <div class="bubble opener-card">
             <header>
-                <img class="land-logo opener-logo" src=${logo_url} alt="PlutoSpace" />
+                <img class="land-logo opener-logo" src=${logo_url} alt="SpaceStation" />
                 <h1>Pluto<span class="land-accent">Space</span></h1>
                 <p class="subtitle">Open a folder as your workspace — notebooks inside it open as tabs.</p>
                 ${on_cancel == null ? null : html`<button class="opener-cancel" title="Close — back to your workspace" onClick=${on_cancel}><span class="opener-cancel-icon"></span></button>`}
@@ -880,12 +880,12 @@ const Land = () => {
     const [tabs, set_tabs] = useState(/** @type {Array<{id: String, path: String, kind?: String}>} */ ([]))
     const [active, set_active] = useState(/** @type {String?} */ (null))
     const [error, set_error] = useState(/** @type {String?} */ (null))
-    const [sidebar_width, set_sidebar_width] = useState(() => Number(localStorage.getItem("plutospace sidebar width")) || 290)
-    const [sidebar_hidden, set_sidebar_hidden] = useState(() => localStorage.getItem("plutospace sidebar hidden") === "true")
-    const [terminal_open, set_terminal_open] = useState(() => localStorage.getItem("plutospace terminal open") === "true")
-    const [terminal_height, set_terminal_height] = useState(() => Number(localStorage.getItem("plutospace terminal height")) || 280)
-    const [terminal_width, set_terminal_width] = useState(() => Number(localStorage.getItem("plutospace terminal width")) || 420)
-    const [terminal_dock, set_terminal_dock] = useState(() => (localStorage.getItem("plutospace terminal dock") === "right" ? "right" : "bottom"))
+    const [sidebar_width, set_sidebar_width] = useState(() => Number(localStorage.getItem("spacestation sidebar width")) || 290)
+    const [sidebar_hidden, set_sidebar_hidden] = useState(() => localStorage.getItem("spacestation sidebar hidden") === "true")
+    const [terminal_open, set_terminal_open] = useState(() => localStorage.getItem("spacestation terminal open") === "true")
+    const [terminal_height, set_terminal_height] = useState(() => Number(localStorage.getItem("spacestation terminal height")) || 280)
+    const [terminal_width, set_terminal_width] = useState(() => Number(localStorage.getItem("spacestation terminal width")) || 420)
+    const [terminal_dock, set_terminal_dock] = useState(() => (localStorage.getItem("spacestation terminal dock") === "right" ? "right" : "bottom"))
     const terminal_ever_opened = useRef(false)
     if (terminal_open) terminal_ever_opened.current = true
     const [show_opener, set_show_opener] = useState(false)
@@ -934,9 +934,9 @@ const Land = () => {
     }, [no_workspace])
 
     // Tab title tells the homebase apart from workspaces in the browser's tab strip: the launcher reads
-    // "PlutoSpace (launcher)"; a workspace reads "PlutoSpace — <folder>".
+    // "SpaceStation (launcher)"; a workspace reads "SpaceStation — <folder>".
     useEffect(() => {
-        document.title = no_workspace ? "PlutoSpace (launcher)" : workspace?.root ? `PlutoSpace — ${basename(workspace.root)}` : "PlutoSpace"
+        document.title = no_workspace ? "SpaceStation (launcher)" : workspace?.root ? `SpaceStation — ${basename(workspace.root)}` : "SpaceStation"
     }, [no_workspace, workspace])
 
     // "Home" from inside a workspace. Over a tunnel: clear the workspace and reload this same tab (the
@@ -1007,12 +1007,12 @@ const Land = () => {
     }
 
     useEffect(() => {
-        localStorage.setItem("plutospace sidebar width", String(sidebar_width))
-        localStorage.setItem("plutospace sidebar hidden", String(sidebar_hidden))
-        localStorage.setItem("plutospace terminal open", String(terminal_open))
-        localStorage.setItem("plutospace terminal height", String(terminal_height))
-        localStorage.setItem("plutospace terminal width", String(terminal_width))
-        localStorage.setItem("plutospace terminal dock", terminal_dock)
+        localStorage.setItem("spacestation sidebar width", String(sidebar_width))
+        localStorage.setItem("spacestation sidebar hidden", String(sidebar_hidden))
+        localStorage.setItem("spacestation terminal open", String(terminal_open))
+        localStorage.setItem("spacestation terminal height", String(terminal_height))
+        localStorage.setItem("spacestation terminal width", String(terminal_width))
+        localStorage.setItem("spacestation terminal dock", terminal_dock)
     }, [sidebar_width, sidebar_hidden, terminal_open, terminal_height, terminal_width, terminal_dock])
 
     useEffect(() => {
@@ -1291,7 +1291,7 @@ const Land = () => {
     const shutdown_server = useCallback(async () => {
         if (
             !window.confirm(
-                "Shut down the PlutoSpace server?\n\nRunning notebooks and the integrated terminal will stop. SSH remote servers keep running and can be reattached later."
+                "Shut down the SpaceStation server?\n\nRunning notebooks and the integrated terminal will stop. SSH remote servers keep running and can be reattached later."
             )
         )
             return
@@ -1313,7 +1313,7 @@ const Land = () => {
             await new Promise((r) => setTimeout(r, 400))
             if (!(await still_up())) {
                 document.body.innerHTML =
-                    '<div style="font: 15px/1.6 system-ui, sans-serif; padding: 3rem; text-align: center; color: #888">PlutoSpace has shut down. You can close this tab.</div>'
+                    '<div style="font: 15px/1.6 system-ui, sans-serif; padding: 3rem; text-align: center; color: #888">SpaceStation has shut down. You can close this tab.</div>'
                 return
             }
         }
@@ -1335,7 +1335,7 @@ const Land = () => {
                 <header class="bubble">
                     <div class="header-row">
                         <button class="land-logo-button" title="Back to homebase (open &amp; manage workspaces)" onClick=${go_home}>
-                            <img class="land-logo" src=${logo_url} alt="PlutoSpace" />
+                            <img class="land-logo" src=${logo_url} alt="SpaceStation" />
                         </button>
                         <div class="header-text">
                             <h1 title=${workspace?.root ?? ""}>Pluto<span class="land-accent">Space</span></h1>

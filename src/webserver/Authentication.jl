@@ -4,7 +4,7 @@ import .Throttled
 The name of the auth cookie, scoped by the server's port.
 
 Cookies are scoped by host + name + path — **the port is not part of a cookie's scope**
-(RFC 6265). So multiple Pluto servers on the same host (e.g. several `plutospace` workspaces
+(RFC 6265). So multiple Pluto servers on the same host (e.g. several `spacestation` workspaces
 on `localhost:1234`, `:1235`, …) would all set a cookie named `secret` for `localhost` and
 *clobber each other*: launching a second server logs the first one out of its own browser tab,
 turning every cookie-authenticated request (`./api/v1/notebooks`, `./edit?id=…`, the editor

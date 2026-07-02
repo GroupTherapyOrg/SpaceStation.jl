@@ -4,7 +4,7 @@ import Pkg
 import MIMEs
 
 
-# PlutoSpace: an installed app should be snappy with zero CDN fetches, so the bundle is
+# SpaceStation: an installed app should be snappy with zero CDN fetches, so the bundle is
 # preferred whenever it exists — including dev/path installs (`Pkg.Apps.develop`), unlike
 # upstream Pluto. Frontend devs who want live-editable JS can opt out with
 # JULIA_PLUTO_FORCE_BUNDLED=nein (or delete frontend-dist/).
@@ -92,7 +92,7 @@ function is_pluto_dev()
         else
             deps = Pkg.dependencies()
 
-            p_index = findfirst(p -> p.name == "PlutoSpace" || p.name == "Pluto", deps)
+            p_index = findfirst(p -> p.name == "SpaceStation" || p.name == "Pluto", deps)
             p = deps[p_index]
 
             p.is_tracking_path

@@ -59,7 +59,7 @@ representative at an online or offline event.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the PlutoSpace maintainers responsible for enforcement at
+reported to the SpaceStation maintainers responsible for enforcement at
 dalejamesblack@gmail.com.
 All complaints will be reviewed and investigated promptly and fairly.
 

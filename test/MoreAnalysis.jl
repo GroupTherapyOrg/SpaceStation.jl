@@ -1,5 +1,5 @@
-import PlutoSpace: Pluto, Cell, ExpressionExplorerExtras
-import PlutoSpace.MoreAnalysis
+import SpaceStation: Pluto, Cell, ExpressionExplorerExtras
+import SpaceStation.MoreAnalysis
 
 using Test
 

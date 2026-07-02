@@ -113,7 +113,7 @@ end
 const RUNNING_HTTP_SERVER = Ref{Any}(nothing)
 
 """
-Stop the running PlutoSpace server cleanly. Closing the listen socket fires HTTP.jl's `on_shutdown`
+Stop the running SpaceStation server cleanly. Closing the listen socket fires HTTP.jl's `on_shutdown`
 (notebooks, registry file) and unblocks `wait(::RunningPlutoServer)`, so a CLI launch returns and the
 process exits; a library/REPL launch simply returns from `run`. Done async so the caller (an HTTP
 handler) can finish responding first.
@@ -136,7 +136,7 @@ end
 function run!(session::ServerSession)
     # Before we spawn ANY notebook worker or integrated terminal, drop the Pkg-app launcher's
     # JULIA_LOAD_PATH pin so those children honor their own `--project=` / Pkg.activate instead of
-    # inheriting PlutoSpace's private app environment. (No-op for library use and SSH remotes; see
+    # inheriting SpaceStation's private app environment. (No-op for library use and SSH remotes; see
     # neutralize_app_load_path_pin!.)
     neutralize_app_load_path_pin!()
     if is_first_run[]
@@ -180,7 +180,7 @@ function run!(session::ServerSession)
 
     on_shutdown() = @sync begin
         # Triggered by HTTP.jl
-        @info("\nClosing PlutoSpace... Restart Julia for a fresh session. \n\nHave a nice day! 🎈🏝\n\n")
+        @info("\nClosing SpaceStation... Restart Julia for a fresh session. \n\nHave a nice day! 🎈🏝\n\n")
         remove_collab_registry_file(port)
         # tear down any SSH remote tunnels so the `ssh -N -L` children don't orphan onto the terminal
         try
@@ -234,7 +234,7 @@ function run!(session::ServerSession)
             # (no Origin) still pass and must present the secret via cookie/?secret as before.
             if (!secret_required || is_authenticated(session, http.message)) && origin_matches_host(http.message)
                 if startswith(HTTP.URI(http.message.target).path, "/terminal")
-                    # the PlutoSpace integrated terminal: a raw PTY bridge, separate from the notebook protocol
+                    # the SpaceStation integrated terminal: a raw PTY bridge, separate from the notebook protocol
                     terminal_query = HTTP.queryparams(HTTP.URI(http.message.target))
                     try
                         HTTP.WebSockets.upgrade(http) do clientstream

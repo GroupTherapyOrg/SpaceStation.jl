@@ -947,7 +947,7 @@ all patches: ${JSON.stringify(patches, null, 1)}
                 })
             } catch (e) {}
 
-            // PlutoSpace: no remote availability ping — the installed app makes zero external requests.
+            // SpaceStation: no remote availability ping — the installed app makes zero external requests.
             // (Upstream's check_access lets fonsp.com remotely disable hijacked Pluto instances.)
 
             // @ts-ignore
@@ -1705,11 +1705,11 @@ ${t("t_key_autosave_description")}`
                         }
                         <nav id="at_the_top">
                             ${
-                                // Inside the PlutoSpace workspace shell the editor runs in an iframe, and "./" serves the
+                                // Inside the SpaceStation workspace shell the editor runs in an iframe, and "./" serves the
                                 // Land hub — so a logo click would render the whole workspace *inside* this tab (infinite
                                 // nesting). When embedded, make the logo inert (no navigation) instead.
                                 window.self !== window.top
-                                    ? html`<a class="plutospace-inert-logo" onClick=${(e) => e.preventDefault()}>
+                                    ? html`<a class="spacestation-inert-logo" onClick=${(e) => e.preventDefault()}>
                                           <h1><img id="logo-big" src=${url_logo_big} alt="Pluto.jl" /><img id="logo-small" src=${url_logo_small} aria-hidden="true" /></h1>
                                       </a>`
                                     : html`<a
@@ -1911,10 +1911,10 @@ ${t("t_key_autosave_description")}`
                                     })}`,
                                 }
                             )}</a>
-                            <a class="footer-button" href="https://github.com/GroupTherapyOrg/PlutoSpace.jl" target="_blank">${th("t_footer_button_FAQ", {
+                            <a class="footer-button" href="https://github.com/GroupTherapyOrg/SpaceStation.jl" target="_blank">${th("t_footer_button_FAQ", {
                                 icon: InlineIonicon("help-circle-outline", { inlineMargin: false }),
                             })}</a>
-                            ${/* PlutoSpace: the instant-feedback form posted to the Pluto team's Firebase ("pluto-feedback") — removed. */ null}
+                            ${/* SpaceStation: the instant-feedback form posted to the Pluto team's Firebase ("pluto-feedback") — removed. */ null}
                         </div>
                     </footer>
                     <${Popup} 

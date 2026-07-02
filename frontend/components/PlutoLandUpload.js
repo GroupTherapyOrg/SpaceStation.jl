@@ -106,7 +106,7 @@ export const PlutoLandUpload = ({ notebook_id }) => {
                 </a>
             </div>
         </div>
-        ${/* PlutoSpace: "Share to pluto.land" (upload to the Pluto team's hosting service) has been
+        ${/* SpaceStation: "Share to pluto.land" (upload to the Pluto team's hosting service) has been
             removed — no connections to pluto.land. The local HTML-export download above stays. */ null}
         <div class="final"><button onClick=${close}>${t("t_frontmatter_cancel")}</button></div>
     </dialog>`
@@ -116,7 +116,7 @@ export const InlineIonicon = (icon_name, { inlineMargin = false } = {}) => {
     return html`<span class=${cl({ "ionicon-icon": true, "ionicon-icon-margin": inlineMargin })} data-icon=${icon_name} data-inline="true"></span>`
 }
 
-// PlutoSpace: uploading to pluto.land (the Pluto team's hosting service) has been removed.
+// SpaceStation: uploading to pluto.land (the Pluto team's hosting service) has been removed.
 /** @returns {Promise<XMLHttpRequest>} */
 const upload_to_plutoland = (/** @type {File | Blob} */ filesource, onprogress = (val, xhr) => {}) =>
-    Promise.reject(new Error("Upload to pluto.land is not available in PlutoSpace."))
+    Promise.reject(new Error("Upload to pluto.land is not available in SpaceStation."))

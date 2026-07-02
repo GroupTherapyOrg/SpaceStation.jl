@@ -2,7 +2,7 @@
 // state-changing HTTP API. Proves the cross-site-WebSocket-hijack / same-site-CSRF → RCE holes
 // are closed WITHOUT breaking legitimate same-origin or non-browser (no-Origin) clients.
 //
-//   julia --project=. -e 'import PlutoSpace; PlutoSpace.run(port=7799, launch_browser=false)'
+//   julia --project=. -e 'import SpaceStation; SpaceStation.run(port=7799, launch_browser=false)'
 //   PLUTO_SECRET=<secret> node test/terminal_origin.mjs 7799
 //
 // Needs node ≥22 (global WebSocket + fetch). The undici WebSocket client sends NO Origin header,
@@ -56,7 +56,7 @@ const d = await tryWs("tid=orig-evil2", { Origin: "http://evil.example.com" })
 check(!d.opened, "WS from a foreign Origin was refused")
 
 console.log("== E: state-changing POST with cross-origin Origin is REJECTED (CSRF file-write) ==")
-const evilPost = await fetch(`http://${HOST}/api/v1/file/save?path=/tmp/plutospace_csrf_probe.txt&secret=${SECRET}`, {
+const evilPost = await fetch(`http://${HOST}/api/v1/file/save?path=/tmp/spacestation_csrf_probe.txt&secret=${SECRET}`, {
     method: "POST",
     headers: { Origin: "http://127.0.0.1:65000", "Content-Type": "text/plain" },
     body: "pwned",
@@ -64,7 +64,7 @@ const evilPost = await fetch(`http://${HOST}/api/v1/file/save?path=/tmp/plutospa
 check(evilPost.status === 403, `cross-origin POST /api/v1/file/save blocked (got ${evilPost.status})`)
 
 console.log("== F: same-origin POST still works (legit save path) ==")
-const okPost = await fetch(`http://${HOST}/api/v1/file/save?path=/tmp/plutospace_ok_probe.txt&secret=${SECRET}`, {
+const okPost = await fetch(`http://${HOST}/api/v1/file/save?path=/tmp/spacestation_ok_probe.txt&secret=${SECRET}`, {
     method: "POST",
     headers: { Origin: `http://${HOST}`, "Content-Type": "text/plain" },
     body: "hello",

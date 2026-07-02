@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<!-- PlutoSpace app/tab ICON: the transparent twinkle mark (identical to the in-page logo,
-     plutospace.svg). No background tile — the tab strip shows through, so it never paints an
+<!-- SpaceStation app/tab ICON: the transparent twinkle mark (identical to the in-page logo,
+     spacestation.svg). No background tile — the tab strip shows through, so it never paints an
      out-of-place box on a dark tab. PNG fallbacks (favicon-*.png) are rasterized transparent too. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="34 34 72 72" width="72" height="72">
   <circle cx="54" cy="84" r="16.5" fill="#aa7dc0" stroke="#945bb0" stroke-width="3"/>

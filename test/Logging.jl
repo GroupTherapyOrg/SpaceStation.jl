@@ -1,7 +1,7 @@
 using Test
 import UUIDs
-import PlutoSpace: PlutoRunner, Notebook, WorkspaceManager, Cell, ServerSession, ClientSession, update_run!
-using PlutoSpace.WorkspaceManager: poll
+import SpaceStation: PlutoRunner, Notebook, WorkspaceManager, Cell, ServerSession, ClientSession, update_run!
+using SpaceStation.WorkspaceManager: poll
 
 @testset "Logging" begin
     🍭 = ServerSession()

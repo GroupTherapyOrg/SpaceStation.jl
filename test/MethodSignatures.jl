@@ -1,6 +1,6 @@
 using Test
 
-import PlutoSpace.ExpressionExplorer: compute_symbolreferences
+import SpaceStation.ExpressionExplorer: compute_symbolreferences
 
 @testset "Method signatures" begin
 

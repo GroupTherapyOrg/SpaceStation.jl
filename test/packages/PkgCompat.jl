@@ -1,6 +1,6 @@
-import PlutoSpace.PkgCompat
-import PlutoSpace as Pluto
-import PlutoSpace: update_save_run!, update_run!, WorkspaceManager, ClientSession, ServerSession, Notebook, Cell, project_relative_path, SessionActions, load_notebook
+import SpaceStation.PkgCompat
+import SpaceStation as Pluto
+import SpaceStation: update_save_run!, update_run!, WorkspaceManager, ClientSession, ServerSession, Notebook, Cell, project_relative_path, SessionActions, load_notebook
 using Test
 import Pkg
 import TOML

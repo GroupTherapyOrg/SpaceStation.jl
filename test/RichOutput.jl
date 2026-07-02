@@ -1,6 +1,6 @@
 using Test
-import PlutoSpace as Pluto
-import PlutoSpace: update_run!, WorkspaceManager, ClientSession, ServerSession, Notebook, Cell
+import SpaceStation as Pluto
+import SpaceStation: update_run!, WorkspaceManager, ClientSession, ServerSession, Notebook, Cell
 
 
 function withref(f::Function, ref::Ref, x)
