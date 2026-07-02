@@ -505,7 +505,8 @@ function register_collab_api!(router, session::ServerSession)
         port isa Integer && try
             write_collab_registry_file(session, port)
         catch end
-        # opt-in: seed the newly-opened workspace's AGENTS.md/CLAUDE.md collab section
+        # seed the newly-opened workspace's AGENTS.md/CLAUDE.md collab section (on by default;
+        # PLUTOSPACE_AGENTS_MD=0 / --no-agents-md opts out)
         try
             maybe_write_agents_md(session)
         catch end

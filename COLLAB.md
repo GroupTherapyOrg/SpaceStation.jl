@@ -120,8 +120,10 @@ done
 
 ### AGENTS.md stanza
 
-Drop this in any notebook repo so agents discover the workflow (works for Claude Code's
-CLAUDE.md too):
+**SpaceStation writes this automatically.** When you open a folder as a workspace, its `AGENTS.md`
+and `CLAUDE.md` get a managed collab block (a single marked region, updated idempotently — the rest
+of each file is untouched). Opt out with `spacestation --no-agents-md` or `PLUTOSPACE_AGENTS_MD=0`.
+Or drop the stanza in by hand (works for Claude Code's CLAUDE.md too):
 
 ```markdown
 ## Pluto notebooks (live collaborative sessions)

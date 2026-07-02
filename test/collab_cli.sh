@@ -51,10 +51,12 @@ EOF
 }
 
 write_nb V1
+# distributed=true (a real Malt worker) so interrupt/restart are exercised realistically; the
+# first run pays a one-time worker precompile.
 julia --project="$REPO" -e "
     import SpaceStation
     SpaceStation.run(port=$PORT, launch_browser=false, require_secret_for_open_links=true,
-                     on_code_change=\"lazy\", workspace_use_distributed=false, notebook=\"$NB\")" >>"$LOG" 2>&1 &
+                     on_code_change=\"lazy\", workspace_use_distributed=true, notebook=\"$NB\")" >>"$LOG" 2>&1 &
 SPID=$!
 
 echo "--- waiting for the server to open the notebook"
@@ -86,6 +88,38 @@ collab run "$NB" --stale >/dev/null 2>&1; rc=$?
 assert_rc "collab run --stale after edit exited 0" 0 "$rc"
 [ "$(cat "$MARK")" = V2 ] && pass "V2 executed (the new code ran)" || fail "V2 executed"
 assert_lacks "nothing STALE after running" "STALE" fast_status
+
+echo "--- 5. restart re-runs the whole notebook (exit 0, cell re-executed)"
+rm -f "$MARK"
+collab restart "$NB" >/dev/null 2>&1; rc=$?
+assert_rc "collab restart exited 0" 0 "$rc"
+[ -f "$MARK" ] && [ "$(cat "$MARK")" = V2 ] && pass "restart re-executed the cell (marker rewritten)" || fail "restart re-executed the cell"
+
+echo "--- 6. interrupt stops a long run early"
+cat > "$WORKDIR/nb.tmp" <<EOF
+### A Pluto.jl notebook ###
+# v0.20.21
+
+# ╔═╡ 11111111-1111-1111-1111-111111111111
+begin
+    sleep(25)
+    tag = "slept"
+end
+
+# ╔═╡ Cell order:
+# ╠═11111111-1111-1111-1111-111111111111
+EOF
+mv "$WORKDIR/nb.tmp" "$NB"   # edit → the cell goes stale
+start=$(date +%s)
+collab run "$NB" --stale >/dev/null 2>&1 &   # background: blocks until done OR interrupted
+RUNPID=$!
+sleep 7                                        # let the run boot + the cell enter its sleep
+collab interrupt "$NB" >/dev/null 2>&1
+wait $RUNPID 2>/dev/null
+elapsed=$(( $(date +%s) - start ))
+# Interrupted: the run returns before the 25s sleep can finish. Un-interrupted would be
+# (CLI boot ~2s) + 25s ≈ 27s+, so anything comfortably under 25 means the cell was cut short.
+[ "$elapsed" -lt 24 ] && pass "interrupt stopped the run early (${elapsed}s < 25s sleep)" || fail "interrupt did not stop the run (took ${elapsed}s)"
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"

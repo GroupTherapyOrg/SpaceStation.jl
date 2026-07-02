@@ -8,8 +8,9 @@
 #  2. CONNECTION. The integrated terminal exports PLUTOSPACE_PORT / PLUTOSPACE_SECRET /
 #     PLUTOSPACE_WORKSPACE, so a tool targets THIS live server with zero discovery (and no
 #     ambiguity when several servers run).
-#  3. UNDERSTANDING (opt-in, PLUTOSPACE_AGENTS_MD=1). Drop a managed collab section into the
-#     workspace's AGENTS.md and CLAUDE.md — the file conventions coding agents already read.
+#  3. UNDERSTANDING (on by default; opt out with PLUTOSPACE_AGENTS_MD=0 or --no-agents-md). Drop a
+#     managed collab section into the workspace's AGENTS.md and CLAUDE.md — the file conventions
+#     coding agents already read. Idempotent (only its own marked block is touched).
 ###
 
 # The pluto-collab script, embedded at precompile so it ships even when installed purely as an app.
@@ -147,9 +148,15 @@ function ensure_agents_md(dir::AbstractString; files=("AGENTS.md", "CLAUDE.md"))
     end
 end
 
-"If opted in (`PLUTOSPACE_AGENTS_MD` truthy) and a workspace is open, refresh its AGENTS.md/CLAUDE.md collab section."
+"""
+When a folder workspace is open, refresh its AGENTS.md/CLAUDE.md collab section so any coding agent
+discovers the pluto-collab workflow. **On by default** — the managed block is idempotent and only
+touches its own marked region, so it's safe to (re)write on every open. Opt out with
+`PLUTOSPACE_AGENTS_MD=0` (also `false`/`no`/`off`) or the `--no-agents-md` flag. Only runs for a
+folder workspace (never for a single-notebook or launcher session — there's no project root to seed).
+"""
 function maybe_write_agents_md(session)
-    lowercase(strip(get(ENV, "PLUTOSPACE_AGENTS_MD", ""))) in ("1", "true", "yes", "on") || return
+    lowercase(strip(get(ENV, "PLUTOSPACE_AGENTS_MD", "1"))) in ("0", "false", "no", "off") && return
     dir = session.options.server.workspace_folder
     dir === nothing && return
     ensure_agents_md(tamepath(dir))

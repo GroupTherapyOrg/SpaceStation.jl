@@ -30,8 +30,8 @@ function (@main)(args)
           spacestation --port <n>         pick a port
           spacestation --autorun          classic Pluto reactivity (default is lazy/collab mode)
           spacestation --no-browser       don't open the browser
-          spacestation --agents-md        seed the workspace's AGENTS.md/CLAUDE.md so coding agents
-                                       discover the pluto-collab workflow (managed, idempotent block)
+          spacestation --no-agents-md     do NOT seed the workspace's AGENTS.md/CLAUDE.md (seeding
+                                       the managed, idempotent collab block is ON by default)
           spacestation collab <cmd> …     talk to a live session from any terminal (status / run
                                        --stale / output / figure / …); cross-platform, no bash needed.
                                        See: spacestation collab help
@@ -66,6 +66,8 @@ function (@main)(args)
             launch_browser = false
         elseif a == "--agents-md"
             ENV["PLUTOSPACE_AGENTS_MD"] = "1"
+        elseif a == "--no-agents-md"
+            ENV["PLUTOSPACE_AGENTS_MD"] = "0"
         elseif startswith(a, "-")
             println("unknown option: $a (see --help)")
             return 1
