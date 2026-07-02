@@ -14,7 +14,7 @@ a real terminal, point-and-click SSH remotes, outputs that survive restarts, and
 
 <br>
 
-<img src="assets/pspace-plotnb-dark.png" width="900" alt="The SpaceStation workspace: file-tree sidebar, tabbed notebooks, table of contents, and a WasmMakie plot rendered inline">
+<img src="assets/screenshots/hero-slider-dark.png" width="920" alt="SpaceStation: a PlutoUI slider driving a live WasmMakie plot (sin at the slider's frequency) rendered to a browser canvas, with the workspace file tree and table of contents">
 
 </div>
 
@@ -64,7 +64,7 @@ workspaces, a filesystem browser, and (if you have SSH hosts) one-click remotes.
 and its file tree becomes your sidebar — notebooks and files open as tabs beside it.
 
 <div align="center">
-<img src="assets/pspace-work-light.png" width="820" alt="The SpaceStation workspace opener: recent workspaces, a folder browser, and SSH remotes">
+<img src="assets/screenshots/opener-dark.png" width="720" alt="The SpaceStation workspace opener: a folder browser to open any directory as a workspace, plus a list of SSH remote hosts below">
 </div>
 
 ---
@@ -76,7 +76,7 @@ files open in tabs too, edited with the same CodeMirror — including the per-no
 `*.pluto-cache.toml` sidecar, which is just readable TOML. Add and delete files right from the tree.
 
 <div align="center">
-<img src="assets/pspace-tab-files-dark.png" width="900" alt="Several tabs open in SpaceStation, including a notebook's .pluto-cache.toml sidecar shown as plain-text TOML">
+<img src="assets/screenshots/plots-line-dark.png" width="900" alt="A notebook open as a tab in SpaceStation, with the file-tree sidebar, a WasmMakie plot rendered inline, and a table of contents">
 </div>
 
 ---
@@ -90,7 +90,7 @@ exports `PLUTOSPACE_PORT`/`PLUTOSPACE_SECRET` and puts `pluto-collab` on `PATH`,
 launched here just works.
 
 <div align="center">
-<img src="assets/pspace-terminal-dark.png" width="880" alt="The integrated terminal docked to the right of the editor, showing the SpaceStation session banner and a shell prompt">
+<img src="assets/screenshots/terminal-dark.png" width="900" alt="The integrated terminal docked at the bottom of the editor, showing the SpaceStation live-session banner and a shell prompt in the workspace directory">
 </div>
 
 ---
@@ -103,7 +103,7 @@ remote; after that it reconnects instantly. The VS Code Remote-SSH model, with z
 your SSH setup.
 
 <div align="center">
-<img src="assets/pspace-ssh-light.png" width="560" alt="Connecting to a remote host over SSH from the SpaceStation workspace opener">
+<img src="assets/screenshots/ssh-remotes-dark.png" width="640" alt="The SSH remotes list in the SpaceStation opener — click a host to run the whole workspace (files, kernels, terminal) on that machine over an SSH tunnel">
 </div>
 
 ---
@@ -118,7 +118,7 @@ same kernel, same state. The agent edits the `.jl` with its normal file tools; t
 those cells go **amber within a second**, then runs them. No MCP, no plugins — just a small CLI, [`pluto-collab`](bin/pluto-collab).
 
 <div align="center">
-<img src="assets/pspace-lazy-edits-dark.png" width="920" alt="Split view: a coding agent (Claude Code) editing the notebook on the right while SpaceStation shows the affected cells go stale on the left">
+<img src="assets/screenshots/lazy-stale-dark.png" width="920" alt="Lazy mode in SpaceStation: after an edit to the report cell, only it and its dependent turn amber (stale) while the expensive samples and smoothed cells stay green — two notebook tabs and the integrated terminal are open">
 </div>
 
 The agent surface is deliberately **two-tiered** — editing and executing are separate steps:
