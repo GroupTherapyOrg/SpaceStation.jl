@@ -64,7 +64,7 @@ workspaces, a filesystem browser, and (if you have SSH hosts) one-click remotes.
 and its file tree becomes your sidebar — notebooks and files open as tabs beside it.
 
 <div align="center">
-<img src="assets/screenshots/opener-dark.png" width="720" alt="The SpaceStation workspace opener: a folder browser to open any directory as a workspace, plus a list of SSH remote hosts below">
+<img src="assets/screenshots/opener-light.png" width="720" alt="The SpaceStation workspace opener (light theme): a folder browser to open any directory as a workspace, plus a list of SSH remote hosts below">
 </div>
 
 ---
@@ -103,7 +103,7 @@ remote; after that it reconnects instantly. The VS Code Remote-SSH model, with z
 your SSH setup.
 
 <div align="center">
-<img src="assets/screenshots/ssh-remotes-dark.png" width="640" alt="The SSH remotes list in the SpaceStation opener — click a host to run the whole workspace (files, kernels, terminal) on that machine over an SSH tunnel">
+<img src="assets/screenshots/ssh-remotes-light.png" width="640" alt="The SSH remotes list in the SpaceStation opener (light theme) — click a host to run the whole workspace (files, kernels, terminal) on that machine over an SSH tunnel">
 </div>
 
 ---
@@ -174,8 +174,8 @@ everything on open or shows nothing.
 
 <table>
 <tr>
-<td width="50%"><img src="assets/pspace-sidebar-cache-dark.png" alt="Reopened with the .pluto-cache.toml sidecars in the tree: all outputs restored"></td>
-<td width="50%"><img src="assets/pspace-sidebar-nocache-dark.png" alt="Reopened with no sidecars: every cell shows Code not executed"></td>
+<td width="50%"><img src="assets/screenshots/cache-with-dark.png" alt="A notebook reopened WITH its .pluto-cache.toml sidecar: every output restored instantly, no recompute"></td>
+<td width="50%"><img src="assets/screenshots/cache-without-dark.png" alt="The same notebook reopened WITHOUT its sidecar: every cell shows 'Code not executed' — vanilla Pluto has no output persistence"></td>
 </tr>
 <tr>
 <td align="center"><em><strong>With</strong> the sidecars → outputs restored on open</em></td>
