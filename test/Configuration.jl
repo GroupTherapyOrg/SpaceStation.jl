@@ -1,7 +1,7 @@
 using HTTP
 using Test
 using SpaceStation; import SpaceStation as Pluto
-using SpaceStation; import SpaceStation as Pluto: ServerSession, ClientSession, SessionActions
+import SpaceStation: ServerSession, ClientSession, SessionActions
 using SpaceStation.Configuration
 using SpaceStation.Configuration: notebook_path_suggestion, from_flat_kwargs, _convert_to_flags
 using SpaceStation.WorkspaceManager: poll

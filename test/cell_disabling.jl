@@ -1,6 +1,6 @@
 using Test
 using SpaceStation; import SpaceStation as Pluto
-using SpaceStation; import SpaceStation as Pluto: update_run!, ServerSession, ClientSession, Cell, Notebook, set_disabled, is_disabled, WorkspaceManager
+import SpaceStation: update_run!, ServerSession, ClientSession, Cell, Notebook, set_disabled, is_disabled, WorkspaceManager
 
 
 
