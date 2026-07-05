@@ -3,12 +3,19 @@
     "bootstrap-sha": "a15e8bdfb6a8bb4cb96b18e1b5c528282af03db2",
     "packages": {
         ".": {
-            "release-type": "julia",
+            "release-type": "simple",
             "changelog-path": "CHANGELOG.md",
             "include-v-in-tag": true,
             "include-component-in-tag": false,
             "draft": false,
-            "prerelease": false
+            "prerelease": false,
+            "extra-files": [
+                {
+                    "type": "toml",
+                    "path": "Project.toml",
+                    "jsonpath": "$.version"
+                }
+            ]
         }
     }
 }
