@@ -1,0 +1,14 @@
+{
+    "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+    "bootstrap-sha": "a15e8bdfb6a8bb4cb96b18e1b5c528282af03db2",
+    "packages": {
+        ".": {
+            "release-type": "julia",
+            "changelog-path": "CHANGELOG.md",
+            "include-v-in-tag": true,
+            "include-component-in-tag": false,
+            "draft": false,
+            "prerelease": false
+        }
+    }
+}
