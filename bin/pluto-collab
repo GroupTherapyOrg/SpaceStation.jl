@@ -53,6 +53,17 @@ abs_path() {
     fi
 }
 
+# curl with the access secret injected through a config file on stdin — NEVER in argv, where any
+# co-tenant on a shared machine (the HPC clusters the connection files target) could read it out of
+# `ps` for the duration of a request. With -G the config's `data` entry becomes a query parameter,
+# exactly like the old `-d secret=…`.
+curl_with_secret() { # curl_with_secret <secret> <curl args…>
+    _cws_secret=$1; shift
+    curl --config - "$@" <<EOF
+data = "secret=$_cws_secret"
+EOF
+}
+
 # iterate live servers; prints "port<TAB>host<TAB>secret" per line.
 # Globs all "*.json" so it sees both node-tagged "<host>-<port>.json" and bare "<port>.json" (a server on
 # the published code). On a shared $HOME (an HPC cluster) the dir also holds OTHER nodes' files, where a
@@ -87,8 +98,8 @@ find_server_for() {
     # Target THAT server directly — instant, and unambiguous when several servers are running.
     if [ -n "${PLUTOSPACE_PORT:-}" ] && [ -n "${PLUTOSPACE_SECRET:-}" ]; then
         base="http://127.0.0.1:$PLUTOSPACE_PORT"
-        if curl -sf --connect-timeout 3 -G -o /dev/null \
-            --data-urlencode "path=$nb_path" -d "format=text" -d "secret=$PLUTOSPACE_SECRET" \
+        if curl_with_secret "$PLUTOSPACE_SECRET" -sf --connect-timeout 3 -G -o /dev/null \
+            --data-urlencode "path=$nb_path" -d "format=text" \
             "$base/api/v1/notebook" 2>/dev/null; then
             printf '%s\t%s\n' "$base" "$PLUTOSPACE_SECRET"
             return 0
@@ -96,8 +107,8 @@ find_server_for() {
     fi
     while IFS="$(printf '\t')" read -r port host secret; do
         base="http://$host:$port"
-        if curl -sf --connect-timeout 3 -G -o /dev/null \
-            --data-urlencode "path=$nb_path" -d "format=text" -d "secret=$secret" \
+        if curl_with_secret "$secret" -sf --connect-timeout 3 -G -o /dev/null \
+            --data-urlencode "path=$nb_path" -d "format=text" \
             "$base/api/v1/notebook" 2>/dev/null; then
             printf '%s\t%s\n' "$base" "$secret"
             return 0
@@ -123,14 +134,18 @@ cmd=${1:-help}
 case "$cmd" in
     servers)
         live_servers | while IFS="$(printf '\t')" read -r port host secret; do
-            echo "http://$host:$port"
+            # probe /ping (unauthenticated): a passing `kill -0` only proves SOME process has that
+            # pid — after a reboot or pid reuse the port may hold nothing, or something else entirely
+            curl -sf --connect-timeout 2 -o /dev/null "http://$host:$port/ping" 2>/dev/null &&
+                echo "http://$host:$port"
         done
         ;;
 
     notebooks)
         live_servers | while IFS="$(printf '\t')" read -r port host secret; do
             echo "# http://$host:$port"
-            curl -sf --connect-timeout 3 "http://$host:$port/api/v1/notebooks?format=text&secret=$secret" 2>/dev/null || true
+            curl_with_secret "$secret" -sf --connect-timeout 3 -G -d "format=text" \
+                "http://$host:$port/api/v1/notebooks" 2>/dev/null || true
         done
         ;;
 
@@ -138,7 +153,7 @@ case "$cmd" in
         [ $# -ge 2 ] || { err "usage: pluto-collab status <notebook.jl> [--json]"; exit 2; }
         require_server "$2"
         fmt=text; [ "${3:-}" = "--json" ] && fmt=json
-        curl -sf -G --data-urlencode "path=$NB_PATH" -d "format=$fmt" -d "secret=$SECRET" \
+        curl_with_secret "$SECRET" -sf -G --data-urlencode "path=$NB_PATH" -d "format=$fmt" \
             "$BASE/api/v1/notebook" || { err "request failed"; exit 2; }
         ;;
 
@@ -156,7 +171,7 @@ case "$cmd" in
             shift
         done
         [ -n "$cell" ] || { err "specify --cell <id>"; exit 2; }
-        curl -sf -G --data-urlencode "path=$NB_PATH" -d "cell=$cell" -d "format=$fmt" -d "secret=$SECRET" \
+        curl_with_secret "$SECRET" -sf -G --data-urlencode "path=$NB_PATH" -d "cell=$cell" -d "format=$fmt" \
             "$BASE/api/v1/notebook/cell" || { err "request failed"; exit 2; }
         ;;
 
@@ -175,8 +190,8 @@ case "$cmd" in
         done
         [ -n "$cell" ] || { err "specify --cell <id>"; exit 2; }
         hdr=$(mktemp); tmp=$(mktemp)
-        code=$(curl -s -G -D "$hdr" -o "$tmp" -w '%{http_code}' \
-            --data-urlencode "path=$NB_PATH" -d "cell=$cell" -d "secret=$SECRET" \
+        code=$(curl_with_secret "$SECRET" -s -G -D "$hdr" -o "$tmp" -w '%{http_code}' \
+            --data-urlencode "path=$NB_PATH" -d "cell=$cell" \
             "$BASE/api/v1/notebook/figure")
         if [ "$code" != "200" ]; then
             cat "$tmp" >&2          # server's text error (not an image / no such cell)
@@ -215,8 +230,8 @@ case "$cmd" in
             err "specify --stale or --cell <id>"; exit 2
         fi
         response_headers=$(mktemp)
-        curl -sf -X POST -G -D "$response_headers" \
-            --data-urlencode "path=$NB_PATH" -d "$query" -d "format=$fmt" -d "secret=$SECRET" \
+        curl_with_secret "$SECRET" -sf -X POST -G -D "$response_headers" \
+            --data-urlencode "path=$NB_PATH" -d "$query" -d "format=$fmt" \
             "$BASE/api/v1/notebook/run" \
             || { rm -f "$response_headers"; err "request failed"; exit 2; }
         errored=$(sed -n 's/^[Xx]-[Pp]luto-[Cc]ells-[Ee]rrored: *\([0-9]*\).*/\1/p' "$response_headers")
@@ -228,7 +243,7 @@ case "$cmd" in
     interrupt)
         [ $# -ge 2 ] || { err "usage: pluto-collab interrupt <notebook.jl>"; exit 2; }
         require_server "$2"
-        curl -sf -X POST -G --data-urlencode "path=$NB_PATH" -d "format=text" -d "secret=$SECRET" \
+        curl_with_secret "$SECRET" -sf -X POST -G --data-urlencode "path=$NB_PATH" -d "format=text" \
             "$BASE/api/v1/notebook/interrupt" || { err "request failed"; exit 2; }
         ;;
 
@@ -239,8 +254,8 @@ case "$cmd" in
         # No --max-time: a restart re-runs the whole notebook and the request blocks until it finishes
         # (same contract as `run`). The body (per-cell states + RESULT line) is printed to stdout.
         response_headers=$(mktemp)
-        curl -sf -X POST -G -D "$response_headers" \
-            --data-urlencode "path=$NB_PATH" -d "format=$fmt" -d "secret=$SECRET" \
+        curl_with_secret "$SECRET" -sf -X POST -G -D "$response_headers" \
+            --data-urlencode "path=$NB_PATH" -d "format=$fmt" \
             "$BASE/api/v1/notebook/restart" \
             || { rm -f "$response_headers"; err "request failed"; exit 2; }
         errored=$(sed -n 's/^[Xx]-[Pp]luto-[Cc]ells-[Ee]rrored: *\([0-9]*\).*/\1/p' "$response_headers")

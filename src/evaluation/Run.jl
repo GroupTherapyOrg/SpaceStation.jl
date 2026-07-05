@@ -19,6 +19,10 @@ function run_reactive!(
     bond_value_pairs=zip(Symbol[],Any[]),
 )::TopologicalOrder
     topological_order = withtoken(notebook.executetoken) do
+        # An interrupt request that raced the *end* of the previous run (its flag was set after the
+        # last cell finished but before that run could consume it) must not skip every cell of this
+        # one. Anything set from here on is meant for us.
+        notebook.wants_to_interrupt = false
         run_reactive_core!(
             session,
             notebook,
@@ -126,7 +130,7 @@ function run_reactive_core!(
         cell.queued = false
 		cell.depends_on_disabled_cells = false
         relay_reactivity_error!(cell, error)
-        record_execution_key!(cell)
+        record_execution_key!(cell, haskey(new_topology.codes, cell) ? new_topology.codes[cell].code : cell.code)
     end
 
 	# Save the notebook. In most cases, this is the only time that we save the notebook, so any state changes that influence the file contents (like `depends_on_disabled_cells`) should be behind this point. (More saves might happen if a macro expansion or package using happens.)
@@ -208,7 +212,10 @@ function run_reactive_core!(
         end
 
         cell.running = false
-        record_execution_key!(cell)
+        # Key the output to the code that actually RAN (the topology snapshot) — not cell.code,
+        # which a concurrent file sync may have swapped mid-run. Keying to the new code would
+        # falsely mark the never-run edit as fresh.
+        record_execution_key!(cell, new_topology.codes[cell].code)
 		Status.report_business_finished!(cell_status, Symbol(i), !skip && !run.errored)
 
         defined_macros_in_cell = defined_macros(new_topology, cell) |> Set{Symbol}
@@ -355,8 +362,12 @@ function set_output!(cell::Cell, run, expr_cache::ExprAnalysisCache; persist_js_
 	cell.errored = run.errored
 	cell.output_text = String(get(run, :text_repr, ""))
 	cell.running = cell.queued = false
-	# the output now reflects the current code, and the cell's variables now exist in this workspace
-	cell.stale = false
+	# The output now reflects the code that RAN, and the cell's variables now exist in this
+	# workspace. If a concurrent file sync swapped in new code mid-run (external tools mutate
+	# cell.code any time), that new code has NOT run — its stale mark must survive this run.
+	if cell.code == expr_cache.code
+		cell.stale = false
+	end
 	cell.workspace_cold = false
 end
 
@@ -437,16 +448,24 @@ function immediate_upstream_cells(cell::Cell)::Vector{Cell}
 	result
 end
 
-"The execution key of a cell as of right now: its own code combined with the result hashes of its immediate upstream cells."
-function current_execution_key(cell::Cell)::UInt64
+"The execution key of a cell for the given `code`: that code combined with the result hashes of the cell's immediate upstream cells."
+function execution_key(cell::Cell, code::AbstractString)::UInt64
 	upstream_hashes = sort!(UInt64[u.result_hash for u in immediate_upstream_cells(cell)])
-	hash((strip(cell.code), upstream_hashes))
+	hash((strip(code), upstream_hashes))
 end
 
-"Record that this cell's displayed output was produced by its current code and upstream results."
-function record_execution_key!(cell::Cell)
+"The execution key of a cell as of right now: its own code combined with the result hashes of its immediate upstream cells."
+current_execution_key(cell::Cell)::UInt64 = execution_key(cell, cell.code)
+
+"""
+Record that this cell's displayed output was produced by `code` and the current upstream results.
+Callers in the run loop pass the code from the topology snapshot that actually executed — NOT
+`cell.code`, which a concurrent file sync can swap mid-run (keying the old output to the new code
+would falsely verify the never-run edit as fresh).
+"""
+function record_execution_key!(cell::Cell, code::AbstractString=cell.code)
 	cell.result_hash = compute_result_hash(cell)
-	cell.execution_key_produced = current_execution_key(cell)
+	cell.execution_key_produced = execution_key(cell, code)
 end
 
 """
@@ -592,6 +611,9 @@ function update_save_run!(
 
 	maybe_async(run_async) do
         topological_order = withtoken(notebook.executetoken) do
+			# see run_reactive!: a leftover interrupt flag from a request that raced the end of the
+			# previous run must not skip every cell of this one
+			notebook.wants_to_interrupt = false
 			run_code = !(
 				isempty(to_run_online) && 
 				session.options.evaluation.lazy_workspace_creation
@@ -704,21 +726,30 @@ Read the notebook file at `notebook.path`, and compare the read result with the 
 
 Returns `false` if the file could not be parsed, `true` otherwise.
 """
-function update_from_file(session::ServerSession, notebook::Notebook; kwargs...)::Bool
+function update_from_file(session::ServerSession, notebook::Notebook; allow_destructive::Bool=true, kwargs...)::Bool
 	include_nbpg = !session.options.server.auto_reload_from_file_ignore_pkg
-	
+
 	just_loaded = try
 		load_notebook_nobackup(notebook.path)
 	catch e
 		@error "Skipping hot reload because loading the file went wrong" exception=(e,catch_backtrace())
 		return false
 	end::Notebook
-	
+
 	d = notebook_differences(notebook, just_loaded)
-	
+
 	added = d.added
 	removed = d.removed
 	changed = d.changed
+
+	# Read-only callers (the status endpoint) must never take the destructive path: cell removals
+	# fall through lazy mode into a real reactive run (deleting workspace variables) that also
+	# SAVES — and a removal diff can even be an artifact of reading the file mid-write. Defer to
+	# the next watcher/run sync, which debounces and is allowed to apply removals.
+	if !allow_destructive && !isempty(removed)
+		@debug "Read-only sync: the file has removed cells; leaving them for the watcher/run sync" length(removed)
+		return true
+	end
 	
 	# @show added removed changed
 	
@@ -752,7 +783,7 @@ function update_from_file(session::ServerSession, notebook::Notebook; kwargs...)
 	notebook.cell_order = just_loaded.cell_order
 	notebook.metadata = just_loaded.metadata
 
-	if include_nbpg && nbpkg_changed
+	if include_nbpg && nbpkg_changed && allow_destructive
 		@info "nbpkgs not equal" (notebook.nbpkg_ctx isa Nothing) (just_loaded.nbpkg_ctx isa Nothing)
 		
 		if (notebook.nbpkg_ctx isa Nothing) != (just_loaded.nbpkg_ctx isa Nothing)

@@ -72,18 +72,23 @@ file is born 0o600 (umask only clears bits, and 0o600 has none to clear). libuv 
 open flags across platforms; on Windows the mode maps to owner read/write (best effort).
 """
 function _write_private_file(path::String, contents::AbstractString)
-    # Remove any stale file first: open() applies the create mode only when it actually creates
-    # the file, so an existing wider-permission file would keep its old mode.
-    try
-        isfile(path) && rm(path; force=true)
-    catch
-    end
+    # Write a sibling temp file (born 0o600), then rename over the target: readers (discovering
+    # CLIs, possibly over NFS on the shared-$HOME clusters this targets) never see a partial or
+    # momentarily-absent file, and the rename replaces any stale wider-permission file whole.
+    tmp = path * "." * string(rand(UInt32), base=16) * ".tmp"
     flags = Base.Filesystem.JL_O_WRONLY | Base.Filesystem.JL_O_CREAT | Base.Filesystem.JL_O_TRUNC
-    f = Base.Filesystem.open(path, flags, 0o600)
+    f = Base.Filesystem.open(tmp, flags, 0o600)
     try
         write(f, contents)
-    finally
         close(f)
+        try
+            Base.Filesystem.rename(tmp, path)
+        catch
+            mv(tmp, path; force=true)
+        end
+    finally
+        isopen(f) && close(f)
+        isfile(tmp) && try rm(tmp) catch end
     end
     path
 end
@@ -215,6 +220,18 @@ function _git_workspace_info(dir::String)::Union{Vector{Pair},Nothing}
     Pair["branch" => branch, "detached" => detached]
 end
 
+# Serialize the API run path per notebook. Two concurrent `run --stale` requests would otherwise
+# both snapshot the same stale set before either executes; the loser of the execute-token race then
+# re-runs cells that are no longer stale — side effects fire twice and both report success. Holding
+# this lock across sync → stale-set computation → run means the second caller computes staleness
+# only after the first finished. (Browser runs don't take it — vanilla semantics — and `interrupt`
+# stays lock-free so a stuck run can always be cancelled.)
+const _API_RUN_LOCKS = Dict{UUID,ReentrantLock}()
+const _API_RUN_LOCKS_LOCK = ReentrantLock()
+_api_run_lock(notebook::Notebook) = lock(_API_RUN_LOCKS_LOCK) do
+    get!(ReentrantLock, _API_RUN_LOCKS, notebook.notebook_id)
+end
+
 # --- the API routes ---
 
 function _api_cell_pairs(cell::Cell)::Vector{Pair}
@@ -324,9 +341,12 @@ function register_collab_api!(router, session::ServerSession)
         # the agent flow deterministic: edit the .jl, then `status` immediately shows the right cells
         # STALE. save=false keeps it read-only (no .jl rewrite); in lazy mode a sync only marks stale,
         # never runs — the two-tier "edit stages, run applies" contract is preserved exactly.
+        # allow_destructive=false: cell REMOVALS are left to the watcher/run syncs — on this
+        # undebounced read they may be an artifact of catching the file mid-write, and applying
+        # them escalates to a variable-deleting run that saves. Status must stay read-only.
         if !isempty(notebook.path) && isfile(notebook.path)
             try
-                synced_update_from_file(session, notebook; save=false, run_async=false)
+                synced_update_from_file(session, notebook; save=false, run_async=false, allow_destructive=false)
             catch e
                 @warn "notebook status: syncing from file before reporting failed" exception = (e, catch_backtrace())
             end
@@ -406,6 +426,7 @@ function register_collab_api!(router, session::ServerSession)
         fmt_text = _api_wants_text(query)
         notebook = _api_notebook_from_query(session, query)
         notebook === nothing && return _api_error(404, "notebook not found — is it open in this server? (pass ?path=/abs/path.jl or ?id=<uuid>)", fmt_text)
+        lock(_api_run_lock(notebook)) do
 
         # Sync from disk BEFORE deciding what is stale and running. The documented agent workflow is
         # "edit the .jl, then `pluto-collab run --stale`" — but the background file watcher only syncs
@@ -475,6 +496,8 @@ function register_collab_api!(router, session::ServerSession)
             ])
             HTTP.Response(200, headers, body * "\n")
         end
+
+        end # lock(_api_run_lock(notebook))
     end
     HTTP.register!(router, "POST", "/api/v1/notebook/run", serve_api_run)
 
@@ -596,8 +619,9 @@ function register_collab_api!(router, session::ServerSession)
         path = tamepath(query["path"])
         isdir(dirname(path)) || return _api_error(400, "no such directory: $(dirname(path))", false)
         try
-            # atomic, like the notebook save path
-            tmp = path * ".spacestation_tmp"
+            # atomic, like the notebook save path; unique tmp so concurrent saves of the same
+            # path can't interleave writes into one temp file
+            tmp = path * ".spacestation_tmp." * string(rand(UInt32), base=16)
             write(tmp, request.body)
             mv(tmp, path; force=true)
         catch e
@@ -676,7 +700,8 @@ function register_collab_api!(router, session::ServerSession)
         notebook === nothing && return _api_error(404, "notebook not found — is it open in this server? (pass ?path=/abs/path.jl or ?id=<uuid>)", fmt_text)
 
         # same execution path as the browser's restart; synchronous so the HTTP call blocks until the re-run finishes
-        restart_notebook_process!(session, notebook; run_async=false)
+        restart_notebook_process!(session, notebook; run_async=false) ||
+            return _api_error(409, "a restart is already in progress — wait for it and check `status`", fmt_text)
 
         n_errored = count(c -> c.errored, notebook.cells)
         headers = [

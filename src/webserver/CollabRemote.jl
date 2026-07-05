@@ -423,6 +423,10 @@ function close_all_remote_tunnels()
                 process_exited(t) || kill(t)
             catch
             end
+            # Drop the tunnel's local connection file: its recorded pid is OURS (the hub's), so
+            # the CLIs' `kill -0` liveness check would keep trusting the file long after the
+            # tunnel port went dead — a phantom server that slows every discovery.
+            r.local_port > 0 && remove_collab_registry_file(r.local_port)
         end
     end
 end
@@ -462,6 +466,8 @@ function cancel_remote_session!(host::String)
             process_exited(t) || kill(t)
         catch
         end
+        # see close_all_remote_tunnels: the tunnel's connection file outlives its dead port otherwise
+        r.local_port > 0 && remove_collab_registry_file(r.local_port)
     end
     lock(REMOTE_SESSIONS_LOCK) do
         delete!(REMOTE_SESSIONS, host)
