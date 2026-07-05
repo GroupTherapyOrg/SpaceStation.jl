@@ -1,0 +1,59 @@
+# Automates releases to the Julia General registry.
+#
+# On every push to main, release-please maintains a "release PR" that bumps the
+# version in Project.toml and updates CHANGELOG.md based on Conventional Commits
+# (feat:, fix:, feat!: ...). Merging that PR creates the git tag + GitHub release,
+# and the `register` job then asks JuliaRegistrator to register the new version
+# in JuliaRegistries/General.
+#
+# This replaces the upstream TagBot.yml flow (Registrator first, tag after);
+# here the tag/release comes first and registration follows automatically.
+#
+# See https://discourse.julialang.org/t/release-please-a-tool-for-multi-package-multi-language-releases/116450
+
+name: Release Please
+
+on:
+    push:
+        branches:
+            - main
+    workflow_dispatch:
+
+permissions:
+    contents: write
+    pull-requests: write
+
+jobs:
+    release-please:
+        runs-on: ubuntu-latest
+        outputs:
+            release_created: ${{ steps.release.outputs.release_created }}
+            tag_name: ${{ steps.release.outputs.tag_name }}
+            sha: ${{ steps.release.outputs.sha }}
+        steps:
+            - uses: googleapis/release-please-action@v4
+              id: release
+              with:
+                  # Prefer the PAT so CI runs on the release PR and downstream
+                  # workflows can be triggered by the release event.
+                  # (Events created with GITHUB_TOKEN don't trigger other workflows.)
+                  token: ${{ secrets.PAT_TOKEN || github.token }}
+                  config-file: release-please-config.json
+                  manifest-file: .release-please-manifest.json
+
+    register:
+        name: Register in JuliaRegistries/General
+        needs: release-please
+        if: ${{ needs.release-please.outputs.release_created == 'true' }}
+        runs-on: ubuntu-latest
+        steps:
+            # JuliaRegistrator listens for this comment on the release commit.
+            # Registration in General is then picked up by AutoMerge (~15-20 min).
+            - uses: peter-evans/commit-comment@v3
+              with:
+                  token: ${{ secrets.PAT_TOKEN || github.token }}
+                  sha: ${{ needs.release-please.outputs.sha }}
+                  body: |
+                      @JuliaRegistrator register
+
+                      Release notes: https://github.com/${{ github.repository }}/releases/tag/${{ needs.release-please.outputs.tag_name }}

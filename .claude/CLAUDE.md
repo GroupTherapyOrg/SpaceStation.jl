@@ -22,6 +22,14 @@ Pluto.jl is a reactive Julia notebook: a Julia web server that executes notebook
 
 - **`sample/`** — example notebooks that double as test fixtures (they are real Pluto notebook files).
 
+## Releases (release-please + JuliaRegistrator)
+
+Releases to the Julia General registry are automated by `.github/workflows/ReleasePlease.yml`:
+release-please keeps a release PR open against `main` (version bump in `Project.toml` + `CHANGELOG.md`);
+merging it creates the tag/GitHub release and auto-comments `@JuliaRegistrator register` on the release commit.
+
+**Commit messages on `main` must follow Conventional Commits** — `feat:` (minor bump), `fix:` (patch), `feat!:`/`BREAKING CHANGE:` (major), `chore:`/`docs:`/`refactor:`/`test:` (no bump, excluded from changelog). Commits that don't parse as conventional are ignored by release-please and never appear in a changelog. Never bump the version in `Project.toml` by hand; release-please owns it (baseline pinned in `.release-please-manifest.json`).
+
 ## Commands
 
 ### Running Pluto locally (dev)
