@@ -28,7 +28,10 @@ end
             Pluto.Configuration.CompilerOptions
         ]
         sets = [collect(fieldnames(s)) for s in structs]
-        vcat(sets...)::Vector{Symbol}
+        fields = vcat(sets...)::Vector{Symbol}
+        # `ServerOptions.workspace_folder` is deliberately exposed as the friendlier flat kwarg
+        # `workspace` (`SpaceStation.run(workspace=".")`, `spacestation .`) — map it before comparing.
+        replace(fields, :workspace_folder => :workspace)
     end
 
     from_flat_kwargs_kwargs = let

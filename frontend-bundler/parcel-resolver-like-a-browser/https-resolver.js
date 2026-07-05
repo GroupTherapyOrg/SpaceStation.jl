@@ -32,6 +32,13 @@ module.exports = new Resolver({
             return DONT_INCLUDE
         }
 
+        // Same-document fragment references — url(#gradient-id) inside an SVG (e.g. the planet
+        // gradients in img/favicon.svg). A browser resolves these within the current document;
+        // they are not files, so joining them onto the source dir would stat "img/#fv-r" (ENOENT).
+        if (specifier.startsWith("#")) {
+            return DONT_INCLUDE
+        }
+
         if (dependency.specifierType === "commonjs") {
             if (specifier === "process") {
                 return { filePath: "/dev/null.js", code: "" }
