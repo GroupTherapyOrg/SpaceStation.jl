@@ -81,7 +81,9 @@ export const setupPlutoBrowser = async () => {
  * @param {Page} page
  */
 export const gotoPlutoMainMenu = async (page) => {
-    await page.goto(getPlutoUrl(), { waitUntil: "domcontentloaded" })
+    // "/" serves the SpaceStation workspace hub (land.html); these tests exercise the classic
+    // welcome page, which remains at /index.html (see Router.jl).
+    await page.goto(`${getPlutoUrl()}/index.html`, { waitUntil: "domcontentloaded" })
     await page.waitForFunction(() => document.querySelector(`.not_yet_ready`) == null)
 }
 
