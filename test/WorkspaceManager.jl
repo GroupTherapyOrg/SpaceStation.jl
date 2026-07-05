@@ -69,6 +69,11 @@ import Malt
             begin
                 s = Pluto.ServerSession()
                 s.options.evaluation.workspace_use_distributed_stdlib = false
+                # autorun: this test exercises the classic open-runs-the-notebook flow. Under the
+                # lazy default, open() instead warms a worker up in the BACKGROUND, and the later
+                # shutdown cell fetches that warm-up — which times out on slow CI (Malt connect
+                # timeout, nested worker on a 2-core runner).
+                s.options.evaluation.on_code_change = "autorun"
             end
             """),
             Cell("""

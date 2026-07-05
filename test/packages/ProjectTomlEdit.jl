@@ -1,6 +1,7 @@
 
 using SpaceStation.WorkspaceManager: WorkspaceManager, poll
-using SpaceStation; import SpaceStation as Pluto: Pluto, ServerSession, Notebook, Cell, update_save_run!, PkgCompat
+using SpaceStation; import SpaceStation as Pluto
+import SpaceStation: ServerSession, Notebook, Cell, update_save_run!, PkgCompat
 import TOML
 
 without_pluto_version(s) = replace(s, r"# v.*" => "")

@@ -9,7 +9,7 @@
 #           $ spacestation --port 1234 …
 #           $ spacestation --no-browser …
 
-function (@main)(args)
+function main(args)
     args = filter(a -> a != "--", collect(String, args))
 
     # `spacestation collab …` — the cross-platform agent CLI (works where bash/curl don't, e.g. a
@@ -96,4 +96,10 @@ function (@main)(args)
         (workspace === nothing ? () : (workspace=workspace,))...,
         (notebook === nothing ? () : (notebook=notebook,))...)
     return 0
+end
+
+# Mark `main` as the entry point (`julia -m SpaceStation`, Pkg.Apps). `Base.@main` only exists on
+# Julia ≥ 1.11 — on 1.10 there is no app entry point, but the package must still precompile.
+@static if isdefined(Base, Symbol("@main"))
+    @eval (@main)
 end

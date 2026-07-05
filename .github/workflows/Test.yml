@@ -30,6 +30,10 @@ jobs:
     test:
         runs-on: ${{ matrix.os }}
         timeout-minutes: 50
+        # Prerelease Julia is informational: its stdlib/docsystem changes under us (e.g. the
+        # 1.13-DEV docstring changes breaking test/MacroAnalysis.jl "Doc strings"), and a moving
+        # target must not block releases of the package itself.
+        continue-on-error: ${{ matrix.julia-version == '~1.13.0-0' }}
 
         strategy:
             # Without setting this, a failing test cancels all others
