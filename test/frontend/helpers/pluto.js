@@ -82,7 +82,10 @@ export const setupPlutoBrowser = async () => {
  */
 export const gotoPlutoMainMenu = async (page) => {
     // "/" serves the SpaceStation workspace hub (land.html); these tests exercise the classic
-    // welcome page, which remains at /index.html (see Router.jl).
+    // welcome page, which remains at /index.html (see Router.jl). But "/" is also the ONLY
+    // auth-exempt bootstrap path — its response sets the secret cookie (auth_middleware) that
+    // authenticates every later request — so visit it first, then the welcome page.
+    await page.goto(getPlutoUrl(), { waitUntil: "domcontentloaded" })
     await page.goto(`${getPlutoUrl()}/index.html`, { waitUntil: "domcontentloaded" })
     await page.waitForFunction(() => document.querySelector(`.not_yet_ready`) == null)
 }
