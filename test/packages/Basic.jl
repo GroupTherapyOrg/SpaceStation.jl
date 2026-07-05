@@ -9,13 +9,22 @@ import Malt
 import TOML
 
 
+# These tests exercise the built-in Pkg manager through the classic open-and-run flow. SpaceStation
+# sessions default to lazy (`SessionActions.open` restores cached outputs and marks cells stale —
+# nothing runs), which would leave every output assertion looking at `nothing`. Pin them to autorun;
+# the lazy behavior has its own tests (test/OutputCache.jl, test/collab_*.sh).
+autorun_session() = let s = ServerSession()
+    s.options.evaluation.on_code_change = "autorun"
+    s
+end
+
 @testset "Built-in Pkg" begin
-    
+
     # We have our own registry for these test! Take a look at https://github.com/JuliaPluto/PlutoPkgTestRegistry#readme for more info about the test packages and their dependencies.
     Pkg.Registry.add(pluto_test_registry_spec)
 
     @testset "Basic $(use_distributed_stdlib ? "Distributed" : "Malt")" for use_distributed_stdlib in (false, true)
-        🍭 = ServerSession()
+        🍭 = autorun_session()
         🍭.options.evaluation.workspace_use_distributed_stdlib = use_distributed_stdlib
 
         # See https://github.com/JuliaPluto/PlutoPkgTestRegistry
@@ -228,7 +237,7 @@ import TOML
     simple_import_notebook = read(simple_import_path, String)
 
     @testset "Manifest loading" begin
-        🍭 = ServerSession()
+        🍭 = autorun_session()
 
         dir = mktempdir()
         path = joinpath(dir, "hello.jl")
@@ -254,7 +263,7 @@ import TOML
     @testset "Package added by url" begin
         url_notebook = read(joinpath(pkg_fixtures, "url_import.jl"), String)
 
-        🍭 = ServerSession()
+        🍭 = autorun_session()
 
         dir = mktempdir()
         path = joinpath(dir, "hello.jl")
@@ -278,7 +287,7 @@ import TOML
     
     future_notebook = read(joinpath(pkg_fixtures, "future_nonexisting_version.jl"), String)
     @testset "Recovery from unavailable versions" begin
-        🍭 = ServerSession()
+        🍭 = autorun_session()
 
         dir = mktempdir()
         path = joinpath(dir, "hello.jl")
@@ -303,7 +312,7 @@ import TOML
 
 
     @testset "Pkg cell -- dynamically added" begin
-        🍭 = ServerSession()
+        🍭 = autorun_session()
         
         notebook = Notebook([
             Cell("1"),
@@ -357,7 +366,7 @@ import TOML
     
     pkg_cell_notebook = read(joinpath(pkg_fixtures, "pkg_cell.jl"), String)
     @testset "Pkg cell -- loaded from file" begin
-        🍭 = ServerSession()
+        🍭 = autorun_session()
 
         dir = mktempdir()
         for n in ["Project.toml", "Manifest.toml"]
@@ -411,7 +420,7 @@ import TOML
     end
 
     @testset "DrWatson cell" begin
-        🍭 = ServerSession()
+        🍭 = autorun_session()
 
         notebook = Notebook([
             Cell("using Plots"),
@@ -433,7 +442,7 @@ import TOML
     end
 
     @testset "File format -- Backwards compat" begin
-        🍭 = ServerSession()
+        🍭 = autorun_session()
         
         pre_pkg_notebook = read(joinpath(pkg_fixtures, "old_import.jl"), String)
         dir = mktempdir()
@@ -499,7 +508,7 @@ import TOML
             original_path = joinpath(pkg_fixtures, "$(name).jl")
             original_contents = read(original_path, String)
 
-            🍭 = ServerSession()
+            🍭 = autorun_session()
     
             dir = mktempdir()
             path = joinpath(dir, "hello.jl")
@@ -566,7 +575,7 @@ import TOML
     end
 
     @testset "Race conditions" begin
-        🍭 = ServerSession()
+        🍭 = autorun_session()
         lag = 0.2
         🍭.options.server.simulated_pkg_lag = lag
 
@@ -617,7 +626,7 @@ import TOML
     end
 
     @testset "PlutoRunner Syntax Error" begin
-        🍭 = ServerSession()
+        🍭 = autorun_session()
 
         notebook = Notebook([
             Cell("1 +"),
@@ -654,7 +663,7 @@ import TOML
             before_sync = precomp_entries()
             @test before_sync == []
             
-            🍭 = ServerSession()
+            🍭 = autorun_session()
             # make compiler settings of the worker match or not match the server settings
             let
                 # you can find out which settings are relevant for cache validation by looking at the field names of `Base.CacheFlags`.
@@ -727,7 +736,7 @@ import TOML
             Cell("LOAD_PATH[begin]"),
             Cell("LOAD_PATH[end]"),
         ])
-        🍭 = ServerSession()
+        🍭 = autorun_session()
         update_run!(🍭, notebook, notebook.cells)
         @test isnothing(notebook.nbpkg_ctx)
         @test notebook.cells[2].output.body == sprint(Base.show, LOAD_PATH[begin])
