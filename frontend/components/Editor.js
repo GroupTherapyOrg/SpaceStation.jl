@@ -277,6 +277,7 @@ const first_true_key = (obj) => {
  *  shortpath: string,
  *  in_temp_dir: boolean,
  *  process_status: string,
+ *  on_code_change?: string,
  *  last_save_time: number,
  *  last_hot_reload_time: number,
  *  cell_inputs: { [uuid: string]: CellInputData },
@@ -346,6 +347,10 @@ export const url_logo_small = get_included_external_source("pluto-logo-small")?.
 export class Editor extends Component {
     constructor(/** @type {EditorProps} */ props) {
         super(props)
+
+        // Lazy mode: per-cell debounce timers for syncing browser edits to the server without running (see on_update_doc_query in render — the on_code_change === "lazy" branch).
+        /** @type {{ [cell_id: string]: ReturnType<typeof setTimeout> }} */
+        this.lazy_code_sync_timers = {}
 
         const { launch_params, initial_notebook_state } = this.props
 
@@ -426,7 +431,8 @@ export class Editor extends Component {
                         const remote = this.state.notebook.cell_inputs[cell_id]?.code
                         if (local != null && remote != null && local !== remote) {
                             this.update_notebook((notebook) => {
-                                notebook.cell_inputs[cell_id].code = local
+                                const input = notebook.cell_inputs[cell_id]
+                                if (input != null) input.code = local
                             })
                         }
                     }, 1500)
