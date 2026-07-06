@@ -186,6 +186,17 @@ Notebooks here may be OPEN in a live lazy-mode SpaceStation server shared with a
   dead/exited worker ("Process exited" / `TerminatedWorkerException`); interrupt/run can't revive one.
 - All cell outputs are also in `<nb.jl>.pluto-cache.toml` (plain TOML; a deletable cache).
 
+**Live-concurrency guarantees** (server-enforced — parallel agents and a human can work at once):
+
+- Concurrent `run` requests are serialized per notebook; the second recomputes staleness after the
+  first finishes, so nothing ever double-executes.
+- Editing a cell WHILE it is running is safe: the edit stays pending/stale (outputs are keyed to the
+  code that actually ran) — `status` afterwards shows it, `run --stale` applies it.
+- A `restart` while another restart is in flight is refused ("already in progress") — poll `status`.
+- One caveat: a human's browser edit saves the whole `.jl`; an agent write landing in that same
+  instant can be overwritten (the server logs a warning when it happens). Running `status` right
+  after your edit confirms the server picked it up.
+
 On Windows or where bash/curl are missing, use the identical `spacestation collab <command> …`.
 ```
 
