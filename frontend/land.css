@@ -1391,3 +1391,51 @@ body.resizing-v #frames iframe {
     font-size: 0.8rem;
     max-width: 32rem;
 }
+
+/* The hub's confirmation dialog (ask_confirm in land.js) — replaces window.confirm, which
+   browsers can silently suppress, leaving destructive buttons apparently dead. */
+dialog.land-confirm {
+    background: var(--main-bg-color);
+    color: var(--pluto-output-color);
+    border: 1px solid var(--rule-color);
+    border-radius: 0.6rem;
+    padding: 1.1rem 1.3rem;
+    max-width: 26rem;
+    box-shadow: 0 12px 40px #00000055;
+}
+
+dialog.land-confirm::backdrop {
+    background: #00000066;
+}
+
+dialog.land-confirm p {
+    margin: 0 0 1rem;
+    white-space: pre-line; /* the messages use \n\n paragraph breaks */
+    line-height: 1.45;
+}
+
+dialog.land-confirm .buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+}
+
+dialog.land-confirm button {
+    font: inherit;
+    padding: 0.3rem 0.9rem;
+    border-radius: 0.4rem;
+    border: 1px solid var(--rule-color);
+    background: var(--main-bg-color);
+    color: inherit;
+    cursor: pointer;
+}
+
+dialog.land-confirm button.go {
+    background: var(--code-background);
+    font-weight: 600;
+}
+
+dialog.land-confirm button.go.danger {
+    color: rgb(var(--error-color, 240, 168, 168));
+    border-color: rgba(var(--error-color, 240, 168, 168), 0.6);
+}

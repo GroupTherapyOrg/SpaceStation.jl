@@ -27,6 +27,42 @@ const get_json = async (url, opts) => {
 
 const basename = (p) => p.split("/").pop()
 
+// A confirm() the browser can't suppress. window.confirm can be permanently silenced (Chrome's
+// "prevent this page from creating additional dialogs", iframes without allow-modals) — it then
+// returns false instantly and every destructive button in the hub appears dead, with no error.
+// A native <dialog>.showModal() is always shown. Returns Promise<boolean>; Esc / backdrop = false.
+const ask_confirm = (message, { action = "Confirm", danger = false } = {}) =>
+    new Promise((resolve) => {
+        const dialog = document.createElement("dialog")
+        dialog.className = "land-confirm"
+        const body = document.createElement("p")
+        body.textContent = message
+        const row = document.createElement("div")
+        row.className = "buttons"
+        const cancel = document.createElement("button")
+        cancel.textContent = "Cancel"
+        const ok = document.createElement("button")
+        ok.textContent = action
+        ok.className = `go ${danger ? "danger" : ""}`
+        row.append(cancel, ok)
+        dialog.append(body, row)
+        document.body.append(dialog)
+        const done = (result) => {
+            dialog.close()
+            dialog.remove()
+            resolve(result)
+        }
+        cancel.onclick = () => done(false)
+        ok.onclick = () => done(true)
+        dialog.oncancel = (e) => {
+            e.preventDefault()
+            done(false)
+        }
+        dialog.onclick = (e) => e.target === dialog && done(false)
+        dialog.showModal()
+        cancel.focus() // safe default: Enter cancels, the destructive action needs a deliberate click/Tab
+    })
+
 // One canonical homebase: the launcher tab names itself this, so a workspace's "home" button can focus it
 // (or reopen it if it was closed) via window.open(url, HOMEBASE_WINDOW_NAME) — instead of every workspace
 // spawning its own disconnected in-tab launcher.
@@ -226,9 +262,10 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
 
     const shutdown_local = useCallback(async (path) => {
         if (
-            !window.confirm(
-                `Shut down the workspace server for ${basename(path)}?\n\nIts running notebooks will stop. Files stay on disk and outputs are cached in their .pluto-cache.toml sidecars, so reopening restores everything.`
-            )
+            !(await ask_confirm(
+                `Shut down the workspace server for ${basename(path)}?\n\nIts running notebooks will stop. Files stay on disk and outputs are cached in their .pluto-cache.toml sidecars, so reopening restores everything.`,
+                { action: "Shut down" }
+            ))
         )
             return
         try {
@@ -1173,10 +1210,10 @@ const Land = () => {
         }
     }, [workspace, add_tab, refresh])
 
-    const close_tab = useCallback((id) => {
+    const close_tab = useCallback(async (id) => {
         if (id.startsWith("file:")) {
             const path = id.slice(5)
-            if (file_dirty.get(path) && !confirm("This file has unsaved changes. Close anyway?")) return
+            if (file_dirty.get(path) && !(await ask_confirm("This file has unsaved changes. Close anyway?", { action: "Close without saving", danger: true }))) return
             file_dirty.delete(path)
         }
         // closing a notebook tab does NOT shut down the notebook (JupyterHub semantics) — it keeps running, listed under "Running"
@@ -1212,7 +1249,7 @@ const Land = () => {
     const delete_entry = useCallback(
         async (entry) => {
             const what = entry.type === "notebook" ? "notebook (it will be shut down if running; its output cache is deleted too)" : "file"
-            if (!confirm(`Delete ${entry.name}?\n\nThis permanently deletes the ${what}. There is no trash.`)) return
+            if (!(await ask_confirm(`Delete ${entry.name}?\n\nThis permanently deletes the ${what}. There is no trash.`, { action: "Delete", danger: true }))) return
             try {
                 await get_json(`./api/v1/file/delete?path=${encodeURIComponent(entry.path)}`, { method: "POST" })
                 // close any tab showing it
@@ -1228,7 +1265,7 @@ const Land = () => {
 
     const shutdown_notebook = useCallback(
         async (id) => {
-            if (!confirm("Shut down this notebook session? The file stays on disk; outputs are cached.")) return
+            if (!(await ask_confirm("Shut down this notebook session? The file stays on disk; outputs are cached.", { action: "Shut down" }))) return
             try {
                 await get_text(`./shutdown?id=${encodeURIComponent(id)}`, { method: "POST" })
                 close_tab(id)
@@ -1293,9 +1330,10 @@ const Land = () => {
     // terminal may be gone or ssh'd away). The server answers, then stops itself a beat later.
     const shutdown_server = useCallback(async () => {
         if (
-            !window.confirm(
-                "Shut down the SpaceStation server?\n\nRunning notebooks and the integrated terminal will stop. SSH remote servers keep running and can be reattached later."
-            )
+            !(await ask_confirm(
+                "Shut down the SpaceStation server?\n\nRunning notebooks and the integrated terminal will stop. SSH remote servers keep running and can be reattached later.",
+                { action: "Shut down" }
+            ))
         )
             return
         // Fire the shutdown, but don't trust the request's own result: a SUCCESSFUL shutdown usually
