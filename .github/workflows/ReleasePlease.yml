@@ -49,6 +49,9 @@ jobs:
         steps:
             # JuliaRegistrator listens for this comment on the release commit.
             # Registration in General is then picked up by AutoMerge (~15-20 min).
+            # The notes MUST contain the word "breaking" or "changelog": General's AutoMerge
+            # treats pre-1.0 minor bumps (and any major bump) as breaking and refuses to
+            # auto-merge unless the release notes acknowledge it (learned on v0.2.0).
             - uses: peter-evans/commit-comment@v3
               with:
                   token: ${{ secrets.PAT_TOKEN || github.token }}
@@ -56,4 +59,6 @@ jobs:
                   body: |
                       @JuliaRegistrator register
 
-                      Release notes: https://github.com/${{ github.repository }}/releases/tag/${{ needs.release-please.outputs.tag_name }}
+                      Release notes:
+
+                      See the changelog for this release (may include breaking changes): https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md
