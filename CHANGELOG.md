@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.2.0...v0.2.1) (2026-07-06)
+
+
+### Bug Fixes
+
+* registration notes must say 'changelog'/'breaking' for AutoMerge ([#9](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/9)) ([c115b08](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/c115b0833d8172a3856c845943bc071b6dd8dc2a))
+
 ## [0.2.0](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.1.0...v0.2.0) (2026-07-06)
 
 
