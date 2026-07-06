@@ -145,15 +145,51 @@ function write_buffered(fn::Function, path)
     write(path, file_content)
 end
 
+"""
+Write `content` to `path` atomically: write a sibling temp file, then rename it over the target.
+Readers — the file watcher, `load_notebook_nobackup` in the status/run API syncs, external tools,
+git — can never observe a half-written notebook. A torn read is not hypothetical: it parses as a
+valid notebook with cells missing, which a sync then treats as deletions.
+"""
+function write_atomic(path::String, content::AbstractString)
+    tmp = path * ".writing." * string(rand(UInt32), base=16) * ".tmp"
+    try
+        write(tmp, content)
+        try
+            # rename(2)/MoveFileEx(REPLACE_EXISTING): atomically replaces the target
+            Base.Filesystem.rename(tmp, path)
+        catch
+            mv(tmp, path; force=true) # fallback (non-atomic replace, still no torn content)
+        end
+    finally
+        isfile(tmp) && try rm(tmp) catch end
+    end
+    path
+end
+
 function save_notebook(notebook::Notebook, path::String)
     # @warn "Saving to file!!" exception=(ErrorException(""), backtrace())
     notebook.last_save_time = time()
     Status.report_business!(notebook.status_tree, :saving) do
         file_content = sprint(io -> save_notebook(io, notebook))
         if path == notebook.path
+            # Lost-update visibility: if the file on disk is neither what we last wrote nor what we
+            # are about to write, someone (an agent, an editor) changed it since our last save and
+            # their edit is about to be overwritten before any sync picked it up. We still save —
+            # in-memory state is the merge target — but say so instead of losing it silently.
+            if notebook.last_saved_file_hash != zero(UInt64) && isfile(path)
+                disk_hash = try
+                    hash(read(path, String))
+                catch
+                    nothing
+                end
+                if disk_hash !== nothing && disk_hash != notebook.last_saved_file_hash && disk_hash != hash(file_content)
+                    @warn "The notebook file was modified externally since the last save, and those changes were not yet synced — this save overwrites them. (If this was an agent edit: edit, then `status`/`run`; don't edit during a browser interaction.)" path
+                end
+            end
             notebook.last_saved_file_hash = hash(file_content)
         end
-        write(path, file_content)
+        write_atomic(path, file_content)
     end
 end
 

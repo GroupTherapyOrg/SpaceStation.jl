@@ -8,14 +8,16 @@ All commands here are executed in this folder (`Pluto.jl/test/frontend`).
 
 ## Run Pluto.jl server
 
-```
-PLUTO_PORT=2345; julia --project=/path/to/PlutoDev -e "import Pluto; Pluto.run(port=$PLUTO_PORT, require_secret_for_access=false, launch_browser=false)"
-```
-
-or if Pluto is dev'ed in your global environment:
+These tests exercise classic autorun Pluto — SpaceStation's lazy default would leave opened notebooks un-run (`on_code_change="autorun"` below is required; the lazy/collab behavior is tested by `test/collab_*.sh` instead).
 
 ```
-PLUTO_PORT=2345; julia -e "import Pluto; Pluto.run(port=$PLUTO_PORT, require_secret_for_access=false, launch_browser=false)"
+PLUTO_PORT=2345; julia --project=/path/to/PlutoDev -e "import SpaceStation; SpaceStation.run(port=$PLUTO_PORT, require_secret_for_access=false, launch_browser=false, on_code_change=\"autorun\")"
+```
+
+or if SpaceStation is dev'ed in your global environment:
+
+```
+PLUTO_PORT=2345; julia -e "import SpaceStation; SpaceStation.run(port=$PLUTO_PORT, require_secret_for_access=false, launch_browser=false, on_code_change=\"autorun\")"
 ```
 
 ## Run tests

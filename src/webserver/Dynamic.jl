@@ -527,9 +527,21 @@ This is the only way to recover a notebook whose worker has died (`Malt.Terminat
 `Process exited`): interrupting needs a running cell and running needs a live process, but a fresh
 process can always be brought up here.
 """
-function restart_notebook_process!(session::ServerSession, notebook::Notebook; run_async::Bool=true)
-    notebook.process_status == ProcessStatus.waiting_to_restart && return
-    notebook.process_status = ProcessStatus.waiting_to_restart
+const _restart_claim_lock = ReentrantLock()
+
+function restart_notebook_process!(session::ServerSession, notebook::Notebook; run_async::Bool=true)::Bool
+    # Claim the restart atomically: a bare check-then-set lets two near-simultaneous requests both
+    # pass and shut the worker down twice. Returns false to the caller that lost, so it can report
+    # "already restarting" instead of reading pre-restart cell states as if they were the result.
+    claimed = lock(_restart_claim_lock) do
+        if notebook.process_status == ProcessStatus.waiting_to_restart
+            false
+        else
+            notebook.process_status = ProcessStatus.waiting_to_restart
+            true
+        end
+    end
+    claimed || return false
     session.options.evaluation.run_notebook_on_load && _report_business_cells_planned!(notebook)
     send_notebook_changes!(ClientRequest(session=session, notebook=notebook))
 
@@ -540,6 +552,7 @@ function restart_notebook_process!(session::ServerSession, notebook::Notebook; r
     send_notebook_changes!(ClientRequest(session=session, notebook=notebook))
 
     update_save_run!(session, notebook, notebook.cells; run_async=run_async, save=true)
+    true
 end
 
 responses[:restart_process] = function response_restart_process(🙋::ClientRequest; run_async::Bool=true)
