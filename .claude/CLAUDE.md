@@ -30,6 +30,12 @@ merging it creates the tag/GitHub release and auto-comments `@JuliaRegistrator r
 
 **Commit messages on `main` must follow Conventional Commits** — `feat:` (minor bump), `fix:` (patch), `feat!:`/`BREAKING CHANGE:` (major), `chore:`/`docs:`/`refactor:`/`test:` (no bump, excluded from changelog). Commits that don't parse as conventional are ignored by release-please and never appear in a changelog. Never bump the version in `Project.toml` by hand; release-please owns it (baseline pinned in `.release-please-manifest.json`).
 
+Hard-won release gotchas (2026-07, the v0.2.0 release):
+- **Squash-merge PRs.** `gh pr merge --merge` titles the merge commit with the PR title, so a conventional PR title gets counted twice by release-please (branch commit + merge commit → duplicate changelog entries).
+- **Never restore upstream Pluto's git tags.** The fork originally inherited all ~310 of Pluto's tags (`v0.2.0`…`v0.20.x`); they collide with SpaceStation's own version line — release-please attached the v0.2.0 release to Pluto's tag from 2020 and generated a changelog spanning six years. They were purged; SpaceStation's tag namespace starts fresh at its own `v0.2.0`.
+- There is **no `julia` release type** in release-please; the config uses `simple` + an `extra-files` TOML updater on `Project.toml` (release-please also maintains a `version.txt`).
+- The upstream-facing test suites assume **autorun**; SpaceStation's lazy default breaks any test that expects "open runs the notebook" (backend Pkg tests, Safe Preview E2E). Pin such tests/servers to `on_code_change="autorun"` — lazy behavior is covered by `test/collab_*.sh`.
+
 ## Commands
 
 ### Running Pluto locally (dev)
