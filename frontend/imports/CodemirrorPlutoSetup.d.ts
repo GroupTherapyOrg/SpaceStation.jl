@@ -358,6 +358,13 @@ declare class SelectionRange {
     */
     readonly to: number;
     private flags;
+    /**
+    The goal column (stored vertical offset) associated with a
+    cursor. This is used to preserve the vertical position when
+    [moving](https://codemirror.net/6/docs/ref/#view.EditorView.moveVertically) across
+    lines of different length.
+    */
+    readonly goalColumn: number | undefined;
     private constructor();
     /**
     The anchor of the range—the side that doesn't move when you
@@ -381,17 +388,18 @@ declare class SelectionRange {
     */
     get assoc(): -1 | 0 | 1;
     /**
+    A flag that, when set, makes some selection-extending commands
+    treat the range's head and anchor as exchangeable, so that for
+    example Shift-ArrowUp will make the lower side of the selection
+    the anchor, even if that was the head before. Used to implement
+    MacOS-style undirectional selections.
+    */
+    get undirectional(): boolean;
+    /**
     The bidirectional text level associated with this cursor, if
     any.
     */
     get bidiLevel(): number | null;
-    /**
-    The goal column (stored vertical offset) associated with a
-    cursor. This is used to preserve the vertical position when
-    [moving](https://codemirror.net/6/docs/ref/#view.EditorView.moveVertically) across
-    lines of different length.
-    */
-    get goalColumn(): number | undefined;
     /**
     Map this range through a change, producing a valid range in the
     updated document.
@@ -489,6 +497,11 @@ declare class EditorSelection {
     Create a selection range.
     */
     static range(anchor: number, head: number, goalColumn?: number, bidiLevel?: number, assoc?: number): SelectionRange;
+    /**
+    Create an [undirectional](https://codemirror.net/6/docs/ref/#state.SelectionRange.undirectional)
+    selection range.
+    */
+    static undirectionalRange(from: number, to: number): SelectionRange;
 }
 
 type FacetConfig<Input, Output> = {
@@ -5613,8 +5626,7 @@ declare class Language {
 }
 /**
 A subclass of [`Language`](https://codemirror.net/6/docs/ref/#language.Language) for use with Lezer
-[LR parsers](https://lezer.codemirror.net/docs/ref#lr.LRParser)
-parsers.
+[LR parsers](https://lezer.codemirror.net/docs/ref#lr.LRParser).
 */
 declare class LRLanguage extends Language {
     readonly parser: LRParser;
@@ -6026,7 +6038,7 @@ declare class HighlightStyle implements Highlighter {
     or array of tags in their `tag` property, and either a single
     `class` property providing a static CSS class (for highlighter
     that rely on external styling), or a
-    [`style-mod`](https://github.com/marijnh/style-mod#documentation)-style
+    [`style-mod`](https://code.haverbeke.berlin/marijn/style-mod#documentation)-style
     set of CSS properties (which define the styling for those tags).
     
     The CSS rules created for a highlighter will be emitted in the
@@ -6089,7 +6101,7 @@ interface TagStyle {
     /**
     Any further properties (if `class` isn't given) will be
     interpreted as in style objects given to
-    [style-mod](https://github.com/marijnh/style-mod#documentation).
+    [style-mod](https://code.haverbeke.berlin/marijn/style-mod#documentation).
     (The type here is `any` because of TypeScript limitations.)
     */
     [styleProperty: string]: any;

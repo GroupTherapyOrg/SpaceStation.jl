@@ -50,7 +50,7 @@ import { ProjectTomlEditor } from "./ProjectTomlEditor.js"
 import { getCurrentLanguage, getWritingDirection, t, th } from "../common/lang.js"
 import { InlineIonicon, PlutoLandUpload } from "./PlutoLandUpload.js"
 import { BigPkgTerminal } from "./PkgTerminalView.js"
-import { is_desktop, move_notebook, wait_for_file_move } from "./DesktopInterface.js"
+import { desktop_version, is_desktop, move_notebook, open_main_menu, wait_for_file_move } from "./DesktopInterface.js"
 import { with_query_params } from "../common/URLTools.js"
 import semver from "../imports/semver-es.js"
 import { ConfirmBeforeLongRuntime, maybe_abort_long_runtime } from "./ConfirmBeforeLongRuntime.js"
@@ -1084,7 +1084,7 @@ all patches: ${JSON.stringify(patches, null, 1)}
                 if (!this.state.static_preview && document.visibilityState === "visible") {
                     // view stats on https://stats.plutojl.org/
                     //@ts-ignore
-                    count_stat(`editing/${window?.version_info?.pluto ?? this.state.notebook.pluto_version ?? "unknown"}${is_desktop() ? "-desktop" : ""}`)
+                    count_stat(`editing/${desktop_version ?? window?.version_info?.pluto ?? this.state.notebook.pluto_version ?? "unknown"}`)
                 }
             },
             1000 * 15 * 60
@@ -1282,21 +1282,24 @@ all patches: ${JSON.stringify(patches, null, 1)}
         this.desktop_submit_file_change = async () => {
             this.setState({ moving_file: true })
 
-            const file_moved_promise = wait_for_file_move()
-            // ask the electron backend to start moving the notebook. The promise above will be resolved once it is done.
-            move_notebook()
+            try {
+                const file_moved_promise = wait_for_file_move()
+                // ask the electron backend to start moving the notebook. The promise above will be resolved once it is done.
+                move_notebook()
 
-            const loc = await file_moved_promise
-            if (!!loc)
-                await this.setStatePromise(
-                    immer((/** @type {EditorState} */ state) => {
-                        state.notebook.in_temp_dir = false
-                        state.notebook.path = loc
-                    })
-                )
-            this.setState({ moving_file: false })
-            // @ts-ignore
-            document.activeElement?.blur()
+                const loc = await file_moved_promise
+                if (!!loc)
+                    await this.setStatePromise(
+                        immer((/** @type {EditorState} */ state) => {
+                            state.notebook.in_temp_dir = false
+                            state.notebook.path = loc
+                        })
+                    )
+                // @ts-ignore
+                document.activeElement?.blur()
+            } finally {
+                this.setState({ moving_file: false })
+            }
         }
 
         this.delete_selected = () => {
@@ -1714,6 +1717,7 @@ ${t("t_key_autosave_description")}`
                                 // Inside the SpaceStation workspace shell the editor runs in an iframe, and "./" serves the
                                 // Land hub — so a logo click would render the whole workspace *inside* this tab (infinite
                                 // nesting). When embedded, make the logo inert (no navigation) instead.
+                                // (Upstream's desktop-app branch is kept for merge hygiene: is_desktop() is never true here.)
                                 window.self !== window.top
                                     ? html`<a class="spacestation-inert-logo" onClick=${(e) => e.preventDefault()}>
                                           <h1><img id="logo-big" src=${url_logo_big} alt="Pluto.jl" /><img id="logo-small" src=${url_logo_small} aria-hidden="true" /></h1>
@@ -1722,6 +1726,12 @@ ${t("t_key_autosave_description")}`
                                           href=${this.state.binder_session_url != null
                                               ? `${this.state.binder_session_url}?token=${this.state.binder_session_token}`
                                               : "./"}
+                                          onClick=${(e) => {
+                                              if (is_desktop()) {
+                                                  e.preventDefault()
+                                                  open_main_menu()
+                                              }
+                                          }}
                                       >
                                           <h1><img id="logo-big" src=${url_logo_big} alt="Pluto.jl" /><img id="logo-small" src=${url_logo_small} aria-hidden="true" /></h1>
                                       </a>`
@@ -1741,7 +1751,8 @@ ${t("t_key_autosave_description")}`
                                           client=${this.client}
                                           value=${notebook.in_temp_dir ? "" : notebook.path}
                                           on_submit=${this.submit_file_change}
-                                          on_desktop_submit=${this.desktop_submit_file_change}
+                                          on_desktop_submit=${is_desktop() ? this.desktop_submit_file_change : null}
+                                          readonly=${is_desktop()}
                                           clear_on_blur=${false}
                                           suggest_new_file=${{
                                               base: this.client.session_options?.server?.notebook_path_suggestion ?? "",

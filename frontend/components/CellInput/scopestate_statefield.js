@@ -454,10 +454,18 @@ export let explore_variable_usage = (tree, doc, _scopestate, verbose = VERBOSE) 
                         cursor.parent()
                     }
                     // @ts-ignore
-                } else if (cursor.name === "BinaryExpression") {
-                    // a <: b or a{T} <: b - get the first child
+                } else if (cursor.name === "TypeHeadSubtype") {
+                    // `a <: b` / `a{T} <: b` parses as
+                    // TypeHeadSubtype(TypeHeadSubtypeLhs(<name>, TypeComparisonOp), TypeHeadSubtypeRhs(Type(...))).
+                    // The name we want is the first child of TypeHeadSubtypeLhs.
                     if (cursor.firstChild()) {
-                        const result = extract_type_name()
+                        // now at TypeHeadSubtypeLhs
+                        let result = null
+                        if (cursor.firstChild()) {
+                            // now at the name (Identifier / ParametrizedExpression)
+                            result = extract_type_name()
+                            cursor.parent()
+                        }
                         cursor.parent()
                         return result
                     }
@@ -1071,9 +1079,9 @@ export let explore_variable_usage = (tree, doc, _scopestate, verbose = VERBOSE) 
                     cursor.firstChild()
                     do {
                         if (!call_explored.cursorGet(cursor)) {
-                            // Skip operators like :: and where keyword
+                            // Skip the :: operator (SubTypeOp) and the where keyword
                             // @ts-ignore
-                            if (cursor.name !== "::" && cursor.name !== "where") {
+                            if (cursor.name !== "SubTypeOp" && cursor.name !== "where") {
                                 // For where clause Types, we need special handling
                                 // The type parameter identifiers are already registered as locals
                                 // We only need to capture constraint usages (like R in S <: R)

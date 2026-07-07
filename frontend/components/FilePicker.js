@@ -47,11 +47,13 @@ export const set_cm_value = (/** @type{EditorView} */ cm, /** @type {string} */ 
  *  button_label: String,
  *  placeholder: String,
  *  on_submit: (new_path: String) => Promise<void>,
+ *  on_desktop_submit?: () => Promise<void>,
  *  client: import("../common/PlutoConnection.js").PlutoConnection,
  *  clear_on_blur: Boolean,
+ *  readonly: Boolean,
  * }} props
  */
-export const FilePicker = ({ value, suggest_new_file, button_label, placeholder, on_submit, client, clear_on_blur }) => {
+export const FilePicker = ({ value, readonly, suggest_new_file, button_label, placeholder, on_submit, on_desktop_submit, client, clear_on_blur }) => {
     const [current_value, set_current_value] = useState(value)
 
     const [url_value, set_url_value] = useState("")
@@ -60,7 +62,7 @@ export const FilePicker = ({ value, suggest_new_file, button_label, placeholder,
     const base = useRef(/** @type {any} */ (null))
     const cm = useRef(/** @type {EditorView?} */ (null))
 
-    const is_button_disabled = current_value.length === 0 || current_value === forced_value.current
+    const is_button_disabled = on_desktop_submit == null && (current_value.length === 0 || current_value === forced_value.current)
     const value_different = current_value !== forced_value.current
     const suggest_button = current_value !== forced_value.current && /\.\w*$/.test(current_value)
 
@@ -82,7 +84,11 @@ export const FilePicker = ({ value, suggest_new_file, button_label, placeholder,
         if (current_cm == null) return
         run(async () => {
             try {
-                await on_submit(current_cm.state.doc.toString())
+                if (on_desktop_submit != null) {
+                    await on_desktop_submit()
+                } else {
+                    await on_submit(current_cm.state.doc.toString())
+                }
                 current_cm.dom.blur()
             } catch (error) {
                 set_cm_value(current_cm, forced_value.current, true)
@@ -160,85 +166,90 @@ export const FilePicker = ({ value, suggest_new_file, button_label, placeholder,
                         { dark: usesDarkTheme }
                     ),
                     // EditorView.updateListener.of(onCM6Update),
+                    EditorState.readOnly.of(readonly),
                     history(),
-                    autocompletion({
-                        activateOnTyping: true,
-                        override: [
-                            pathhints({
-                                suggest_new_file: suggest_new_file,
-                                client: client,
-                            }),
-                        ],
-                        defaultKeymap: false, // We add these manually later, so we can override them if necessary
-                        maxRenderedOptions: 512, // fons's magic number
-                        optionClass: (c) => c.type ?? "",
-                    }),
-                    // When a completion is picked, immediately start autocompleting again
-                    EditorView.updateListener.of((update) => {
-                        update.transactions.forEach((transaction) => {
-                            const completion = transaction.annotation(autocomplete.pickedCompletion)
-                            if (completion != null) {
-                                update.view.dispatch({
-                                    effects: EditorView.scrollIntoView(update.state.doc.length),
-                                    selection: EditorSelection.cursor(update.state.doc.length),
-                                })
+                    readonly
+                        ? []
+                        : [
+                              autocompletion({
+                                  activateOnTyping: true,
+                                  override: [
+                                      pathhints({
+                                          suggest_new_file: suggest_new_file,
+                                          client: client,
+                                      }),
+                                  ],
+                                  defaultKeymap: false, // We add these manually later, so we can override them if necessary
+                                  maxRenderedOptions: 512, // fons's magic number
+                                  optionClass: (c) => c.type ?? "",
+                              }),
+                              // When a completion is picked, immediately start autocompleting again
+                              EditorView.updateListener.of((update) => {
+                                  update.transactions.forEach((transaction) => {
+                                      const completion = transaction.annotation(autocomplete.pickedCompletion)
+                                      if (completion != null) {
+                                          update.view.dispatch({
+                                              effects: EditorView.scrollIntoView(update.state.doc.length),
+                                              selection: EditorSelection.cursor(update.state.doc.length),
+                                          })
 
-                                request_path_completions()
-                            }
-                        })
-                    }),
-                    keymap.of([
-                        {
-                            key: "Enter",
-                            run: (cm) => {
-                                // If there is autocomplete open, accept that. It will return `true`
-                                return assert_not_null(accept_autocomplete_command).run(cm)
-                            },
-                        },
-                        {
-                            key: "Enter",
-                            run: keyMapSubmit,
-                        },
-                        {
-                            key: "Escape",
-                            run: (cm) => {
-                                // If there is autocomplete open, close that. It will return `true`
-                                return assert_not_null(close_autocomplete_command).run(cm)
-                            },
-                        },
-                        {
-                            key: "Escape",
-                            run: keyMapClear,
-                        },
-                        {
-                            key: "Ctrl-Enter",
-                            mac: "Cmd-Enter",
-                            run: keyMapSubmit,
-                        },
-                        {
-                            key: "Ctrl-Shift-Enter",
-                            mac: "Cmd-Shift-Enter",
-                            run: keyMapSubmit,
-                        },
-                        ...(get_settings().CM_TAB_KEY_FOR_INDENT
-                            ? [
+                                          request_path_completions()
+                                      }
+                                  })
+                              }),
+                              keymap.of([
                                   {
-                                      key: "Tab",
+                                      key: "Enter",
                                       run: (cm) => {
-                                          // If there is autocomplete open, accept that
-                                          if (assert_not_null(accept_autocomplete_command).run(cm)) {
-                                              // and request the next ones
-                                              request_path_completions()
-                                              return true
-                                          }
-                                          // Else, activate it (possibly)
-                                          return request_path_completions()
+                                          // If there is autocomplete open, accept that. It will return `true`
+                                          return assert_not_null(accept_autocomplete_command).run(cm)
                                       },
                                   },
-                              ]
-                            : []),
-                    ]),
-                    keymap.of(completionKeymap),
+                                  {
+                                      key: "Enter",
+                                      run: keyMapSubmit,
+                                  },
+                                  {
+                                      key: "Escape",
+                                      run: (cm) => {
+                                          // If there is autocomplete open, close that. It will return `true`
+                                          return assert_not_null(close_autocomplete_command).run(cm)
+                                      },
+                                  },
+                                  {
+                                      key: "Escape",
+                                      run: keyMapClear,
+                                  },
+                                  {
+                                      key: "Ctrl-Enter",
+                                      mac: "Cmd-Enter",
+                                      run: keyMapSubmit,
+                                  },
+                                  {
+                                      key: "Ctrl-Shift-Enter",
+                                      mac: "Cmd-Shift-Enter",
+                                      run: keyMapSubmit,
+                                  },
+                                  ...(get_settings().CM_TAB_KEY_FOR_INDENT
+                                      ? [
+                                            {
+                                                key: "Tab",
+                                                run: (cm) => {
+                                                    // If there is autocomplete open, accept that
+                                                    if (assert_not_null(accept_autocomplete_command).run(cm)) {
+                                                        // and request the next ones
+                                                        request_path_completions()
+                                                        return true
+                                                    }
+                                                    // Else, activate it (possibly)
+                                                    return request_path_completions()
+                                                },
+                                            },
+                                        ]
+                                      : []),
+                              ]),
+                              keymap.of(completionKeymap),
+                          ],
 
                     Placeholder(placeholder),
                     tab_help_plugin,
