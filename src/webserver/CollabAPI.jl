@@ -468,6 +468,18 @@ function register_collab_api!(router, session::ServerSession)
             cells = expand_stale_ancestors(notebook, cells)
         end
 
+        # Honesty check. When code execution is off — Safe Preview (waiting_for_permission: how the
+        # workspace hub opens notebooks until a human clicks "Run notebook code") or a dead worker
+        # (no_process) — update_save_run! silently skips execution, and this endpoint used to count
+        # 0 errored cells and report "RESULT: ok (N cells ran)", exit 0. An unattended agent must
+        # get a hard failure it can act on instead.
+        if !isempty(cells) && !will_run_code(notebook)
+            hint = notebook.process_status == ProcessStatus.waiting_for_permission ?
+                "the notebook is in Safe Preview — a human must grant execution in the browser (\"Run notebook code\"), or the notebook must be opened with execution allowed" :
+                "the worker process is not running — recover it with `restart`"
+            return _api_error(409, "cannot run: code execution is disabled for this notebook (process: $(notebook.process_status)); $hint", fmt_text)
+        end
+
         if !isempty(cells)
             # blocking: the same path as a browser run request, behind the same execution token
             update_save_run!(session, notebook, cells; run_async=false, save=true, auto_solve_multiple_defs=true)
