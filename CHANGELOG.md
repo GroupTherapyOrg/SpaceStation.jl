@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.2](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.2.1...v0.2.2) (2026-07-07)
+
+
+### Bug Fixes
+
+* merge upstream Pluto.jl v1.0.3 (CodeMirror 2002.0.8, lezer-julia 1.2 compat, editor polish) ([b99f582](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/b99f58217366fce9a6ab8bf40b1e5b6374dd6a4c))
+* merge upstream Pluto.jl v1.0.3 (CodeMirror 2002.0.8, lezer-julia 1.2, editor polish) ([c36393f](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/c36393f8c223b12222ef500c35c43b253b683c89))
+* unsuppressible in-page confirmation for the hub's destructive actions ([#12](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/12)) ([e3616f0](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/e3616f08750a8dfae1d64711d40b508296c88aed))
+* Windows notebook saves failed while the file watcher holds the file ([d150762](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/d1507621924bb29428295a9e03d65b1305bbfdb5))
+
 ## [0.2.1](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.2.0...v0.2.1) (2026-07-06)
 
 
