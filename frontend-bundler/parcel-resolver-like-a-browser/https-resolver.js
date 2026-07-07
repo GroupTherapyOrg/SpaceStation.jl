@@ -9,6 +9,12 @@ let DONT_INCLUDE = { isExcluded: true }
 
 const fileExists = async (path) => !!(await fs.stat(path).catch((e) => false))
 
+// One in-flight download per cache path. Concurrent resolves of the SAME uncached URL (e.g.
+// copy-outline.svg, referenced from three stylesheets) used to race: each saw "no file" and
+// parallel writeFile calls to one path let parcel read a half-written (even empty) asset — the
+// release branch shipped a 0-byte icon. See the download block below.
+const inflight_downloads = new Map()
+
 async function keep_trying(fn, max_tries = 10) {
     try {
         return await fn()
@@ -90,34 +96,47 @@ module.exports = new Resolver({
             let fullpath = path.join(my_temp_cave, url_to_path)
             let folder = path.dirname(fullpath)
 
-            if (!(await fileExists(fullpath))) {
-                // Modest throttle on actual CDN downloads (cache misses only) to avoid hammering
-                // esm.sh/jsdelivr. The original slept 10s on EVERY resolve (even local files),
-                // which made the build crawl; cached deps and local files are now instant.
-                await new Promise((resolve) => setTimeout(resolve, 1000))
-                await keep_trying(async () => {
-                    let response = await fetch(specifier)
-                    if (response.status !== 200) {
-                        throw new Error(`${specifier} returned ${response.status}`)
-                    }
-                    // Can't directly use the value from the request, as parcel really wants a string,
-                    // and converting binary assets into strings and then passing them doesn't work 🤷‍♀️.
-                    let buffer = await response.arrayBuffer()
+            // An empty cached file is a poisoned cache entry (a crashed or torn earlier write) —
+            // treat it as a miss and re-download.
+            const cached_size = await fs.stat(fullpath).then((s) => s.size).catch(() => -1)
+            if (cached_size <= 0) {
+                let pending = inflight_downloads.get(fullpath)
+                if (pending == null) {
+                    pending = (async () => {
+                        // Modest throttle on actual CDN downloads (cache misses only) to avoid hammering
+                        // esm.sh/jsdelivr. The original slept 10s on EVERY resolve (even local files),
+                        // which made the build crawl; cached deps and local files are now instant.
+                        await new Promise((resolve) => setTimeout(resolve, 1000))
+                        await keep_trying(async () => {
+                            let response = await fetch(specifier)
+                            if (response.status !== 200) {
+                                throw new Error(`${specifier} returned ${response.status}`)
+                            }
+                            // Can't directly use the value from the request, as parcel really wants a string,
+                            // and converting binary assets into strings and then passing them doesn't work 🤷‍♀️.
+                            let buffer = await response.arrayBuffer()
 
-                    const response_length = buffer.byteLength
+                            const response_length = buffer.byteLength
 
-                    if (response_length === 0) {
-                        throw new Error(`${specifier} returned an empty reponse.`)
-                    }
+                            if (response_length === 0) {
+                                throw new Error(`${specifier} returned an empty reponse.`)
+                            }
 
-                    await mkdirp(folder)
-                    const write_result = await fs.writeFile(fullpath, Buffer.from(buffer))
-
-                    // Verify that the file was written correctly:
-                    if (write_result !== undefined || (await fs.readFile(fullpath)).length !== response_length) {
-                        throw new Error(`Failed to write file ${fullpath}`)
-                    }
-                })
+                            await mkdirp(folder)
+                            // Unique temp file + rename: the cache entry is either absent or
+                            // complete, never half-written — even with concurrent builders.
+                            const tmp = `${fullpath}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
+                            await fs.writeFile(tmp, Buffer.from(buffer))
+                            if ((await fs.readFile(tmp)).length !== response_length) {
+                                await fs.rm(tmp, { force: true })
+                                throw new Error(`Failed to write file ${fullpath}`)
+                            }
+                            await fs.rename(tmp, fullpath)
+                        })
+                    })().finally(() => inflight_downloads.delete(fullpath))
+                    inflight_downloads.set(fullpath, pending)
+                }
+                await pending
             }
 
             return { filePath: fullpath }
