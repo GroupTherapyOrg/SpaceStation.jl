@@ -1349,6 +1349,7 @@ pluto-editor.fullscreen .statefile-fetch-progress {
     /* box-sizing: content-box; */
     /* height: 2rem; */
     width: var(--w);
+    accent-color: var(--cm-color-symbol);
 }
 
 loading-bar {

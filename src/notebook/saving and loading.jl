@@ -150,17 +150,38 @@ Write `content` to `path` atomically: write a sibling temp file, then rename it 
 Readers — the file watcher, `load_notebook_nobackup` in the status/run API syncs, external tools,
 git — can never observe a half-written notebook. A torn read is not hypothetical: it parses as a
 valid notebook with cells missing, which a sync then treats as deletions.
+
+On Windows, replacing a file that another handle holds open FAILS — and in lazy mode the file
+WATCHER holds every notebook open (rename → EACCES; mv's unlink-then-rename → EBUSY; seen in
+test/LazyMode.jl on CI). Brief retries let transient holds clear; if the destination stays locked,
+fall back to a plain in-place write — non-atomic (the pre-atomic status quo), but a save must
+never fail.
 """
 function write_atomic(path::String, content::AbstractString)
     tmp = path * ".writing." * string(rand(UInt32), base=16) * ".tmp"
     try
         write(tmp, content)
-        try
-            # rename(2)/MoveFileEx(REPLACE_EXISTING): atomically replaces the target
-            Base.Filesystem.rename(tmp, path)
-        catch
-            mv(tmp, path; force=true) # fallback (non-atomic replace, still no torn content)
+        attempts = Sys.iswindows() ? 4 : 1
+        for i in 1:attempts
+            try
+                try
+                    # rename(2)/MoveFileEx(REPLACE_EXISTING): atomically replaces the target
+                    Base.Filesystem.rename(tmp, path)
+                catch e
+                    e isa InterruptException && rethrow()
+                    mv(tmp, path; force=true) # fallback (non-atomic replace, still no torn content)
+                end
+                return path
+            catch e
+                e isa InterruptException && rethrow()
+                i == attempts && rethrow()
+                sleep(0.05 * i)
+            end
         end
+    catch e
+        e isa InterruptException && rethrow()
+        @debug "Atomic replace failed; writing in place" path exception = e
+        write(path, content)
     finally
         isfile(tmp) && try rm(tmp) catch end
     end
