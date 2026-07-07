@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.2.2...v0.2.3) (2026-07-07)
+
+
+### Bug Fixes
+
+* collab run reported "ok" when Safe Preview blocked execution entirely ([#16](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/16)) ([9f8dccc](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/9f8dccc1212a1d6f232cb5a55f152c506b1f9235))
+
 ## [0.2.2](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.2.1...v0.2.2) (2026-07-07)
 
 
