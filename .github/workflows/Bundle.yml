@@ -112,14 +112,20 @@ jobs:
             - name: Check for corrupt files
               working-directory: frontend-dist
               run: |
-                if [[ $(find . -empty) ]]; then
+                empties=$(find . -empty)
+                if [[ -n $empties ]]; then
+                    echo "::error::Empty files in the bundle:"
+                    echo "$empties"
                     exit 1
                 fi
 
             - name: Check for corrupt files - offline
               working-directory: frontend-dist-offline
               run: |
-                if [[ $(find . -empty) ]]; then
+                empties=$(find . -empty)
+                if [[ -n $empties ]]; then
+                    echo "::error::Empty files in the offline bundle:"
+                    echo "$empties"
                     exit 1
                 fi
 
