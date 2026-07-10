@@ -86,7 +86,7 @@ files open in tabs too, edited with the same CodeMirror — including the per-no
 An integrated **PTY shell** runs in the workspace folder. Dock it bottom, right, or as an editor
 tab; and — unlike a browser terminal — it's a **persistent session**: refresh the page and the
 shell keeps running, replaying its scrollback on reconnect (tmux semantics, no tmux). It also
-exports `PLUTOSPACE_PORT`/`PLUTOSPACE_SECRET` and puts `pluto-collab` on `PATH`, so a coding agent
+exports `SPACESTATION_PORT`/`SPACESTATION_SECRET` and puts `pluto-collab` on `PATH`, so a coding agent
 launched here just works.
 
 <div align="center">
@@ -110,21 +110,21 @@ your SSH setup.
 
 ## 🤝 Lazy mode: humans and agents on one live session
 
-SpaceStation's default isn't autorun. Editing a cell — **in the browser *or* on disk** — marks it
-(and everything downstream) **stale** instead of running it, so a run executes only the stale
-closure. Because of that, a human in the browser and a coding agent in a terminal can work on the
+SpaceStation's default isn't autorun. Editing a cell — **in the browser *or* on disk** — marks that
+cell **stale** instead of running it. When explicitly run, its dependents follow through normal
+Pluto reactivity. Because of that, a human in the browser and a coding agent in a terminal can work on the
 **same live notebook** at once — same kernel, same state. The agent edits the `.jl` with its normal
 file tools; the affected cells turn **amber within a second** in the browser, and a run applies them.
 No MCP, no plugins — just a small CLI, [`pluto-collab`](bin/pluto-collab).
 
 <div align="center">
-<img src="assets/screenshots/lazy-stale-dark.png" width="920" alt="Lazy mode in SpaceStation: after an edit to the report cell, only it and its dependent turn amber (stale) while the expensive samples and smoothed cells stay green — two notebook tabs and the integrated terminal are open">
+<img src="assets/screenshots/lazy-stale-dark.png" width="920" alt="Lazy mode in SpaceStation: after an edit, the changed cell turns amber (stale) while untouched cells stay green — two notebook tabs and the integrated terminal are open">
 </div>
 
 The agent surface is deliberately **two-tiered** — editing and executing are separate steps:
 
 1. **Edit → _stage._** The agent edits the `.jl` with its normal file tools. That only marks the
-   changed cells (and everything downstream) **stale** — *nothing runs*. The human watches them turn
+   changed cells **stale** — *nothing runs*. The human watches them turn
    amber within a second.
 2. **Run → _apply._** An explicit `run --stale` executes only the stale closure. Separating stage
    from apply is deliberate: you review what's about to run, expensive cells don't fire on every
@@ -149,7 +149,7 @@ spacestation collab status nb.jl     # any platform incl. Windows PowerShell —
 
 `pluto-collab` needs bash + curl (Unix); **`spacestation collab …` is the identical command set built
 into the app** with no external dependencies, so the surface works the same in a Windows terminal.
-Inside a SpaceStation terminal, `PLUTOSPACE_PORT` / `PLUTOSPACE_SECRET` point either one at the live
+Inside a SpaceStation terminal, `SPACESTATION_PORT` / `SPACESTATION_SECRET` point either one at the live
 session automatically.
 
 Two guarantees make the loop reliable:

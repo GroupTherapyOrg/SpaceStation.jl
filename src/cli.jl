@@ -39,7 +39,7 @@ function main(args)
         In lazy mode (the default), file edits — yours or an agent's — mark cells stale
         instead of running them; outputs are cached in <notebook>.jl.pluto-cache.toml and
         survive restarts. The `pluto-collab` CLI is installed on your PATH next to `spacestation`,
-        and any terminal opened inside SpaceStation exports PLUTOSPACE_PORT / PLUTOSPACE_SECRET so a
+        and any terminal opened inside SpaceStation exports SPACESTATION_PORT / SPACESTATION_SECRET so a
         coding agent's `pluto-collab` targets this live session automatically.
         """)
         return 0
@@ -65,9 +65,9 @@ function main(args)
         elseif a == "--no-browser"
             launch_browser = false
         elseif a == "--agents-md"
-            ENV["PLUTOSPACE_AGENTS_MD"] = "1"
+            ENV["SPACESTATION_AGENTS_MD"] = "1"
         elseif a == "--no-agents-md"
-            ENV["PLUTOSPACE_AGENTS_MD"] = "0"
+            ENV["SPACESTATION_AGENTS_MD"] = "0"
         elseif startswith(a, "-")
             println("unknown option: $a (see --help)")
             return 1

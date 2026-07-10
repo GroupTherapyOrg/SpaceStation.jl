@@ -52,7 +52,7 @@ SpaceStation.run()        # lazy collab mode is the default
    **Cross-platform:** `pluto-collab` is a bash script (needs `curl`/`sed`, i.e. Unix). The exact
    same commands are also built into the app as `spacestation collab <cmd> …` — pure Julia, no
    external dependencies — so the agent surface works identically in a Windows PowerShell/cmd
-   terminal. Either form uses `PLUTOSPACE_PORT`/`PLUTOSPACE_SECRET` when set (inside a SpaceStation
+   terminal. Either form uses `SPACESTATION_PORT`/`SPACESTATION_SECRET` when set (inside a SpaceStation
    terminal) and the connection file otherwise.
 
    **`status` reflects the file, always.** It re-syncs the notebook from disk on every call, so an
@@ -122,7 +122,7 @@ done
 
 **SpaceStation writes this automatically.** When you open a folder as a workspace, its `AGENTS.md`
 and `CLAUDE.md` get a managed collab block (a single marked region, updated idempotently — the rest
-of each file is untouched). Opt out with `spacestation --no-agents-md` or `PLUTOSPACE_AGENTS_MD=0`.
+of each file is untouched). Opt out with `spacestation --no-agents-md` or `SPACESTATION_AGENTS_MD=0`.
 Or drop the stanza in by hand (works for Claude Code's CLAUDE.md too):
 
 ```markdown
@@ -175,7 +175,8 @@ cell, update the `# ╔═╡ Cell order:` block to match.
 ### Running your edits (live collaborative session)
 
 Notebooks here may be OPEN in a live lazy-mode SpaceStation server shared with a human. Editing the
-`.jl` only marks the changed cells (and everything downstream) **stale** — nothing runs until asked.
+`.jl` only marks the changed cells **stale** — nothing runs until asked. Running those cells then
+recomputes their dependents through normal Pluto reactivity.
 
 - `pluto-collab status <nb.jl>` — per-cell state (stale / cold / errored / output digest).
 - `pluto-collab output <nb.jl> --cell <id>` — one cell's FULL (untruncated) output.

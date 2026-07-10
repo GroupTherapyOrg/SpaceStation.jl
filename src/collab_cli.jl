@@ -3,7 +3,7 @@
 # The bash `pluto-collab` needs bash + curl + sed, which a Windows SpaceStation terminal (PowerShell
 # or cmd) doesn't have. This reimplements the same commands in Julia over HTTP.jl (already a dep), so
 # a coding agent gets an identical collab surface on every platform. Same connection-file discovery,
-# same PLUTOSPACE_PORT/SECRET fast path, same endpoints, same exit codes (0 ok · 1 cells errored ·
+# same SPACESTATION_PORT/SECRET fast path, same endpoints, same exit codes (0 ok · 1 cells errored ·
 # 2 no server / bad usage). Dispatched from `(@main)` in cli.jl when the first arg is `collab`.
 
 import HTTP
@@ -31,6 +31,11 @@ function _collab_candidate_servers()::Vector{Tuple{String,String}}
         end
         port = _collab_cf_field(content, "port")
         isempty(port) && continue
+        # Shared HPC homes contain connection files from many compute nodes. A loopback address in
+        # a sibling node's file means that sibling, not this machine; probing it here is both slow
+        # and can accidentally hit an unrelated local process using the same port.
+        node = _collab_cf_field(content, "node")
+        !isempty(node) && node != gethostname() && continue
         host = _collab_cf_field(content, "host")
         host in ("", "0.0.0.0", "*") && (host = "127.0.0.1")
         push!(out, ("http://$host:$port", _collab_cf_field(content, "secret")))
@@ -54,10 +59,11 @@ function _collab_alive(base)::Bool
     end
 end
 
-# The server that has `nb_abspath` open → (base, secret). Fast path: PLUTOSPACE_PORT/SECRET.
+# The server that has `nb_abspath` open → (base, secret). Fast path: the integrated-terminal env.
 function _collab_find_server(nb_abspath::String)
     candidates = Tuple{String,String}[]
-    let p = get(ENV, "PLUTOSPACE_PORT", ""), s = get(ENV, "PLUTOSPACE_SECRET", "")
+    let p = get(ENV, "SPACESTATION_PORT", get(ENV, "PLUTOSPACE_PORT", "")),
+        s = get(ENV, "SPACESTATION_SECRET", get(ENV, "PLUTOSPACE_SECRET", ""))
         (isempty(p) || isempty(s)) || push!(candidates, ("http://127.0.0.1:$p", s))
     end
     append!(candidates, _collab_candidate_servers())
@@ -104,7 +110,7 @@ Commands:
   spacestation collab restart <nb.jl> [--json]        restart the kernel + re-run everything
                                                       (only to recover a dead/exited worker)
 
-Inside a SpaceStation terminal, PLUTOSPACE_PORT/PLUTOSPACE_SECRET target the live session
+Inside a SpaceStation terminal, SPACESTATION_PORT/SPACESTATION_SECRET target the live session
 automatically. Exit codes: 0 ok · 1 cells errored · 2 no server / bad usage.
 """
 
@@ -125,7 +131,8 @@ function _collab_flags(rest::Vector{String})
     (; fmt, cells, out, stale)
 end
 
-_collab_errored(r) = something(tryparse(Int, HTTP.header(r, "X-Pluto-Cells-Errored", "0")), 0)
+_collab_errored(r) = something(tryparse(Int,
+    HTTP.header(r, "X-SpaceStation-Cells-Errored", HTTP.header(r, "X-Pluto-Cells-Errored", "0"))), 0)
 
 """
     collab_cli_main(args, cwd) -> Int
@@ -163,18 +170,22 @@ function collab_cli_main(args::Vector{String}, cwd::String)::Int
     f = _collab_flags(args[3:end])
 
     if cmd == "status"
+        (!isempty(f.cells) || !isempty(f.out) || f.stale) &&
+            (println(stderr, "spacestation collab: status only accepts --json"); return 2)
         r = _collab_get(base, "/api/v1/notebook"; query=Dict("path" => nbp, "format" => f.fmt, "secret" => secret))
         r.status == 200 || (println(stderr, "request failed ($(r.status))"); return 2)
         print(String(r.body)); return 0
 
     elseif cmd == "output"
-        isempty(f.cells) && (println(stderr, "spacestation collab: specify --cell <id>"); return 2)
+        length(f.cells) == 1 && isempty(f.out) && !f.stale ||
+            (println(stderr, "spacestation collab: output needs exactly one --cell <id> and optional --json"); return 2)
         r = _collab_get(base, "/api/v1/notebook/cell"; query=Dict("path" => nbp, "cell" => f.cells[1], "format" => f.fmt, "secret" => secret))
         r.status == 200 || (print(stderr, String(r.body)); return 2)
         print(String(r.body)); return 0
 
     elseif cmd == "figure"
-        isempty(f.cells) && (println(stderr, "spacestation collab: specify --cell <id>"); return 2)
+        length(f.cells) == 1 && !f.stale ||
+            (println(stderr, "spacestation collab: figure needs exactly one --cell <id> and optional --out <file>"); return 2)
         r = _collab_get(base, "/api/v1/notebook/figure"; query=Dict("path" => nbp, "cell" => f.cells[1], "secret" => secret))
         if r.status != 200
             print(stderr, String(r.body)); return 2
@@ -189,6 +200,8 @@ function collab_cli_main(args::Vector{String}, cwd::String)::Int
         println("wrote $out"); return 0
 
     elseif cmd == "run"
+        isempty(f.out) && xor(f.stale, !isempty(f.cells)) ||
+            (println(stderr, "spacestation collab: choose exactly one of --stale or --cell <id>"); return 2)
         query = Dict("path" => nbp, "format" => f.fmt, "secret" => secret)
         if f.stale
             query["stale"] = "true"
@@ -203,11 +216,15 @@ function collab_cli_main(args::Vector{String}, cwd::String)::Int
         return _collab_errored(r) > 0 ? 1 : 0
 
     elseif cmd == "interrupt"
+        (!isempty(f.cells) || !isempty(f.out) || f.stale || f.fmt != "text") &&
+            (println(stderr, "spacestation collab: interrupt does not accept additional options"); return 2)
         r = _collab_post(base, "/api/v1/notebook/interrupt"; query=Dict("path" => nbp, "format" => "text", "secret" => secret), readtimeout=30)
         r.status == 200 || (println(stderr, "request failed ($(r.status))"); return 2)
         print(String(r.body)); return 0
 
     elseif cmd == "restart"
+        (!isempty(f.cells) || !isempty(f.out) || f.stale) &&
+            (println(stderr, "spacestation collab: restart only accepts --json"); return 2)
         r = _collab_post(base, "/api/v1/notebook/restart"; query=Dict("path" => nbp, "format" => f.fmt, "secret" => secret))
         r.status == 200 || (println(stderr, "request failed ($(r.status))"); return 2)
         f.fmt == "text" && print(String(r.body))

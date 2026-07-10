@@ -91,15 +91,37 @@ const remember_workspace = (path) => {
 
 // Terminals live in the terminal panel as their own tabs. Their shells persist on the server
 // (keyed by tid), so we remember each terminal's tid + label and reattach on reload.
-const TERMINALS_KEY = "spacestation terminals"
-const restore_terminals = () => {
+const TERMINALS_KEY = "spacestation terminals by workspace"
+const LEGACY_TERMINALS_KEY = "spacestation terminals"
+const restore_terminals = (workspace_root) => {
+    if (typeof workspace_root !== "string" || workspace_root.length === 0) return []
     try {
-        const saved = JSON.parse(localStorage.getItem(TERMINALS_KEY) ?? "[]")
+        const all = JSON.parse(localStorage.getItem(TERMINALS_KEY) ?? "{}")
+        let saved = all && typeof all === "object" && !Array.isArray(all) ? all[workspace_root] : null
+        // One-time migration: old builds stored one global list. Adopt it for the workspace that
+        // first loads after upgrade, then remove it so other workspaces don't inherit those tabs.
+        if (!Array.isArray(saved)) {
+            const legacy = JSON.parse(localStorage.getItem(LEGACY_TERMINALS_KEY) ?? "[]")
+            if (Array.isArray(legacy) && legacy.length > 0) {
+                saved = legacy
+                localStorage.removeItem(LEGACY_TERMINALS_KEY)
+            }
+        }
         if (!Array.isArray(saved)) return []
         return saved.filter((t) => t && typeof t.tid === "string").map((t) => ({ tid: t.tid, label: t.label ?? "Terminal" }))
     } catch {
         return []
     }
+}
+const save_terminals = (workspace_root, terminals) => {
+    if (typeof workspace_root !== "string" || workspace_root.length === 0) return
+    let all = {}
+    try {
+        const parsed = JSON.parse(localStorage.getItem(TERMINALS_KEY) ?? "{}")
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) all = parsed
+    } catch {}
+    all[workspace_root] = terminals.map((t) => ({ tid: t.tid, label: t.label }))
+    localStorage.setItem(TERMINALS_KEY, JSON.stringify(all))
 }
 
 // How long to wait for an SSH connection before giving up (seconds). A busy ProxyJump login node can
@@ -1033,18 +1055,24 @@ const Land = () => {
 
     // Terminals are tabs INSIDE the terminal panel (like VS Code). Each is a persistent shell
     // keyed by tid; the list + active terminal are restored on reload. `terminal_seq` numbers them.
-    const [terminals, set_terminals] = useState(/** @type {Array<{tid: String, label: String}>} */ (() => restore_terminals()))
-    const [active_terminal, set_active_terminal] = useState(
-        /** @type {String?} */ (() => {
-            const r = restore_terminals()
-            return r.length ? r[r.length - 1].tid : null
-        })
-    )
+    const [terminals, set_terminals] = useState(/** @type {Array<{tid: String, label: String}>} */ ([]))
+    const [active_terminal, set_active_terminal] = useState(/** @type {String?} */ (null))
+    const terminals_workspace = useRef(/** @type {String?} */ (null))
     const terminal_seq = useRef(/** @type {Number} */ (-1))
-    if (terminal_seq.current < 0) {
-        const nums = terminals.map((t) => parseInt(String(t.label ?? "").replace(/[^0-9]/g, ""), 10)).filter((x) => !isNaN(x))
+
+    // Terminal tabs belong to a workspace, not the browser origin. The old global localStorage
+    // list made Terminal 1/2/3 from every folder accumulate together and reconnect in the wrong
+    // workspace. Load the independent list whenever the server's active workspace changes.
+    useEffect(() => {
+        const root = workspace?.root ?? null
+        if (root == null || terminals_workspace.current === root) return
+        const restored = restore_terminals(root)
+        terminals_workspace.current = root
+        set_terminals(restored)
+        set_active_terminal(restored.length ? restored[restored.length - 1].tid : null)
+        const nums = restored.map((t) => parseInt(String(t.label ?? "").replace(/[^0-9]/g, ""), 10)).filter((x) => !isNaN(x))
         terminal_seq.current = nums.length ? Math.max(...nums) : 0
-    }
+    }, [workspace?.root])
 
     useEffect(() => {
         localStorage.setItem("spacestation sidebar width", String(sidebar_width))
@@ -1056,8 +1084,9 @@ const Land = () => {
     }, [sidebar_width, sidebar_hidden, terminal_open, terminal_height, terminal_width, terminal_dock])
 
     useEffect(() => {
-        localStorage.setItem(TERMINALS_KEY, JSON.stringify(terminals.map((t) => ({ tid: t.tid, label: t.label }))))
-    }, [terminals])
+        const root = workspace?.root ?? null
+        if (root != null && terminals_workspace.current === root) save_terminals(root, terminals)
+    }, [terminals, workspace?.root])
 
     // Warn before a browser close/reload discards unsaved FILE edits. File buffers are client-only
     // until Save hits ./api/v1/file/save; notebooks persist server-side, and terminals reattach on
@@ -1113,12 +1142,13 @@ const Land = () => {
     )
 
     const new_terminal = useCallback(() => {
+        if (workspace?.root == null || terminals_workspace.current !== workspace.root) return
         terminal_seq.current += 1
         const tid = "term-" + Math.random().toString(36).slice(2, 12)
         set_terminals((ts) => [...ts, { tid, label: `Terminal ${terminal_seq.current}` }])
         set_active_terminal(tid)
         set_terminal_open(true)
-    }, [])
+    }, [workspace?.root])
 
     const close_terminal = useCallback((tid) => {
         // Reap the server-side shell (this is a real close, not a detach) — best-effort; the tab is
@@ -1133,8 +1163,8 @@ const Land = () => {
 
     // opening the terminal panel with no terminals yet spins up the first one
     useEffect(() => {
-        if (terminal_open && terminals.length === 0) new_terminal()
-    }, [terminal_open])
+        if (terminal_open && workspace?.root != null && terminals_workspace.current === workspace.root && terminals.length === 0) new_terminal()
+    }, [terminal_open, terminals.length, workspace?.root])
 
 
     const refresh = useCallback(async () => {
@@ -1304,7 +1334,7 @@ const Land = () => {
     const render_terminals = (shown) => html`
         <div class="terminal-tabs">
             <div class="terminal-tab-scroller">
-                ${terminals.map(
+                ${(terminals_workspace.current === workspace?.root ? terminals : []).map(
                     (t) => html`<div class="tab terminal-tab ${t.tid === active_terminal ? "active" : ""}" key=${t.tid}>
                         <button class="title" title=${t.label} onClick=${() => set_active_terminal(t.tid)}>
                             <span class="tab-term-icon">⌨</span>${t.label}
@@ -1318,7 +1348,7 @@ const Land = () => {
             </div>
         </div>
         <div class="terminal-bodies">
-            ${terminals.map(
+            ${(terminals_workspace.current === workspace?.root ? terminals : []).map(
                 (t) => html`<div key=${t.tid} class="terminal-body ${t.tid === active_terminal ? "active" : ""}">
                     <${TerminalView} tid=${t.tid} cwd=${workspace?.root} visible=${shown && t.tid === active_terminal} />
                 </div>`

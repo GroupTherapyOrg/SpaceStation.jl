@@ -87,10 +87,11 @@ function _local_spawn_task!(s::LocalSession)
         proj = something(Base.active_project(), "")
         projdir = isempty(proj) ? pkgdir(@__MODULE__) : dirname(proj)
         env = copy(ENV)
-        env["PLUTOSPACE_CHILD_WORKSPACE"] = s.path
+        env["SPACESTATION_CHILD_WORKSPACE"] = s.path
         delete!(env, "JULIA_LOAD_PATH")  # don't leak the app's load path into the child (matches worker/terminal hygiene)
-        delete!(env, "PLUTOSPACE_TUNNELED")  # a local child is directly reachable on localhost — never mark it tunneled
-        code = "m = try Base.require(Main, :SpaceStation) catch; Base.require(Main, :Pluto) end; m.run(workspace=ENV[\"PLUTOSPACE_CHILD_WORKSPACE\"], launch_browser=false)"
+        delete!(env, "SPACESTATION_TUNNELED")
+        delete!(env, "PLUTOSPACE_TUNNELED")  # legacy alias; a local child is never tunneled
+        code = "import SpaceStation; SpaceStation.run(workspace=ENV[\"SPACESTATION_CHILD_WORKSPACE\"], launch_browser=false)"
         cmd = setenv(`$(Base.julia_cmd()) --project=$(projdir) -e $(code)`, env)
         s.proc = Base.run(pipeline(cmd; stdin=devnull, stdout=logfile, stderr=logfile); wait=false)
         # Cancelled in the window before/just-after spawn? Don't leave the child orphaned.

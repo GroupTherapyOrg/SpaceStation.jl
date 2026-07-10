@@ -119,9 +119,9 @@ function _resolve_terminal_cwd(session::ServerSession, requested::Union{Nothing,
 end
 
 "Pick the interactive shell exe for a Windows terminal, VS Code-style: PowerShell 7, then
-Windows PowerShell, then cmd. Overridable with PLUTOSPACE_SHELL (name on PATH or full path)."
+Windows PowerShell, then cmd. Overridable with SPACESTATION_SHELL (name on PATH or full path)."
 function _windows_shell_exe()::String
-    override = get(ENV, "PLUTOSPACE_SHELL", "")
+    override = get(ENV, "SPACESTATION_SHELL", get(ENV, "PLUTOSPACE_SHELL", ""))
     if !isempty(override)
         return isfile(override) ? override : something(Sys.which(override), override)
     end
@@ -148,6 +148,11 @@ function _spawn_workspace_shell(session::ServerSession, dir::String; rows::Int=2
         # environment block — no shell-syntax differences), and ConPTY sets the working dir
         # directly (lpCurrentDirectory), so no `cd` is needed.
         env = Dict{String,String}(
+            "SPACESTATION" => "1",
+            "SPACESTATION_PORT" => (port === nothing ? "" : string(port)),
+            "SPACESTATION_SECRET" => session.secret,
+            "SPACESTATION_WORKSPACE" => dir,
+            # Pre-release aliases retained so existing agent scripts keep working.
             "PLUTOSPACE" => "1",
             "PLUTOSPACE_PORT" => (port === nothing ? "" : string(port)),
             "PLUTOSPACE_SECRET" => session.secret,
@@ -178,6 +183,10 @@ function _spawn_workspace_shell(session::ServerSession, dir::String; rows::Int=2
     else
         shell = get(ENV, "SHELL", Sys.isapple() ? "/bin/zsh" : "/bin/bash")
         exports = join([
+            "export SPACESTATION=1",
+            "export SPACESTATION_PORT=$(_shquote(port === nothing ? "" : string(port)))",
+            "export SPACESTATION_SECRET=$(_shquote(session.secret))",
+            "export SPACESTATION_WORKSPACE=$(_shquote(dir))",
             "export PLUTOSPACE=1",
             "export PLUTOSPACE_PORT=$(_shquote(port === nothing ? "" : string(port)))",
             "export PLUTOSPACE_SECRET=$(_shquote(session.secret))",
