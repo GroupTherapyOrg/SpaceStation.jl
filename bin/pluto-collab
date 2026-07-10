@@ -10,8 +10,8 @@
 # Dependencies: curl, sed. Discovery via the connection files that every running SpaceStation
 # server writes to $XDG_STATE_HOME/pluto/servers/<node>-<port>.json (like Jupyter kernels;
 # the <node> prefix keeps servers on a shared $HOME — one per HPC node — from colliding).
-# Inside a SpaceStation terminal this CLI is already on your PATH, and PLUTOSPACE_PORT /
-# PLUTOSPACE_SECRET point it at the live session automatically — no discovery needed.
+# Inside a SpaceStation terminal this CLI is already on your PATH, and SPACESTATION_PORT /
+# SPACESTATION_SECRET point it at the live session automatically — no discovery needed.
 #
 # Commands:
 #   pluto-collab servers                          list live SpaceStation servers
@@ -79,6 +79,9 @@ live_servers() {
         secret=$(json_field secret <"$f")
         node=$(json_field node <"$f")
         [ -n "$pid" ] && [ -n "$port" ] || continue
+        # A shared HPC home contains sibling nodes' loopback registries. They are not reachable
+        # from this node and a coincidentally reused PID/port could identify the wrong process.
+        [ -n "$node" ] && [ "$node" != "$me" ] && continue
         if kill -0 "$pid" 2>/dev/null; then
             case "$host" in ""|0.0.0.0|'*') host=127.0.0.1 ;; esac
             printf '%s\t%s\t%s\n' "$port" "$host" "$secret"
@@ -94,14 +97,16 @@ live_servers() {
 find_server_for() {
     nb_path=$(abs_path "$1")
     [ -n "$nb_path" ] || { err "no such file: $1"; return 2; }
-    # Fast path: a terminal opened inside SpaceStation exports PLUTOSPACE_PORT/PLUTOSPACE_SECRET.
+    # Fast path: canonical SpaceStation variables, with pre-release PlutoSpace aliases accepted.
     # Target THAT server directly — instant, and unambiguous when several servers are running.
-    if [ -n "${PLUTOSPACE_PORT:-}" ] && [ -n "${PLUTOSPACE_SECRET:-}" ]; then
-        base="http://127.0.0.1:$PLUTOSPACE_PORT"
-        if curl_with_secret "$PLUTOSPACE_SECRET" -sf --connect-timeout 3 -G -o /dev/null \
+    ss_port=${SPACESTATION_PORT:-${PLUTOSPACE_PORT:-}}
+    ss_secret=${SPACESTATION_SECRET:-${PLUTOSPACE_SECRET:-}}
+    if [ -n "$ss_port" ] && [ -n "$ss_secret" ]; then
+        base="http://127.0.0.1:$ss_port"
+        if curl_with_secret "$ss_secret" -sf --connect-timeout 3 -G -o /dev/null \
             --data-urlencode "path=$nb_path" -d "format=text" \
             "$base/api/v1/notebook" 2>/dev/null; then
-            printf '%s\t%s\n' "$base" "$PLUTOSPACE_SECRET"
+            printf '%s\t%s\n' "$base" "$ss_secret"
             return 0
         fi
     fi
@@ -151,6 +156,8 @@ case "$cmd" in
 
     status)
         [ $# -ge 2 ] || { err "usage: pluto-collab status <notebook.jl> [--json]"; exit 2; }
+        [ $# -le 3 ] && { [ $# -eq 2 ] || [ "$3" = "--json" ]; } ||
+            { err "status only accepts --json"; exit 2; }
         require_server "$2"
         fmt=text; [ "${3:-}" = "--json" ] && fmt=json
         curl_with_secret "$SECRET" -sf -G --data-urlencode "path=$NB_PATH" -d "format=$fmt" \
@@ -164,7 +171,7 @@ case "$cmd" in
         fmt=text; cell=""
         while [ $# -gt 0 ]; do
             case "$1" in
-                --cell) shift; cell="$1" ;;
+                --cell) shift; [ $# -gt 0 ] || { err "--cell needs an id"; exit 2; }; cell="$1" ;;
                 --json) fmt=json ;;
                 *) err "unknown argument: $1"; exit 2 ;;
             esac
@@ -182,8 +189,8 @@ case "$cmd" in
         cell=""; out=""
         while [ $# -gt 0 ]; do
             case "$1" in
-                --cell) shift; cell="$1" ;;
-                --out) shift; out="$1" ;;
+                --cell) shift; [ $# -gt 0 ] || { err "--cell needs an id"; exit 2; }; cell="$1" ;;
+                --out) shift; [ $# -gt 0 ] || { err "--out needs a file"; exit 2; }; out="$1" ;;
                 *) err "unknown argument: $1"; exit 2 ;;
             esac
             shift
@@ -216,13 +223,15 @@ case "$cmd" in
         while [ $# -gt 0 ]; do
             case "$1" in
                 --stale) mode=stale ;;
-                --cell) shift; cells="${cells:+$cells,}$1" ;;
+                --cell) shift; [ $# -gt 0 ] || { err "--cell needs an id"; exit 2; }; cells="${cells:+$cells,}$1" ;;
                 --json) fmt=json ;;
                 *) err "unknown argument: $1"; exit 2 ;;
             esac
             shift
         done
-        if [ "$mode" = "stale" ]; then
+        if [ "$mode" = "stale" ] && [ -n "$cells" ]; then
+            err "choose exactly one of --stale or --cell <id>"; exit 2
+        elif [ "$mode" = "stale" ]; then
             query="stale=true"
         elif [ -n "$cells" ]; then
             query="cells=$cells"
@@ -234,14 +243,15 @@ case "$cmd" in
             --data-urlencode "path=$NB_PATH" -d "$query" -d "format=$fmt" \
             "$BASE/api/v1/notebook/run" \
             || { rm -f "$response_headers"; err "request failed"; exit 2; }
-        errored=$(sed -n 's/^[Xx]-[Pp]luto-[Cc]ells-[Ee]rrored: *\([0-9]*\).*/\1/p' "$response_headers")
+        errored=$(sed -n 's/^[Xx]-[Ss]pace[Ss]tation-[Cc]ells-[Ee]rrored: *\([0-9]*\).*/\1/p' "$response_headers")
+        [ -n "$errored" ] || errored=$(sed -n 's/^[Xx]-[Pp]luto-[Cc]ells-[Ee]rrored: *\([0-9]*\).*/\1/p' "$response_headers")
         rm -f "$response_headers"
         [ "${errored:-0}" -gt 0 ] && exit 1
         exit 0
         ;;
 
     interrupt)
-        [ $# -ge 2 ] || { err "usage: pluto-collab interrupt <notebook.jl>"; exit 2; }
+        [ $# -eq 2 ] || { err "usage: pluto-collab interrupt <notebook.jl>"; exit 2; }
         require_server "$2"
         curl_with_secret "$SECRET" -sf -X POST -G --data-urlencode "path=$NB_PATH" -d "format=text" \
             "$BASE/api/v1/notebook/interrupt" || { err "request failed"; exit 2; }
@@ -249,6 +259,8 @@ case "$cmd" in
 
     restart)
         [ $# -ge 2 ] || { err "usage: pluto-collab restart <notebook.jl> [--json]"; exit 2; }
+        [ $# -le 3 ] && { [ $# -eq 2 ] || [ "$3" = "--json" ]; } ||
+            { err "restart only accepts --json"; exit 2; }
         require_server "$2"
         fmt=text; [ "${3:-}" = "--json" ] && fmt=json
         # No --max-time: a restart re-runs the whole notebook and the request blocks until it finishes
@@ -258,7 +270,8 @@ case "$cmd" in
             --data-urlencode "path=$NB_PATH" -d "format=$fmt" \
             "$BASE/api/v1/notebook/restart" \
             || { rm -f "$response_headers"; err "request failed"; exit 2; }
-        errored=$(sed -n 's/^[Xx]-[Pp]luto-[Cc]ells-[Ee]rrored: *\([0-9]*\).*/\1/p' "$response_headers")
+        errored=$(sed -n 's/^[Xx]-[Ss]pace[Ss]tation-[Cc]ells-[Ee]rrored: *\([0-9]*\).*/\1/p' "$response_headers")
+        [ -n "$errored" ] || errored=$(sed -n 's/^[Xx]-[Pp]luto-[Cc]ells-[Ee]rrored: *\([0-9]*\).*/\1/p' "$response_headers")
         rm -f "$response_headers"
         [ "${errored:-0}" -gt 0 ] && exit 1
         exit 0

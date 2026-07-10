@@ -268,6 +268,23 @@ function _remote_connect_task!(r::RemoteSession)
             ok, out = _ssh_try(r.host, "test -f ~/.spacestation/.install_ok && echo done; test -d $(REMOTE_BOOTSTRAP_DIR)/.git && echo cloned")
             install_done = occursin("done", out)
             cloned = occursin("cloned", out)
+            # The marker only says that an earlier instantiate completed. On HPC systems DEPOT_PATH is
+            # commonly shared across nodes, and an artifact can later be garbage-collected, partially
+            # written, or otherwise disappear while .install_ok remains. Validate the thing we actually
+            # need before trusting the marker. A failed import invalidates it and falls through to the
+            # detached repair/install path below instead of repeatedly launching a server that crashes.
+            if install_done
+                r.state = "checking"
+                r.detail = "validating the SpaceStation installation on $(r.host)"
+                healthy, _ = _ssh_try(r.host,
+                    "$(r.julia) --project=$(REMOTE_BOOTSTRAP_DIR) -e 'import SpaceStation'")
+                if !healthy
+                    _ssh_try(r.host, "rm -f ~/.spacestation/.install_ok")
+                    install_done = false
+                    r.state = "installing"
+                    r.detail = "repairing missing or damaged SpaceStation dependencies on $(r.host)"
+                end
+            end
             if !install_done
                 r.state = "installing"
                 if !cloned
@@ -289,7 +306,7 @@ function _remote_connect_task!(r::RemoteSession)
                     launch = """
                     mkdir -p ~/.spacestation
                     rm -f ~/.spacestation/.install_ok
-                    nohup sh -c 'cd "\$HOME/.spacestation/Pluto.jl" && $(r.julia) --project=. -e "import Pkg; Pkg.instantiate()" && touch "\$HOME/.spacestation/.install_ok"' > ~/.spacestation/install.log 2>&1 < /dev/null &
+                    nohup sh -c 'cd "\$HOME/.spacestation/Pluto.jl" && $(r.julia) --project=. -e "import Pkg; Pkg.instantiate(); import SpaceStation" && touch "\$HOME/.spacestation/.install_ok"' > ~/.spacestation/install.log 2>&1 < /dev/null &
                     echo \$! > ~/.spacestation/install.pid
                     echo launched
                     """
@@ -337,10 +354,10 @@ function _remote_connect_task!(r::RemoteSession)
 
             r.state = "starting"
             r.detail = "starting the SpaceStation server on $(r.host)"
-            # PLUTOSPACE_TUNNELED marks this server as reached over an SSH tunnel: its child workspace
+            # SPACESTATION_TUNNELED marks this server as reached over an SSH tunnel: its child workspace
             # ports aren't forwarded to the browser, so its frontend opens workspaces IN-PLACE instead of
             # spawning unreachable children (see serve_api_config + land.js).
-            _ssh_run(r.host, "export PLUTOSPACE_TUNNELED=1; nohup $(r.julia) --project=$(REMOTE_BOOTSTRAP_DIR) -e 'm = try Base.require(Main, :SpaceStation) catch; Base.require(Main, :Pluto) end; m.run(launch_browser=false)' > ~/.spacestation/server.log 2>&1 < /dev/null & disown; true")
+            _ssh_run(r.host, "export SPACESTATION_TUNNELED=1; nohup $(r.julia) --project=$(REMOTE_BOOTSTRAP_DIR) -e 'import SpaceStation; SpaceStation.run(launch_browser=false)' > ~/.spacestation/server.log 2>&1 < /dev/null & disown; true")
             for _ in 1:90
                 sleep(2)
                 _remote_bail(r) && return
@@ -399,7 +416,7 @@ function _remote_connect_task!(r::RemoteSession)
             end
             path = collab_registry_path(local_port)
             # 0o600 from creation (holds the remote's secret) — see _write_private_file.
-            _write_private_file(path, """{"pid": $(getpid()), "host": "127.0.0.1", "port": $(local_port), "node": $(_json_string(gethostname())), "secret": $(_json_string(remote.secret)), "remote_ssh_host": $(_json_string(r.host)), "pluto_version": $(_json_string(PLUTO_VERSION_STR)), "started_at": $(time())}\n""")
+            _write_private_file(path, """{"pid": $(getpid()), "host": "127.0.0.1", "port": $(local_port), "node": $(_json_string(gethostname())), "secret": $(_json_string(remote.secret)), "remote_ssh_host": $(_json_string(r.host)), "spacestation_version": $(_json_string(PLUTO_VERSION_STR)), "pluto_version": $(_json_string(PLUTO_VERSION_STR)), "started_at": $(time())}\n""")
         catch end
         r.state = "ready"
         r.detail = "connected — the workspace runs on $(r.host)"

@@ -103,7 +103,7 @@ function write_collab_registry_file(session::ServerSession, port::Integer)
     end
     path = collab_registry_path(port)
     ws = session.options.server.workspace_folder
-    _write_private_file(path, """{"pid": $(getpid()), "host": $(_json_string(session.options.server.host)), "port": $(port), "node": $(_json_string(gethostname())), "secret": $(_json_string(session.secret)), "workspace": $(ws === nothing ? "null" : _json_string(tamepath(ws))), "pluto_version": $(_json_string(PLUTO_VERSION_STR)), "started_at": $(time())}\n""")
+    _write_private_file(path, """{"pid": $(getpid()), "host": $(_json_string(session.options.server.host)), "port": $(port), "node": $(_json_string(gethostname())), "secret": $(_json_string(session.secret)), "workspace": $(ws === nothing ? "null" : _json_string(tamepath(ws))), "spacestation_version": $(_json_string(PLUTO_VERSION_STR)), "pluto_version": $(_json_string(PLUTO_VERSION_STR)), "started_at": $(time())}\n""")
     path
 end
 
@@ -437,10 +437,18 @@ function register_collab_api!(router, session::ServerSession)
         # regardless of watcher timing. It is a no-op when already in sync, and idempotent with a
         # concurrent watcher load (which then sees no diff). Skipped when the file was never saved.
         if !isempty(notebook.path) && isfile(notebook.path)
-            try
+            synced = try
                 synced_update_from_file(session, notebook; run_async=false)
             catch e
                 @warn "notebook/run: syncing the notebook from its file before running failed" exception = (e, catch_backtrace())
+                false
+            end
+            if !synced
+                # Never continue with the old in-memory notebook: the run path saves, so doing so
+                # could overwrite the agent's newer (temporarily incomplete or invalid) file.
+                return _api_error(409,
+                    "cannot run because the notebook file could not be parsed completely; no code was run and the file was not changed. Finish the write, verify the Pluto cell markers/order block, then retry `status` and `run`.",
+                    fmt_text)
             end
         end
 
@@ -488,6 +496,9 @@ function register_collab_api!(router, session::ServerSession)
         n_errored = count(c -> c.errored, cells)
         headers = [
             "Content-Type" => fmt_text ? "text/plain; charset=utf-8" : "application/json; charset=utf-8",
+            "X-SpaceStation-Cells-Ran" => string(length(cells)),
+            "X-SpaceStation-Cells-Errored" => string(n_errored),
+            # Pre-release aliases for older pluto-collab clients.
             "X-Pluto-Cells-Ran" => string(length(cells)),
             "X-Pluto-Cells-Errored" => string(n_errored),
         ]
@@ -541,7 +552,7 @@ function register_collab_api!(router, session::ServerSession)
             write_collab_registry_file(session, port)
         catch end
         # seed the newly-opened workspace's AGENTS.md/CLAUDE.md collab section (on by default;
-        # PLUTOSPACE_AGENTS_MD=0 / --no-agents-md opts out)
+        # SPACESTATION_AGENTS_MD=0 / --no-agents-md opts out)
         try
             maybe_write_agents_md(session)
         catch end
@@ -566,7 +577,7 @@ function register_collab_api!(router, session::ServerSession)
     # so the launcher opens workspaces IN-PLACE instead of spawning unreachable child tabs.
     function serve_api_config(request::HTTP.Request)
         body = _json(Pair[
-            "tunneled" => haskey(ENV, "PLUTOSPACE_TUNNELED"),
+            "tunneled" => haskey(ENV, "SPACESTATION_TUNNELED") || haskey(ENV, "PLUTOSPACE_TUNNELED"),
             "pluto_version" => PLUTO_VERSION_STR,
             # the integrated terminal's pty is ConPTY here — xterm.js needs to know to enable
             # its Windows heuristics (see TerminalView in land.js)
@@ -704,7 +715,7 @@ function register_collab_api!(router, session::ServerSession)
     # for a worker that has died/exited (Malt.TerminatedWorkerException, "Process exited"): `interrupt`
     # only stops a running cell and `run` needs a live process, so neither can revive a crashed kernel —
     # `restart` can. Blocking like /run: the response is held until the fresh process has re-run the
-    # notebook, then reports the resulting cell states (X-Pluto-Cells-Errored header, exit 1 for clients).
+    # notebook, then reports the resulting cell states (error-count header, exit 1 for clients).
     function serve_api_restart(request::HTTP.Request)
         query = HTTP.queryparams(HTTP.URI(request.target))
         fmt_text = _api_wants_text(query)
@@ -718,6 +729,8 @@ function register_collab_api!(router, session::ServerSession)
         n_errored = count(c -> c.errored, notebook.cells)
         headers = [
             "Content-Type" => fmt_text ? "text/plain; charset=utf-8" : "application/json; charset=utf-8",
+            "X-SpaceStation-Cells-Ran" => string(length(notebook.cells)),
+            "X-SpaceStation-Cells-Errored" => string(n_errored),
             "X-Pluto-Cells-Ran" => string(length(notebook.cells)),
             "X-Pluto-Cells-Errored" => string(n_errored),
         ]

@@ -80,6 +80,17 @@ write_nb V2
 check "the NEW code executed (marker = V2, not V1)" sh -c "grep -qx V2 '$MARK'"
 check "the .jl on disk is still V2 (not overwritten with V1)" grep -q '"V2"' "$NB"
 
+echo "--- FAILED SYNC: an incomplete agent write must fail closed, never run/save old code"
+# Model the window between truncate/write operations (or a malformed agent edit). The API's
+# mandatory pre-run sync must reject this file. Continuing with the in-memory V2 notebook would
+# save V2 over the agent's write and falsely return success.
+printf '%s\n' '### incomplete notebook write' > "$NB"
+"$CLI" run "$NB" --stale >/dev/null 2>&1
+rc=$?
+check "run rejects an unparseable/incomplete notebook (exit 2, got $rc)" test "$rc" = 2
+check "no old code executed after failed sync (marker remains V2)" sh -c "grep -qx V2 '$MARK'"
+check "failed sync did not overwrite the agent file" grep -q '^### incomplete notebook write$' "$NB"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" = 0 ] && echo "COLLAB RUN-RACE TEST PASSED" || echo "COLLAB RUN-RACE TEST FAILED"
