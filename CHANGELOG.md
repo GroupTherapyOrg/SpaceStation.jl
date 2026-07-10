@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.4](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.2.3...v0.2.4) (2026-07-10)
+
+
+### Bug Fixes
+
+* harden remote, collab, and terminal workflows ([#18](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/18)) ([f8275e1](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/f8275e10a9c1b7999965ad7d3045f483ca0104c2))
+
 ## [0.2.3](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.2.2...v0.2.3) (2026-07-07)
 
 
