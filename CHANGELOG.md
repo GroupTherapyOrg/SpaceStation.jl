@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.6](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.2.5...v0.2.6) (2026-07-13)
+
+
+### Bug Fixes
+
+* avoid duplicate terminal on refresh ([#22](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/22)) ([d78dcee](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/d78dcee555f75c7fa7fb1a781ba17c3516a056b3))
+
 ## [0.2.5](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.2.4...v0.2.5) (2026-07-13)
 
 
