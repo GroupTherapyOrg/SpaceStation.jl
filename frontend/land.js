@@ -579,6 +579,7 @@ const TerminalView = ({ tid, cwd, visible }) => {
     const socket_ref = useRef(/** @type {WebSocket?} */ (null))
     const term_ref = useRef(/** @type {any} */ (null))
     const ro_ref = useRef(/** @type {ResizeObserver?} */ (null))
+    const paste_cleanup_ref = useRef(/** @type {(() => void)?} */ (null))
 
     // Fit ONLY when the host is genuinely on-screen at a real size, and debounced so a panel that
     // is animating open settles before we measure. Fitting a hidden tab (display:none → 0px) makes
@@ -647,53 +648,43 @@ const TerminalView = ({ tid, cwd, visible }) => {
             // Assigned when the websocket opens (below); the paste handler needs it, so it lives out here.
             let socket = null
 
-            // Paste from the clipboard. An image can't go through xterm's text-only paste — the bytes have
-            // to reach wherever the shell runs (local, or the remote over SSH). So read the clipboard
-            // richly: if it holds an image, base64 it and send a "2:<ext>:<base64>" frame — the server
-            // drops it in a temp file and types the path, so any CLI agent in the shell can open it.
-            // Otherwise paste text, exactly as before. Falls back to readText() if read() is unavailable.
-            const paste_from_clipboard = async () => {
-                try {
-                    if (navigator.clipboard?.read) {
-                        const items = await navigator.clipboard.read()
-                        for (const item of items) {
-                            const image_type = item.types.find((ty) => ty.startsWith("image/"))
-                            if (image_type == null) continue
-                            const bytes = new Uint8Array(await (await item.getType(image_type)).arrayBuffer())
-                            let bin = ""
-                            for (let i = 0; i < bytes.length; i += 0x8000) {
-                                bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000))
-                            }
-                            const ext = image_type.split("/")[1] || "png"
-                            if (socket?.readyState === WebSocket.OPEN) socket.send(`2:${ext}:${btoa(bin)}`)
-                            return
-                        }
-                    }
-                } catch {
-                    // read() can be unavailable or blocked (permissions/focus) — fall through to text
-                }
-                try {
-                    const text = await navigator.clipboard?.readText()
-                    if (text) term.paste(text)
-                } catch {}
-            }
-
-            // Copy/paste: Cmd/Ctrl+C copies when there is a selection (otherwise it falls through to the
-            // shell as SIGINT); Cmd+V — and Ctrl+Shift+V — paste from the clipboard (text or image). (xterm
-            // already forwards a native browser paste to the shell; this adds the explicit shortcuts, the
-            // selection-aware copy that xterm does not do on its own, and image paste.)
+            // Copy: Cmd/Ctrl+C copies when there is a selection; otherwise it falls through to the shell
+            // as SIGINT. Text paste is deliberately NOT handled here: xterm already consumes the browser's
+            // native `paste` event. Calling term.paste() from Cmd+V as well made Safari deliver every paste
+            // twice — once from this keydown path and once from its native paste event.
             term.attachCustomKeyEventHandler((e) => {
                 if (e.type !== "keydown") return true
                 if ((e.metaKey || e.ctrlKey) && (e.key === "c" || e.key === "C") && term.hasSelection()) {
                     navigator.clipboard?.writeText(term.getSelection()).catch(() => {})
                     return false
                 }
-                if ((e.metaKey && e.key === "v") || (e.ctrlKey && e.shiftKey && (e.key === "v" || e.key === "V"))) {
-                    paste_from_clipboard()
-                    return false
-                }
                 return true
             })
+
+            // Images cannot go through xterm's text-only paste. Intercept ONLY a native paste carrying
+            // an image; ordinary text is left untouched for xterm to process exactly once. Using the
+            // ClipboardEvent payload also works without navigator.clipboard permissions and preserves
+            // the browser's user-gesture semantics in Safari.
+            const handle_image_paste = async (/** @type {ClipboardEvent} */ e) => {
+                const image_item = Array.from(e.clipboardData?.items ?? []).find((item) => item.type?.startsWith("image/"))
+                const image_file = image_item?.getAsFile() ?? Array.from(e.clipboardData?.files ?? []).find((file) => file.type?.startsWith("image/"))
+                if (image_file == null) return
+                e.preventDefault()
+                e.stopPropagation()
+                try {
+                    const bytes = new Uint8Array(await image_file.arrayBuffer())
+                    let bin = ""
+                    for (let i = 0; i < bytes.length; i += 0x8000) {
+                        bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000))
+                    }
+                    const ext = image_file.type.split("/")[1] || "png"
+                    if (socket?.readyState === WebSocket.OPEN) socket.send(`2:${ext}:${btoa(bin)}`)
+                } catch {}
+            }
+            // Capture before xterm's textarea handler: image clipboards can also expose a text
+            // representation, which xterm must not paste in addition to the uploaded image path.
+            term.element?.addEventListener("paste", handle_image_paste, { capture: true })
+            paste_cleanup_ref.current = () => term.element?.removeEventListener("paste", handle_image_paste, { capture: true })
 
             // Measure after the webfont is ready, so the cell size (hence the column count) is correct.
             try {
@@ -770,6 +761,8 @@ const TerminalView = ({ tid, cwd, visible }) => {
     useEffect(() => {
         return () => {
             clearTimeout(refit_timer.current)
+            paste_cleanup_ref.current?.()
+            paste_cleanup_ref.current = null
             try {
                 ro_ref.current?.disconnect()
             } catch {}
