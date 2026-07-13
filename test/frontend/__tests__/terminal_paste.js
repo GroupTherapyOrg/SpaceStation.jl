@@ -39,13 +39,18 @@ describe("SpaceStation terminal paste", () => {
         // browser's native paste event. Mocking the Clipboard API and delivering both events makes
         // Safari's double-delivery deterministic in Chromium: old code writes XX, fixed code X.
         await page.evaluateOnNewDocument((text) => {
+            window.__clipboardReadCalls = 0
             Object.defineProperty(navigator, "clipboard", {
                 configurable: true,
                 value: {
                     read: async () => {
+                        window.__clipboardReadCalls += 1
                         throw new Error("force the legacy readText fallback")
                     },
-                    readText: async () => text,
+                    readText: async () => {
+                        window.__clipboardReadCalls += 1
+                        return text
+                    },
                     writeText: async () => {},
                 },
             })
@@ -79,5 +84,6 @@ describe("SpaceStation terminal paste", () => {
             await new Promise((resolve) => setTimeout(resolve, 50))
         }
         expect(result).toBe("X")
+        expect(await page.evaluate(() => window.__clipboardReadCalls)).toBe(0)
     })
 })
