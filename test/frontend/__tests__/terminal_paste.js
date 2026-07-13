@@ -5,7 +5,7 @@ import puppeteer from "puppeteer"
 import { createPage } from "../helpers/common"
 import { getPlutoUrl } from "../helpers/pluto"
 
-describe("SpaceStation terminal paste", () => {
+describe("SpaceStation terminal", () => {
     /** @type {import("puppeteer").Browser} */
     let browser = null
     /** @type {import("puppeteer").Page} */
@@ -86,5 +86,48 @@ describe("SpaceStation terminal paste", () => {
         }
         expect(result).toBe("X")
         expect(await page.evaluate(() => window.__clipboardReadCalls)).toBe(0)
+    })
+
+    it("restores an open terminal on hard refresh without creating another", async () => {
+        page = await createPage(browser)
+        // This browser context is shared with the paste test above. Reset its terminal state before
+        // Land mounts, not afterward: a mounted page with `terminal_open=true` can race our cleanup
+        // by persisting that state again. The session marker keeps the saved terminal intact on the
+        // hard refresh that this test is meant to exercise.
+        await page.evaluateOnNewDocument(() => {
+            if (sessionStorage.getItem("spacestation terminal refresh test initialized") === "true") return
+            localStorage.removeItem("spacestation terminals by workspace")
+            localStorage.removeItem("spacestation terminals")
+            localStorage.removeItem("spacestation terminal open")
+            sessionStorage.setItem("spacestation terminal refresh test initialized", "true")
+        })
+        await page.goto(getPlutoUrl(), { waitUntil: "domcontentloaded" })
+
+        await page.waitForSelector("button.terminal-toggle", { visible: true })
+        await page.click("button.terminal-toggle")
+        await page.waitForSelector(".terminal-host .xterm-helper-textarea", { visible: true, timeout: 30000 })
+        await page.waitForFunction(() => document.querySelectorAll(".terminal-tab .title").length === 1)
+        await page.waitForFunction(() => {
+            const saved = Object.values(JSON.parse(localStorage.getItem("spacestation terminals by workspace") ?? "{}"))
+            return saved.flat().length === 1
+        })
+
+        const original_tid = await page.evaluate(() => {
+            const saved = Object.values(JSON.parse(localStorage.getItem("spacestation terminals by workspace") ?? "{}"))
+            return saved.flat()[0]?.tid ?? null
+        })
+        expect(original_tid).not.toBeNull()
+
+        await page.reload({ waitUntil: "domcontentloaded" })
+        await page.waitForSelector(".terminal-host .xterm-helper-textarea", { visible: true, timeout: 30000 })
+        // Let all post-load effects settle; the old race appended Terminal 2 here.
+        await new Promise((resolve) => setTimeout(resolve, 500))
+
+        expect(await page.$$eval(".terminal-tab .title", (tabs) => tabs.map((tab) => tab.getAttribute("title")))).toEqual(["Terminal 1"])
+        const restored_tids = await page.evaluate(() => {
+            const saved = Object.values(JSON.parse(localStorage.getItem("spacestation terminals by workspace") ?? "{}"))
+            return saved.flat().map((terminal) => terminal.tid)
+        })
+        expect(restored_tids).toEqual([original_tid])
     })
 })
