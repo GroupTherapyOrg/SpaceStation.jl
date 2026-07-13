@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.5](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.2.4...v0.2.5) (2026-07-13)
+
+
+### Bug Fixes
+
+* terminal paste duplication and permission prompts ([#20](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/20)) ([03ba583](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/03ba583a6a9189fc3ab339a060e61f200285b6b6))
+
 ## [0.2.4](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.2.3...v0.2.4) (2026-07-10)
 
 
