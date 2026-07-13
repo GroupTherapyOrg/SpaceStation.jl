@@ -650,8 +650,8 @@ const TerminalView = ({ tid, cwd, visible }) => {
 
             // Copy: Cmd/Ctrl+C copies when there is a selection; otherwise it falls through to the shell
             // as SIGINT. Text paste is deliberately NOT handled here: xterm already consumes the browser's
-            // native `paste` event. Calling term.paste() from Cmd+V as well made Safari deliver every paste
-            // twice — once from this keydown path and once from its native paste event.
+            // native `paste` event. Calling the privileged Clipboard API from Cmd+V as well caused
+            // browser permission prompts and could deliver text twice through the two competing paths.
             term.attachCustomKeyEventHandler((e) => {
                 if (e.type !== "keydown") return true
                 if ((e.metaKey || e.ctrlKey) && (e.key === "c" || e.key === "C") && term.hasSelection()) {
@@ -664,7 +664,7 @@ const TerminalView = ({ tid, cwd, visible }) => {
             // Images cannot go through xterm's text-only paste. Intercept ONLY a native paste carrying
             // an image; ordinary text is left untouched for xterm to process exactly once. Using the
             // ClipboardEvent payload also works without navigator.clipboard permissions and preserves
-            // the browser's user-gesture semantics in Safari.
+            // the browser's native user-gesture semantics.
             const handle_image_paste = async (/** @type {ClipboardEvent} */ e) => {
                 const image_item = Array.from(e.clipboardData?.items ?? []).find((item) => item.type?.startsWith("image/"))
                 const image_file = image_item?.getAsFile() ?? Array.from(e.clipboardData?.files ?? []).find((file) => file.type?.startsWith("image/"))

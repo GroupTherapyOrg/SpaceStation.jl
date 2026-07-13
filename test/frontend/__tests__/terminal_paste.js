@@ -30,14 +30,15 @@ describe("SpaceStation terminal paste", () => {
         browser = null
     })
 
-    it("handles Safari's keydown plus native paste as one text paste", async () => {
+    it("uses native text paste once without requesting clipboard-read permission", async () => {
         sentinel = path.join(os.tmpdir(), `spacestation-terminal-paste-${process.pid}-${Date.now()}`)
         const command = `printf X >> '${sentinel}'`
         page = await createPage(browser)
 
         // The old handler explicitly read the clipboard on Cmd+V while xterm also handled the
         // browser's native paste event. Mocking the Clipboard API and delivering both events makes
-        // Safari's double-delivery deterministic in Chromium: old code writes XX, fixed code X.
+        // the competing keydown + native-paste paths deterministic: old code writes XX and invokes
+        // the permission-gated Clipboard API, while fixed code writes X without reading the clipboard.
         await page.evaluateOnNewDocument((text) => {
             window.__clipboardReadCalls = 0
             Object.defineProperty(navigator, "clipboard", {
