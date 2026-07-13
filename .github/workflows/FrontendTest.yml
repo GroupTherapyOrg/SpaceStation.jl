@@ -53,6 +53,7 @@ jobs:
                   options = SpaceStation.Configuration.from_flat_kwargs(;
                     port=parse(Int, ENV["PLUTO_PORT"]),
                     require_secret_for_access=false,
+                    workspace=ENV["GITHUB_WORKSPACE"],
                     # The upstream E2E suite exercises classic autorun Pluto (open runs the
                     # notebook, Safe Preview acceptance runs code). Under the lazy default those
                     # opens only mark cells stale ("Code not executed in Safe preview" outputs).
