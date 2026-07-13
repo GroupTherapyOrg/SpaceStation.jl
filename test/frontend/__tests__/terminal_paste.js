@@ -90,13 +90,18 @@ describe("SpaceStation terminal", () => {
 
     it("restores an open terminal on hard refresh without creating another", async () => {
         page = await createPage(browser)
-        await page.goto(getPlutoUrl(), { waitUntil: "domcontentloaded" })
-        await page.evaluate(() => {
+        // This browser context is shared with the paste test above. Reset its terminal state before
+        // Land mounts, not afterward: a mounted page with `terminal_open=true` can race our cleanup
+        // by persisting that state again. The session marker keeps the saved terminal intact on the
+        // hard refresh that this test is meant to exercise.
+        await page.evaluateOnNewDocument(() => {
+            if (sessionStorage.getItem("spacestation terminal refresh test initialized") === "true") return
             localStorage.removeItem("spacestation terminals by workspace")
             localStorage.removeItem("spacestation terminals")
             localStorage.removeItem("spacestation terminal open")
+            sessionStorage.setItem("spacestation terminal refresh test initialized", "true")
         })
-        await page.reload({ waitUntil: "domcontentloaded" })
+        await page.goto(getPlutoUrl(), { waitUntil: "domcontentloaded" })
 
         await page.waitForSelector("button.terminal-toggle", { visible: true })
         await page.click("button.terminal-toggle")
