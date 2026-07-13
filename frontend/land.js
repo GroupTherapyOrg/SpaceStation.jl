@@ -1051,6 +1051,7 @@ const Land = () => {
     const [terminals, set_terminals] = useState(/** @type {Array<{tid: String, label: String}>} */ ([]))
     const [active_terminal, set_active_terminal] = useState(/** @type {String?} */ (null))
     const terminals_workspace = useRef(/** @type {String?} */ (null))
+    const [terminals_loaded_for, set_terminals_loaded_for] = useState(/** @type {String?} */ (null))
     const terminal_seq = useRef(/** @type {Number} */ (-1))
 
     // Terminal tabs belong to a workspace, not the browser origin. The old global localStorage
@@ -1065,6 +1066,10 @@ const Land = () => {
         set_active_terminal(restored.length ? restored[restored.length - 1].tid : null)
         const nums = restored.map((t) => parseInt(String(t.label ?? "").replace(/[^0-9]/g, ""), 10)).filter((x) => !isNaN(x))
         terminal_seq.current = nums.length ? Math.max(...nums) : 0
+        // The state updates above land on the next render. Until then, `terminals` still belongs to
+        // the previous render/workspace and must neither be persisted nor treated as an empty list
+        // that needs a brand-new terminal.
+        set_terminals_loaded_for(root)
     }, [workspace?.root])
 
     useEffect(() => {
@@ -1078,8 +1083,8 @@ const Land = () => {
 
     useEffect(() => {
         const root = workspace?.root ?? null
-        if (root != null && terminals_workspace.current === root) save_terminals(root, terminals)
-    }, [terminals, workspace?.root])
+        if (root != null && terminals_workspace.current === root && terminals_loaded_for === root) save_terminals(root, terminals)
+    }, [terminals, terminals_loaded_for, workspace?.root])
 
     // Warn before a browser close/reload discards unsaved FILE edits. File buffers are client-only
     // until Save hits ./api/v1/file/save; notebooks persist server-side, and terminals reattach on
@@ -1154,10 +1159,20 @@ const Land = () => {
         })
     }, [])
 
-    // opening the terminal panel with no terminals yet spins up the first one
+    // Opening the terminal panel with no terminals yet spins up the first one, but only AFTER the
+    // saved list for this workspace has reached React state. On a hard refresh `terminal_open` is
+    // restored synchronously while the terminal list is loaded in an effect; without this gate the
+    // pre-load empty state creates a duplicate beside the restored terminal.
     useEffect(() => {
-        if (terminal_open && workspace?.root != null && terminals_workspace.current === workspace.root && terminals.length === 0) new_terminal()
-    }, [terminal_open, terminals.length, workspace?.root])
+        if (
+            terminal_open &&
+            workspace?.root != null &&
+            terminals_workspace.current === workspace.root &&
+            terminals_loaded_for === workspace.root &&
+            terminals.length === 0
+        )
+            new_terminal()
+    }, [terminal_open, terminals.length, terminals_loaded_for, workspace?.root])
 
 
     const refresh = useCallback(async () => {
