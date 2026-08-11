@@ -180,8 +180,21 @@ function _list_dir_shallow(dir::String, budget::Ref{Int})
 end
 
 """
+Is `path` inside `root`, or `root` itself? Both are expected absolute and normalized (`tamepath`).
+The workspace listing endpoint answers only for folders under the workspace, so a client bug — or
+a hand-written request — cannot walk the rest of the disk through it.
+"""
+_within(root::String, path::String) =
+    path == root || startswith(path, endswith(root, "/") ? root : root * "/")
+
+"""
 Listing of a workspace folder as JSON-able pairs, depth- and entry-budgeted. Bulky tool directories
 (and `.git`) are skipped, but dotfiles are shown.
+
+`depth=0` lists just this folder, which is what the hub's lazy sidebar asks for — one folder per
+request, only for folders the user has actually opened. Deeper values pre-walk the tree in one
+response; nothing in the hub needs that any more, but `/api/v1/workspace?depth=N` still offers it
+for scripts that want the whole shape at once.
 
 The walk is **breadth-first**: every entry of a folder — directories AND files — is listed before
 anything descends into a subfolder. A depth-first walk lets one fat subdirectory spend the whole
@@ -669,19 +682,48 @@ function register_collab_api!(router, session::ServerSession)
     end
     HTTP.register!(router, "GET", "/api/v1/ssh_hosts", serve_api_ssh_hosts)
 
+    # The workspace root: its own entries, plus the git branch the sidebar header shows. `?depth=N`
+    # (default 0, this folder only) pre-walks N levels into the response for a caller that wants the
+    # whole shape in one go — the hub does not, it expands folders one at a time via /listing below.
     function serve_api_workspace(request::HTTP.Request)
         ws = session.options.server.workspace_folder
         ws === nothing && return _api_error(404, "this server has no workspace folder — start with SpaceStation.run(workspace=\"/path\")", false)
         root = tamepath(ws)
         isdir(root) || return _api_error(404, "workspace folder does not exist: $root", false)
+        query = HTTP.queryparams(HTTP.URI(request.target))
+        depth = if haskey(query, "depth")
+            d = tryparse(Int, query["depth"])
+            d === nothing && return _api_error(400, "depth must be an integer, got $(query["depth"])", false)
+            max(0, d)
+        else
+            0
+        end
         body = _json(Pair[
             "root" => root,
-            "entries" => _workspace_entries(root),
+            "entries" => _workspace_entries(root; depth),
             "git" => _git_workspace_info(root),
         ])
         HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], body * "\n")
     end
     HTTP.register!(router, "GET", "/api/v1/workspace", serve_api_workspace)
+
+    # One folder's entries, nothing below it. This is what makes the sidebar's cost track what the
+    # user has open rather than the size of the workspace: the hub asks for a folder when it is
+    # expanded, and its 10s poll re-asks only for the folders currently on screen. The recursive
+    # walk could not do that — it re-read (and re-serialized) the entire tree six times a minute,
+    # and needed an entry budget to stay bounded, which is what used to hide files.
+    function serve_api_workspace_listing(request::HTTP.Request)
+        ws = session.options.server.workspace_folder
+        ws === nothing && return _api_error(404, "this server has no workspace folder — start with SpaceStation.run(workspace=\"/path\")", false)
+        root = tamepath(ws)
+        query = HTTP.queryparams(HTTP.URI(request.target))
+        path = haskey(query, "path") ? tamepath(query["path"]) : root
+        _within(root, path) || return _api_error(403, "path is outside the workspace: $path", false)
+        isdir(path) || return _api_error(404, "not a directory: $path", false)
+        body = _json(Pair["path" => path, "entries" => _workspace_entries(path; depth=0)])
+        HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], body * "\n")
+    end
+    HTTP.register!(router, "GET", "/api/v1/workspace/listing", serve_api_workspace_listing)
 
     function serve_api_file_get(request::HTTP.Request)
         query = HTTP.queryparams(HTTP.URI(request.target))

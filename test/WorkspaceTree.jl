@@ -100,6 +100,40 @@ end
         @test isempty(find_node(d1["children"], "d2")["children"])
     end
 
+    # `depth=0` is what the hub's sidebar asks for: one folder, nothing below it. The budget then
+    # bounds a single folder rather than a whole tree, so the size of the workspace stops mattering.
+    @testset "depth=0 lists one folder and stops" begin
+        listing = Pluto._workspace_entries(root; depth=0, budget=Ref(10_000))
+        @test issubset([".big", "zzz_folder", "notebook.jl"], names_of(listing))
+        for d in nodes(listing)
+            d["type"] == "dir" && @test isempty(d["children"])
+        end
+        # each folder is asked for on its own, so a tree of any depth is reachable one step at a time
+        deep = joinpath(root, "e1", "e2", "e3", "e4", "e5", "e6", "e7", "e8")
+        mkpath(deep)
+        write(joinpath(deep, "buried.jl"), "### A Pluto.jl notebook ###\n")
+        at = root
+        for step in ("e1", "e2", "e3", "e4", "e5", "e6", "e7", "e8")
+            here = Pluto._workspace_entries(at; depth=0)
+            @test step ∈ names_of(here)
+            at = joinpath(at, step)
+        end
+        # 8 levels down — past anything the recursive walk's depth limit would have reached
+        @test find_node(Pluto._workspace_entries(at; depth=0), "buried.jl")["type"] == "notebook"
+    end
+
+    @testset "the listing endpoint stays inside the workspace" begin
+        @test Pluto._within(root, root)
+        @test Pluto._within(root, joinpath(root, "zzz_folder"))
+        @test Pluto._within(root, joinpath(root, "a", "b", "c"))
+        @test !Pluto._within(root, dirname(root))
+        @test !Pluto._within(root, "/etc")
+        # `..` is resolved by tamepath before the check, so it cannot escape
+        @test !Pluto._within(root, Pluto.tamepath(joinpath(root, "..", "..")))
+        # a sibling whose name merely starts with the root's is not inside it
+        @test !Pluto._within(root, root * "_other")
+    end
+
     @testset "a missing folder is empty, not an error" begin
         @test isempty(Pluto._workspace_entries(joinpath(root, "nope")))
     end
