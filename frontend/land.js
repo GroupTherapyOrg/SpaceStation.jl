@@ -161,6 +161,19 @@ const FileEntry = ({ entry, on_open_notebook, on_open_file, on_create_in, on_del
                 : null}
         </li>`
     }
+    // the server budgets how many entries one workspace tree may hold; a folder it stopped short of
+    // ends with this marker, so a short (or empty) listing never reads as "that's all there is"
+    if (entry.type === "truncated") {
+        return html`<li class="truncated">
+            <div class="entry-row">
+                <span
+                    class="entry plain"
+                    title="This workspace has more files than SpaceStation lists in one go. Use the terminal to see the rest of this folder."
+                    >… not listed</span
+                >
+            </div>
+        </li>`
+    }
     const is_notebook = entry.type === "notebook"
     return html`<li class=${is_notebook ? "notebook" : "file"}>
         <div class="entry-row">

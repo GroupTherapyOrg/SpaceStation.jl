@@ -374,6 +374,11 @@ body.resizing #frames iframe {
     box-shadow: none;
 }
 
+/* the marker closing a folder the server stopped listing (entry budget reached) */
+#land li.truncated > .entry-row > .entry {
+    font-style: italic;
+}
+
 .entry.quiet {
     opacity: 0.6;
 }

@@ -128,31 +128,46 @@ end
 
 # Dotfiles ARE shown (you want to see .gitignore, .github/, env files…); we only skip the few
 # entries that are pure noise or so large they'd blow the entry budget and bury real files.
-const _WORKSPACE_SKIPLIST = ("node_modules", "frontend-dist", ".git", ".DS_Store")
+const _WORKSPACE_SKIPLIST = (
+    "node_modules", "frontend-dist", ".git", ".DS_Store",
+    # dependency/build dirs with thousands of entries nobody browses from a notebook workspace
+    ".venv", "venv", "__pycache__", ".tox", ".mypy_cache", ".pytest_cache", ".ipynb_checkpoints",
+    ".parcel-cache", ".ruff_cache", ".jj",
+)
 
-"Recursive listing of a workspace folder as JSON-able pairs. Depth- and entry-budgeted; bulky tool directories (and .git) are skipped, but dotfiles are shown."
-function _workspace_entries(dir::String; depth::Int=6, budget::Ref{Int}=Ref(2000))
-    entries = Vector{Pair}[]
-    isdir(dir) || return entries
+# One entry in the workspace tree, and the listing of a folder: a node is a vector of pairs so it
+# serializes as a JSON object, a listing is a vector of those so it serializes as a JSON array.
+const _TreeNode = Vector{Pair}
+const _TreeListing = Vector{_TreeNode}
+
+"""
+List one folder's own entries as JSON-able pairs — directories first, then files, like every file
+browser — without recursing. Each directory node gets an empty `children` listing; the returned
+`subdirs` vector pairs those listings with their paths so the caller can fill them in afterwards.
+Decrements the shared `budget`; `truncated` says whether this folder had more entries than were left.
+"""
+function _list_dir_shallow(dir::String, budget::Ref{Int})
+    entries = _TreeListing()
+    subdirs = Tuple{_TreeListing,String}[]
     names = try
         sort(readdir(dir))
     catch
-        return entries
+        return (entries, subdirs, false)
     end
-    # directories first, like every file browser
+    truncated = false
     for want_dir in (true, false), name in names
-        budget[] <= 0 && break
         name ∈ _WORKSPACE_SKIPLIST && continue
         p = joinpath(dir, name)
         isdir(p) == want_dir || continue
+        if budget[] <= 0
+            truncated = true
+            break # both loops: we already know this folder is cut short
+        end
         budget[] -= 1
         if want_dir
-            push!(entries, Pair[
-                "name" => name,
-                "path" => p,
-                "type" => "dir",
-                "children" => depth <= 0 ? Vector{Pair}[] : _workspace_entries(p; depth=depth - 1, budget),
-            ])
+            children = _TreeListing()
+            push!(entries, Pair["name" => name, "path" => p, "type" => "dir", "children" => children])
+            push!(subdirs, (children, p))
         else
             push!(entries, Pair[
                 "name" => name,
@@ -161,7 +176,55 @@ function _workspace_entries(dir::String; depth::Int=6, budget::Ref{Int}=Ref(2000
             ])
         end
     end
-    entries
+    (entries, subdirs, truncated)
+end
+
+"""
+Listing of a workspace folder as JSON-able pairs, depth- and entry-budgeted. Bulky tool directories
+(and `.git`) are skipped, but dotfiles are shown.
+
+The walk is **breadth-first**: every entry of a folder — directories AND files — is listed before
+anything descends into a subfolder. A depth-first walk lets one fat subdirectory spend the whole
+budget before its siblings, or even its parent's files, are looked at; a workspace containing a
+`.venv` then showed two folders in the sidebar and nothing else. Level-by-level, the shallow
+entries a person actually wants are the ones that fit in the budget.
+
+A folder the budget stopped short of ends with a `"truncated"` marker entry, so the frontend can
+say "not listed" instead of quietly showing a short — or empty — folder.
+
+Once the budget is spent the walk stops immediately: the folders still queued are marked unlisted
+without being read at all. This endpoint is polled every 10s by every open hub tab, so an
+exhausted budget must cost nothing more, not one `readdir` per folder it declined to list.
+"""
+function _workspace_entries(dir::String; depth::Int=6, budget::Ref{Int}=Ref(2000))
+    root = _TreeListing()
+    isdir(dir) || return root
+    mark_unlisted!(into, path) = push!(into, Pair["name" => "…", "path" => path, "type" => "truncated"])
+    # the frontier: folders whose contents still have to be listed, as (fill this listing, path, depth left)
+    frontier = Tuple{_TreeListing,String,Int}[(root, dir, depth)]
+    while !isempty(frontier)
+        next_frontier = Tuple{_TreeListing,String,Int}[]
+        for (i, (into, path, d)) in enumerate(frontier)
+            if budget[] <= 0
+                # Nothing left to spend: flag every folder we never opened — the rest of this
+                # level, plus everything already queued below it — and stop walking.
+                unopened = Iterators.flatten((view(frontier, i:lastindex(frontier)), next_frontier))
+                for (rest_into, rest_path, _) in unopened
+                    mark_unlisted!(rest_into, rest_path)
+                end
+                return root
+            end
+            entries, subdirs, truncated = _list_dir_shallow(path, budget)
+            append!(into, entries)
+            truncated && mark_unlisted!(into, path)
+            d <= 0 && continue
+            for (children, child_path) in subdirs
+                push!(next_frontier, (children, child_path, d - 1))
+            end
+        end
+        frontier = next_frontier
+    end
+    root
 end
 
 # Walk up from `dir` to the repo's `.git` (a directory, or — for linked worktrees and
