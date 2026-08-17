@@ -179,13 +179,25 @@ function _list_dir_shallow(dir::String, budget::Ref{Int})
     (entries, subdirs, truncated)
 end
 
+# `/` on unix, `\` on Windows — both are accepted wherever a path is split, because a path that
+# reaches this file has been through `tamepath`/`joinpath` on whichever platform the server runs on.
+const _PATH_SEPARATORS = ('/', '\\')
+
 """
 Is `path` inside `root`, or `root` itself? Both are expected absolute and normalized (`tamepath`).
 The workspace listing endpoint answers only for folders under the workspace, so a client bug — or
 a hand-written request — cannot walk the rest of the disk through it.
+
+What follows `root` has to be a separator, or `/ws_other` would count as inside `/ws` — and it may
+be either separator: on Windows `tamepath` and the `joinpath` that builds every entry's path both
+produce `\\`, so a check that knew only `/` would reject every folder below the workspace root.
 """
-_within(root::String, path::String) =
-    path == root || startswith(path, endswith(root, "/") ? root : root * "/")
+function _within(root::String, path::String)
+    r = rstrip(root, _PATH_SEPARATORS) # a root of `/` (or `C:\`) is left as the empty prefix
+    path == r && return true
+    (startswith(path, r) && ncodeunits(path) > ncodeunits(r)) || return false
+    path[ncodeunits(r) + 1] ∈ _PATH_SEPARATORS
+end
 
 """
 Listing of a workspace folder as JSON-able pairs, depth- and entry-budgeted. Bulky tool directories

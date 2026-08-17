@@ -134,6 +134,26 @@ end
         @test !Pluto._within(root, root * "_other")
     end
 
+    # Windows paths are `\\`-separated — `tamepath` is `abspath`, and every entry's path comes out of
+    # `joinpath` — so a check that assumed `/` answered "outside the workspace" for every folder
+    # below the root there, and the sidebar could not expand anything. The cases are strings, not
+    # real folders, so the Windows shape is covered whichever platform the tests run on.
+    @testset "confinement accepts either path separator" begin
+        win = "C:\\Users\\me\\ws"
+        @test Pluto._within(win, win)
+        @test Pluto._within(win, "C:\\Users\\me\\ws\\sub")
+        @test Pluto._within(win, "C:\\Users\\me\\ws\\a\\b")
+        @test !Pluto._within(win, "C:\\Users\\me")
+        @test !Pluto._within(win, "C:\\Users\\me\\ws_other")
+        # a root that is nothing but a separator (a drive, or unix `/`) still bounds its children
+        @test Pluto._within("C:\\", "C:\\Users")
+        @test Pluto._within("/", "/etc")
+        # a trailing separator on the root changes nothing either way
+        @test Pluto._within("/ws/", "/ws/a")
+        @test Pluto._within("/ws/", "/ws")
+        @test !Pluto._within("/ws/", "/ws_other")
+    end
+
     @testset "a missing folder is empty, not an error" begin
         @test isempty(Pluto._workspace_entries(joinpath(root, "nope")))
     end
