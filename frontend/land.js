@@ -26,7 +26,10 @@ const get_json = async (url, opts) => {
     return await r.json()
 }
 
-const basename = (p) => p.split("/").pop()
+// Both separators: on Windows every path the server hands back is `\`-separated (`C:\ws\a.jl`),
+// and splitting that on "/" alone returns the whole path as the "name". Same shape as the
+// basename in components/FilePicker.js, which is not exported.
+const basename = (p) => (p.split("/").pop() ?? "").split("\\").pop() ?? ""
 
 // A confirm() the browser can't suppress. window.confirm can be permanently silenced (Chrome's
 // "prevent this page from creating additional dialogs", iframes without allow-modals) — it then
@@ -1353,7 +1356,7 @@ const Land = () => {
 
     const create_in = useCallback(
         async (dir) => {
-            const name = prompt(`New file in ${dir.split("/").pop()}/ — a name ending in .jl becomes a Pluto notebook:`, "notebook.jl")
+            const name = prompt(`New file in ${basename(dir)}/ — a name ending in .jl becomes a Pluto notebook:`, "notebook.jl")
             if (name == null || name.trim() === "") return
             const path = `${dir}/${name.trim()}`
             try {
