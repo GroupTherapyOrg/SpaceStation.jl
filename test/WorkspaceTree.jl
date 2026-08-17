@@ -134,24 +134,30 @@ end
         @test !Pluto._within(root, root * "_other")
     end
 
-    # Windows paths are `\\`-separated — `tamepath` is `abspath`, and every entry's path comes out of
-    # `joinpath` — so a check that assumed `/` answered "outside the workspace" for every folder
-    # below the root there, and the sidebar could not expand anything. The cases are strings, not
-    # real folders, so the Windows shape is covered whichever platform the tests run on.
-    @testset "confinement accepts either path separator" begin
-        win = "C:\\Users\\me\\ws"
-        @test Pluto._within(win, win)
-        @test Pluto._within(win, "C:\\Users\\me\\ws\\sub")
-        @test Pluto._within(win, "C:\\Users\\me\\ws\\a\\b")
-        @test !Pluto._within(win, "C:\\Users\\me")
-        @test !Pluto._within(win, "C:\\Users\\me\\ws_other")
-        # a root that is nothing but a separator (a drive, or unix `/`) still bounds its children
-        @test Pluto._within("C:\\", "C:\\Users")
-        @test Pluto._within("/", "/etc")
-        # a trailing separator on the root changes nothing either way
-        @test Pluto._within("/ws/", "/ws/a")
-        @test Pluto._within("/ws/", "/ws")
-        @test !Pluto._within("/ws/", "/ws_other")
+    # Confinement is a question about path components, so `_within` asks it with `splitpath` rather
+    # than by comparing strings — that is what keeps `/ws_other` out of `/ws`, and it leaves every
+    # separator question to Base. Before that, the check compared against `root * "/"`, which on
+    # Windows — where `tamepath` and `joinpath` produce `\` — rejected every folder below the root,
+    # so the sidebar could not expand anything.
+    @testset "confinement compares path components" begin
+        @test Pluto._within("/ws", "/ws/a")
+        @test Pluto._within("/ws/", "/ws")        # a trailing separator on the root changes nothing
+        @test Pluto._within("/ws", "/ws//a/b")    # nor do repeated ones inside the path
+        @test !Pluto._within("/ws", "/ws_other")  # a name that merely starts the same
+        @test !Pluto._within("/ws", "/")
+        if Sys.iswindows()
+            # the shape that actually reaches the endpoint on Windows
+            win = "C:\\Users\\me\\ws"
+            @test Pluto._within(win, win)
+            @test Pluto._within(win, "C:\\Users\\me\\ws\\sub\\deeper")
+            @test Pluto._within("C:\\", "C:\\Users")
+            @test !Pluto._within(win, "C:\\Users\\me")
+            @test !Pluto._within(win, "C:\\Users\\me\\ws_other")
+        else
+            # `\` is an ordinary character in a unix filename, not a separator: `/ws\x` names an
+            # entry in `/`, not one inside `/ws`, and must not be treated as confined
+            @test !Pluto._within("/ws", "/ws\\x")
+        end
     end
 
     @testset "a missing folder is empty, not an error" begin
