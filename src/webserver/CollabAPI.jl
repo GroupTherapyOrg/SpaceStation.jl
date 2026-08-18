@@ -197,6 +197,18 @@ function _within(root::String, path::String)
 end
 
 """
+`path` and its ancestors, root first, each as the name to show and the full path to browse to.
+
+The folder picker cannot build these itself: it would have to know that a Windows path separates
+with `\\` and starts with a drive (or a UNC share) rather than a `/`. `splitpath` and `joinpath`
+already know, and this is the side of the wire they live on.
+"""
+function _path_crumbs(path::String)
+    parts = splitpath(path)
+    [Pair["name" => parts[i], "path" => joinpath(parts[1:i]...)] for i in eachindex(parts)]
+end
+
+"""
 Listing of a workspace folder as JSON-able pairs, depth- and entry-budgeted. Bulky tool directories
 (and `.git`) are skipped, but dotfiles are shown.
 
@@ -620,7 +632,15 @@ function register_collab_api!(router, session::ServerSession)
                 isdir(joinpath(path, name)) && push!(dirs, name)
             end
         catch end
-        body = _json(Pair["path" => path, "parent" => dirname(path), "dirs" => dirs])
+        body = _json(Pair[
+            "path" => path,
+            "parent" => dirname(path),
+            "dirs" => dirs, # names only, as before — kept for anything curling this endpoint
+            # …and the same folders with the path already joined, so the browser never has to guess
+            # a separator. Same for the breadcrumbs of `path` itself.
+            "entries" => [Pair["name" => name, "path" => joinpath(path, name)] for name in dirs],
+            "crumbs" => _path_crumbs(path),
+        ])
         HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], body * "\n")
     end
     HTTP.register!(router, "GET", "/api/v1/browse", serve_api_browse)
