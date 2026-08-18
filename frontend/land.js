@@ -218,7 +218,9 @@ const FileEntry = ({ entry, listings, expanded, on_toggle, on_open_notebook, on_
  *  Picking a folder spawns a child server in a new tab (see connect_local); this view never leaves.
  *  `on_cancel` (optional) shows a back button when opened on top of an existing workspace. */
 const WorkspaceOpener = ({ on_cancel, tunneled }) => {
-    const [listing, set_listing] = useState(/** @type {{path: String, parent: String, dirs: Array<String>}?} */ (null))
+    const [listing, set_listing] = useState(
+        /** @type {{path: String, parent: String, entries: Array<{name: String, path: String}>, crumbs: Array<{name: String, path: String}>}?} */ (null)
+    )
     const [error, set_error] = useState(/** @type {String?} */ (null))
     const [ssh_hosts, set_ssh_hosts] = useState(/** @type {Array<String>} */ ([]))
     const [ssh_timeout, set_ssh_timeout] = useState(get_ssh_timeout)
@@ -404,17 +406,9 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
 
     const recent = get_recent_workspaces()
 
-    // "/Users/dale/dev" → [{name: "/", path: "/"}, {name: "Users", path: "/Users"}, …]
-    const crumbs =
-        listing == null
-            ? []
-            : [
-                  { name: "/", path: "/" },
-                  ...listing.path
-                      .split("/")
-                      .filter((s) => s !== "")
-                      .map((name, i, parts) => ({ name, path: "/" + parts.slice(0, i + 1).join("/") })),
-              ]
+    // Built by the server: splitting a path on "/" here turned a Windows one into a single bogus
+    // crumb, and joining one back together means knowing about drives and backslashes.
+    const crumbs = listing?.crumbs ?? []
 
     return html`<div class="workspace-opener">
         <div class="bubble opener-card">
@@ -483,16 +477,16 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                                           title=${c.path}
                                       >
                                           ${c.name}</button
-                                      >${i < crumbs.length - 1 && c.name !== "/" ? html`<span class="crumb-sep">/</span>` : null}`
+                                      >${i > 0 && i < crumbs.length - 1 ? html`<span class="crumb-sep">/</span>` : null}`
                               )}
                           </nav>
                           <div class="dir-grid">
-                              ${listing.dirs.map(
-                                  (name) => html`<button class="dir-pill" title=${`${listing.path}/${name}`} onClick=${() => browse(`${listing.path}/${name}`)}>
-                                      <span class="dir-icon">📁</span>${name}
+                              ${listing.entries.map(
+                                  (d) => html`<button class="dir-pill" title=${d.path} onClick=${() => browse(d.path)}>
+                                      <span class="dir-icon">📁</span>${d.name}
                                   </button>`
                               )}
-                              ${listing.dirs.length === 0 ? html`<p class="subtitle">no subfolders</p>` : null}
+                              ${listing.entries.length === 0 ? html`<p class="subtitle">no subfolders</p>` : null}
                           </div>
                           <div class="opener-actions">
                               <button class="open-this-folder" onClick=${() => open_workspace(listing.path)}>

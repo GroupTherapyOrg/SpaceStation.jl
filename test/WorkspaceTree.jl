@@ -160,6 +160,16 @@ end
         end
     end
 
+    # The folder picker's breadcrumbs, built here because the browser would have to know what a path
+    # looks like on the server's platform: splitting `C:\Users\me` on "/" left one bogus crumb.
+    @testset "breadcrumbs come apart and back together" begin
+        crumbs = [Dict(c) for c in Pluto._path_crumbs(joinpath(root, "a", "b"))]
+        @test [c["name"] for c in crumbs][end-1:end] == ["a", "b"]
+        @test [c["path"] for c in crumbs][end-1:end] == [joinpath(root, "a"), joinpath(root, "a", "b")]
+        # the first crumb is the root of the filesystem, which is where the picker starts
+        @test Dict(Pluto._path_crumbs(homedir())[1])["path"] == splitpath(homedir())[1]
+    end
+
     @testset "a missing folder is empty, not an error" begin
         @test isempty(Pluto._workspace_entries(joinpath(root, "nope")))
     end
