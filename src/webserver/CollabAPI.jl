@@ -128,31 +128,46 @@ end
 
 # Dotfiles ARE shown (you want to see .gitignore, .github/, env files…); we only skip the few
 # entries that are pure noise or so large they'd blow the entry budget and bury real files.
-const _WORKSPACE_SKIPLIST = ("node_modules", "frontend-dist", ".git", ".DS_Store")
+const _WORKSPACE_SKIPLIST = (
+    "node_modules", "frontend-dist", ".git", ".DS_Store",
+    # dependency/build dirs with thousands of entries nobody browses from a notebook workspace
+    ".venv", "venv", "__pycache__", ".tox", ".mypy_cache", ".pytest_cache", ".ipynb_checkpoints",
+    ".parcel-cache", ".ruff_cache", ".jj",
+)
 
-"Recursive listing of a workspace folder as JSON-able pairs. Depth- and entry-budgeted; bulky tool directories (and .git) are skipped, but dotfiles are shown."
-function _workspace_entries(dir::String; depth::Int=6, budget::Ref{Int}=Ref(2000))
-    entries = Vector{Pair}[]
-    isdir(dir) || return entries
+# One entry in the workspace tree, and the listing of a folder: a node is a vector of pairs so it
+# serializes as a JSON object, a listing is a vector of those so it serializes as a JSON array.
+const _TreeNode = Vector{Pair}
+const _TreeListing = Vector{_TreeNode}
+
+"""
+List one folder's own entries as JSON-able pairs — directories first, then files, like every file
+browser — without recursing. Each directory node gets an empty `children` listing; the returned
+`subdirs` vector pairs those listings with their paths so the caller can fill them in afterwards.
+Decrements the shared `budget`; `truncated` says whether this folder had more entries than were left.
+"""
+function _list_dir_shallow(dir::String, budget::Ref{Int})
+    entries = _TreeListing()
+    subdirs = Tuple{_TreeListing,String}[]
     names = try
         sort(readdir(dir))
     catch
-        return entries
+        return (entries, subdirs, false)
     end
-    # directories first, like every file browser
+    truncated = false
     for want_dir in (true, false), name in names
-        budget[] <= 0 && break
         name ∈ _WORKSPACE_SKIPLIST && continue
         p = joinpath(dir, name)
         isdir(p) == want_dir || continue
+        if budget[] <= 0
+            truncated = true
+            break # both loops: we already know this folder is cut short
+        end
         budget[] -= 1
         if want_dir
-            push!(entries, Pair[
-                "name" => name,
-                "path" => p,
-                "type" => "dir",
-                "children" => depth <= 0 ? Vector{Pair}[] : _workspace_entries(p; depth=depth - 1, budget),
-            ])
+            children = _TreeListing()
+            push!(entries, Pair["name" => name, "path" => p, "type" => "dir", "children" => children])
+            push!(subdirs, (children, p))
         else
             push!(entries, Pair[
                 "name" => name,
@@ -161,7 +176,77 @@ function _workspace_entries(dir::String; depth::Int=6, budget::Ref{Int}=Ref(2000
             ])
         end
     end
-    entries
+    (entries, subdirs, truncated)
+end
+
+"""
+Is `path` inside `root`, or `root` itself? Both are expected absolute and normalized (`tamepath`).
+The workspace listing endpoint answers only for folders under the workspace, so a client bug — or
+a hand-written request — cannot walk the rest of the disk through it.
+
+Compared component by component rather than as strings, which is what makes `/ws_other` count as
+outside `/ws`. `splitpath` is what knows the platform: on Windows it splits on `\\` as well as `/`
+and keeps the drive or UNC share as one component, while on unix a `\\` is an ordinary character in
+a filename and stays one. The sidebar's paths are Windows-separated on Windows — `tamepath` is
+`abspath`, and every entry's path comes out of `joinpath` — so a check written against `/` alone
+would answer "outside the workspace" for every folder below the root there.
+"""
+function _within(root::String, path::String)
+    r, p = splitpath(root), splitpath(path)
+    length(p) >= length(r) && view(p, 1:length(r)) == r
+end
+
+"""
+Listing of a workspace folder as JSON-able pairs, depth- and entry-budgeted. Bulky tool directories
+(and `.git`) are skipped, but dotfiles are shown.
+
+`depth=0` lists just this folder, which is what the hub's lazy sidebar asks for — one folder per
+request, only for folders the user has actually opened. Deeper values pre-walk the tree in one
+response; nothing in the hub needs that any more, but `/api/v1/workspace?depth=N` still offers it
+for scripts that want the whole shape at once.
+
+The walk is **breadth-first**: every entry of a folder — directories AND files — is listed before
+anything descends into a subfolder. A depth-first walk lets one fat subdirectory spend the whole
+budget before its siblings, or even its parent's files, are looked at; a workspace containing a
+`.venv` then showed two folders in the sidebar and nothing else. Level-by-level, the shallow
+entries a person actually wants are the ones that fit in the budget.
+
+A folder the budget stopped short of ends with a `"truncated"` marker entry, so the frontend can
+say "not listed" instead of quietly showing a short — or empty — folder.
+
+Once the budget is spent the walk stops immediately: the folders still queued are marked unlisted
+without being read at all. This endpoint is polled every 10s by every open hub tab, so an
+exhausted budget must cost nothing more, not one `readdir` per folder it declined to list.
+"""
+function _workspace_entries(dir::String; depth::Int=6, budget::Ref{Int}=Ref(2000))
+    root = _TreeListing()
+    isdir(dir) || return root
+    mark_unlisted!(into, path) = push!(into, Pair["name" => "…", "path" => path, "type" => "truncated"])
+    # the frontier: folders whose contents still have to be listed, as (fill this listing, path, depth left)
+    frontier = Tuple{_TreeListing,String,Int}[(root, dir, depth)]
+    while !isempty(frontier)
+        next_frontier = Tuple{_TreeListing,String,Int}[]
+        for (i, (into, path, d)) in enumerate(frontier)
+            if budget[] <= 0
+                # Nothing left to spend: flag every folder we never opened — the rest of this
+                # level, plus everything already queued below it — and stop walking.
+                unopened = Iterators.flatten((view(frontier, i:lastindex(frontier)), next_frontier))
+                for (rest_into, rest_path, _) in unopened
+                    mark_unlisted!(rest_into, rest_path)
+                end
+                return root
+            end
+            entries, subdirs, truncated = _list_dir_shallow(path, budget)
+            append!(into, entries)
+            truncated && mark_unlisted!(into, path)
+            d <= 0 && continue
+            for (children, child_path) in subdirs
+                push!(next_frontier, (children, child_path, d - 1))
+            end
+        end
+        frontier = next_frontier
+    end
+    root
 end
 
 # Walk up from `dir` to the repo's `.git` (a directory, or — for linked worktrees and
@@ -606,19 +691,48 @@ function register_collab_api!(router, session::ServerSession)
     end
     HTTP.register!(router, "GET", "/api/v1/ssh_hosts", serve_api_ssh_hosts)
 
+    # The workspace root: its own entries, plus the git branch the sidebar header shows. `?depth=N`
+    # (default 0, this folder only) pre-walks N levels into the response for a caller that wants the
+    # whole shape in one go — the hub does not, it expands folders one at a time via /listing below.
     function serve_api_workspace(request::HTTP.Request)
         ws = session.options.server.workspace_folder
         ws === nothing && return _api_error(404, "this server has no workspace folder — start with SpaceStation.run(workspace=\"/path\")", false)
         root = tamepath(ws)
         isdir(root) || return _api_error(404, "workspace folder does not exist: $root", false)
+        query = HTTP.queryparams(HTTP.URI(request.target))
+        depth = if haskey(query, "depth")
+            d = tryparse(Int, query["depth"])
+            d === nothing && return _api_error(400, "depth must be an integer, got $(query["depth"])", false)
+            max(0, d)
+        else
+            0
+        end
         body = _json(Pair[
             "root" => root,
-            "entries" => _workspace_entries(root),
+            "entries" => _workspace_entries(root; depth),
             "git" => _git_workspace_info(root),
         ])
         HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], body * "\n")
     end
     HTTP.register!(router, "GET", "/api/v1/workspace", serve_api_workspace)
+
+    # One folder's entries, nothing below it. This is what makes the sidebar's cost track what the
+    # user has open rather than the size of the workspace: the hub asks for a folder when it is
+    # expanded, and its 10s poll re-asks only for the folders currently on screen. The recursive
+    # walk could not do that — it re-read (and re-serialized) the entire tree six times a minute,
+    # and needed an entry budget to stay bounded, which is what used to hide files.
+    function serve_api_workspace_listing(request::HTTP.Request)
+        ws = session.options.server.workspace_folder
+        ws === nothing && return _api_error(404, "this server has no workspace folder — start with SpaceStation.run(workspace=\"/path\")", false)
+        root = tamepath(ws)
+        query = HTTP.queryparams(HTTP.URI(request.target))
+        path = haskey(query, "path") ? tamepath(query["path"]) : root
+        _within(root, path) || return _api_error(403, "path is outside the workspace: $path", false)
+        isdir(path) || return _api_error(404, "not a directory: $path", false)
+        body = _json(Pair["path" => path, "entries" => _workspace_entries(path; depth=0)])
+        HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], body * "\n")
+    end
+    HTTP.register!(router, "GET", "/api/v1/workspace/listing", serve_api_workspace_listing)
 
     function serve_api_file_get(request::HTTP.Request)
         query = HTTP.queryparams(HTTP.URI(request.target))

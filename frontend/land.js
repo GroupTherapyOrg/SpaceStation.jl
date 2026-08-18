@@ -4,7 +4,8 @@
 // SpaceStation — the workspace hub: a file browser + tabbed notebooks, all running on a
 // stock Pluto server. Every tab is the UNMODIFIED Pluto editor in an iframe (its own
 // websocket, its own state); the hub itself only talks to existing server endpoints:
-//   GET  ./api/v1/workspace        workspace file tree (404 → no workspace open yet)
+//   GET  ./api/v1/workspace          workspace root + git branch (404 → no workspace open yet)
+//   GET  ./api/v1/workspace/listing  one folder's entries — the sidebar tree loads folder by folder
 //   POST ./api/v1/workspace/open   open a folder as the workspace (VS Code "Open Folder")
 //   GET  ./api/v1/browse           directory listing for the folder picker
 //   GET  ./api/v1/notebooks        running notebooks
@@ -25,7 +26,10 @@ const get_json = async (url, opts) => {
     return await r.json()
 }
 
-const basename = (p) => p.split("/").pop()
+// Both separators: on Windows every path the server hands back is `\`-separated (`C:\ws\a.jl`),
+// and splitting that on "/" alone returns the whole path as the "name". Same shape as the
+// basename in components/FilePicker.js, which is not exported.
+const basename = (p) => (p.split("/").pop() ?? "").split("\\").pop() ?? ""
 
 // A confirm() the browser can't suppress. window.confirm can be permanently silenced (Chrome's
 // "prevent this page from creating additional dialogs", iframes without allow-modals) — it then
@@ -135,30 +139,63 @@ const get_ssh_timeout = () => {
     return Number.isFinite(v) && v >= 3 ? clamp_ssh_timeout(v) : SSH_TIMEOUT_DEFAULT
 }
 
-const FileEntry = ({ entry, on_open_notebook, on_open_file, on_create_in, on_delete, depth }) => {
-    const [open, set_open] = useState(false)
+/** One row of the sidebar tree.
+ *
+ * Which folders are open, and what is in them, are NOT held here — they live in the hub
+ * (`expanded` / `listings`) and arrive as props. That is what makes the tree lazy: the hub fetches
+ * a folder's contents the first time it is expanded, and its 10s poll re-reads only the folders
+ * that are currently open. A folder that has never been opened costs the server nothing.
+ */
+const FileEntry = ({ entry, listings, expanded, on_toggle, on_open_notebook, on_open_file, on_create_in, on_delete, depth }) => {
     if (entry.type === "dir") {
+        const open = expanded.has(entry.path)
+        const children = listings[entry.path]
         return html`<li class="dir ${open ? "open" : ""}">
             <div class="entry-row">
-                <button class="entry" onClick=${() => set_open(!open)}><span class="icon chevron"></span>${entry.name}</button>
+                <button class="entry" onClick=${() => on_toggle(entry.path)}><span class="icon chevron"></span>${entry.name}</button>
                 <button class="row-action" title="New notebook or file in ${entry.name}/" onClick=${() => on_create_in(entry.path)}>+</button>
             </div>
             ${open
                 ? html`<ul>
-                      ${entry.children.map(
-                          (c) =>
-                              html`<${FileEntry}
-                                  key=${c.path}
-                                  entry=${c}
-                                  on_open_notebook=${on_open_notebook}
-                                  on_open_file=${on_open_file}
-                                  on_create_in=${on_create_in}
-                                  on_delete=${on_delete}
-                                  depth=${depth + 1}
-                              />`
-                      )}
+                      ${children == null
+                          ? html`<li class="pending">
+                                <div class="entry-row"><span class="entry plain">reading…</span></div>
+                            </li>`
+                          : children.map(
+                                (c) =>
+                                    html`<${FileEntry}
+                                        key=${c.path}
+                                        entry=${c}
+                                        listings=${listings}
+                                        expanded=${expanded}
+                                        on_toggle=${on_toggle}
+                                        on_open_notebook=${on_open_notebook}
+                                        on_open_file=${on_open_file}
+                                        on_create_in=${on_create_in}
+                                        on_delete=${on_delete}
+                                        depth=${depth + 1}
+                                    />`
+                            )}
                   </ul>`
                 : null}
+        </li>`
+    }
+    // a single folder is still capped, so a directory holding 100k files can't produce a 100k-row
+    // response; the server closes such a listing with this marker rather than silently shortening it
+    if (entry.type === "truncated") {
+        return html`<li class="truncated">
+            <div class="entry-row">
+                <span
+                    class="entry plain"
+                    title="This folder has more entries than SpaceStation lists in one go. Use the terminal to see the rest."
+                    >… not listed</span
+                >
+            </div>
+        </li>`
+    }
+    if (entry.type === "unreadable") {
+        return html`<li class="truncated">
+            <div class="entry-row"><span class="entry plain" title=${entry.detail ?? ""}>… could not be read</span></div>
         </li>`
     }
     const is_notebook = entry.type === "notebook"
@@ -930,6 +967,17 @@ const FileEditorPane = ({ path, visible }) => {
 
 const Land = () => {
     const [workspace, set_workspace] = useState(/** @type {{root: String, entries: Array, git?: {branch: String, detached: Boolean}?}?} */ (null))
+    // The sidebar tree, one folder at a time: `listings` maps a folder path to its entries (only
+    // folders that have been opened are in here), `expanded` is which ones are currently unfolded.
+    // The poll below refreshes exactly the expanded set, so an unopened folder is never read.
+    const [listings, set_listings] = useState(/** @type {Record<String, Array>} */ ({}))
+    const [expanded, set_expanded] = useState(/** @type {Set<String>} */ (new Set()))
+    // `refresh` runs from an interval set up once, so it can't close over `expanded` — it reads the
+    // live set through this mirror instead.
+    const expanded_ref = useRef(expanded)
+    useEffect(() => {
+        expanded_ref.current = expanded
+    }, [expanded])
     const [no_workspace, set_no_workspace] = useState(false)
     const [running, set_running] = useState(/** @type {Array<{notebook_id: String, path: String}>} */ ([]))
     const [tabs, set_tabs] = useState(/** @type {Array<{id: String, path: String, kind?: String}>} */ ([]))
@@ -1175,6 +1223,35 @@ const Land = () => {
     }, [terminal_open, terminals.length, terminals_loaded_for, workspace?.root])
 
 
+    // Read one folder and drop it into `listings`. A folder that can't be read (deleted under us,
+    // permissions) gets a marker row rather than an endless "reading…" — but only if it's still
+    // expanded by the time the answer lands, so a stale reply can't resurrect a folded folder.
+    const load_listing = useCallback(async (path) => {
+        try {
+            const { entries } = await get_json(`./api/v1/workspace/listing?path=${encodeURIComponent(path)}`)
+            set_listings((prev) => ({ ...prev, [path]: entries }))
+        } catch (e) {
+            if (!expanded_ref.current.has(path)) return
+            set_listings((prev) => ({ ...prev, [path]: [{ name: "…", path: `${path}/…`, type: "unreadable", detail: String(e) }] }))
+        }
+    }, [])
+
+    const toggle_dir = useCallback(
+        (path) => {
+            const opening = !expanded_ref.current.has(path)
+            set_expanded((prev) => {
+                const next = new Set(prev)
+                opening ? next.add(path) : next.delete(path)
+                expanded_ref.current = next // the fetch below and a same-tick poll both read this
+                return next
+            })
+            // A folder opened before is redrawn from cache immediately and re-read in the background,
+            // so expanding something you've already seen never flashes a placeholder.
+            if (opening) load_listing(path)
+        },
+        [load_listing]
+    )
+
     const refresh = useCallback(async () => {
         try {
             const ws_response = await fetch("./api/v1/workspace")
@@ -1184,6 +1261,21 @@ const Land = () => {
             } else if (ws_response.ok) {
                 set_no_workspace(false)
                 set_workspace(await ws_response.json())
+                // Re-read the open folders — and only those. This is the whole point of the lazy
+                // tree: poll cost tracks what is on screen, not the size of the workspace.
+                const open_dirs = [...expanded_ref.current]
+                const results = await Promise.all(
+                    open_dirs.map((p) =>
+                        get_json(`./api/v1/workspace/listing?path=${encodeURIComponent(p)}`)
+                            .then((r) => [p, r.entries])
+                            .catch(() => [p, null]) // transient failure: keep showing what we had
+                    )
+                )
+                set_listings((prev) => {
+                    const next = { ...prev }
+                    for (const [p, entries] of results) if (entries != null) next[p] = entries
+                    return next
+                })
             } else {
                 // Any other status (e.g. 500) — don't silently leave stale workspace state on screen.
                 throw new Error(`workspace request failed: ${ws_response.status}`)
@@ -1264,7 +1356,7 @@ const Land = () => {
 
     const create_in = useCallback(
         async (dir) => {
-            const name = prompt(`New file in ${dir.split("/").pop()}/ — a name ending in .jl becomes a Pluto notebook:`, "notebook.jl")
+            const name = prompt(`New file in ${basename(dir)}/ — a name ending in .jl becomes a Pluto notebook:`, "notebook.jl")
             if (name == null || name.trim() === "") return
             const path = `${dir}/${name.trim()}`
             try {
@@ -1276,12 +1368,16 @@ const Land = () => {
                     await get_json(`./api/v1/file/new?path=${encodeURIComponent(path)}`, { method: "POST" })
                     open_file(path)
                 }
+                // show the new file: its folder may be collapsed (the + button works without
+                // expanding), and refresh() only re-reads folders that are open
+                if (workspace != null && dir !== workspace.root && !expanded_ref.current.has(dir)) toggle_dir(dir)
+                else load_listing(dir)
                 refresh()
             } catch (e) {
                 set_error(String(e))
             }
         },
-        [add_tab, open_file, refresh]
+        [add_tab, open_file, refresh, toggle_dir, load_listing, workspace]
     )
 
     const delete_entry = useCallback(
@@ -1458,6 +1554,9 @@ const Land = () => {
                                       html`<${FileEntry}
                                           key=${e.path}
                                           entry=${e}
+                                          listings=${listings}
+                                          expanded=${expanded}
+                                          on_toggle=${toggle_dir}
                                           on_open_notebook=${open_notebook}
                                           on_open_file=${open_file}
                                           on_create_in=${create_in}

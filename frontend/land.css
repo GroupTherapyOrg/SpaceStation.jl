@@ -374,6 +374,27 @@ body.resizing #frames iframe {
     box-shadow: none;
 }
 
+/* rows that stand in for entries: a folder being read, or one the server stopped listing */
+#land li.truncated > .entry-row > .entry,
+#land li.pending > .entry-row > .entry {
+    font-style: italic;
+}
+
+/* the placeholder while a folder's listing is in flight — a slow link shouldn't look like an
+   empty folder, but it also shouldn't flash on a local server that answers in a millisecond */
+#land li.pending > .entry-row > .entry {
+    animation: land-fade-in 0.25s ease-in both;
+}
+
+@keyframes land-fade-in {
+    from {
+        opacity: 0;
+    }
+    to {
+        opacity: 0.5;
+    }
+}
+
 .entry.quiet {
     opacity: 0.6;
 }
