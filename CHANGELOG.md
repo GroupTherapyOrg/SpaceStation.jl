@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.7](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.2.6...v0.2.7) (2026-08-18)
+
+
+### Bug Fixes
+
+* build the folder picker's paths on the server, not in the browser ([#26](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/26)) ([e6c1718](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/e6c1718b2cb8170c0d937d9f4184eb8d65b2266e))
+* list the workspace sidebar breadth-first and load it folder by folder ([#24](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/24)) ([77e0718](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/77e071810fd42fe6e96fb1b45022f5e806684f8c))
+
 ## [0.2.6](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.2.5...v0.2.6) (2026-07-13)
 
 
