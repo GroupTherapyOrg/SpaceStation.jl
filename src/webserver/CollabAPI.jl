@@ -632,12 +632,11 @@ function register_collab_api!(router, session::ServerSession)
                 isdir(joinpath(path, name)) && push!(dirs, name)
             end
         catch end
+        # Folders and breadcrumbs both arrive with their paths already joined, so the browser never
+        # has to guess a separator to build one.
         body = _json(Pair[
             "path" => path,
             "parent" => dirname(path),
-            "dirs" => dirs, # names only, as before — kept for anything curling this endpoint
-            # …and the same folders with the path already joined, so the browser never has to guess
-            # a separator. Same for the breadcrumbs of `path` itself.
             "entries" => [Pair["name" => name, "path" => joinpath(path, name)] for name in dirs],
             "crumbs" => _path_crumbs(path),
         ])

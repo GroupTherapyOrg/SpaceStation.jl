@@ -219,7 +219,7 @@ const FileEntry = ({ entry, listings, expanded, on_toggle, on_open_notebook, on_
  *  `on_cancel` (optional) shows a back button when opened on top of an existing workspace. */
 const WorkspaceOpener = ({ on_cancel, tunneled }) => {
     const [listing, set_listing] = useState(
-        /** @type {{path: String, parent: String, dirs: Array<String>, entries: Array<{name: String, path: String}>, crumbs: Array<{name: String, path: String}>}?} */ (null)
+        /** @type {{path: String, parent: String, entries: Array<{name: String, path: String}>, crumbs: Array<{name: String, path: String}>}?} */ (null)
     )
     const [error, set_error] = useState(/** @type {String?} */ (null))
     const [ssh_hosts, set_ssh_hosts] = useState(/** @type {Array<String>} */ ([]))
@@ -406,9 +406,8 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
 
     const recent = get_recent_workspaces()
 
-    // "/Users/dale/dev" → [{name: "/", path: "/"}, {name: "Users", path: "/Users"}, …], built by the
-    // server: splitting on "/" here turned a Windows path into one bogus crumb ("/C:\\Users\\dale"),
-    // and joining one back together would mean knowing about drives and backslashes in the browser.
+    // Built by the server: splitting a path on "/" here turned a Windows one into a single bogus
+    // crumb, and joining one back together means knowing about drives and backslashes.
     const crumbs = listing?.crumbs ?? []
 
     return html`<div class="workspace-opener">

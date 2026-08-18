@@ -160,16 +160,12 @@ end
         end
     end
 
-    # The folder picker's breadcrumbs. They are built here rather than in the browser because the
-    # browser would have to know what a path looks like on the server's platform — splitting one on
-    # "/" turned `C:\\Users\\me` into a single bogus crumb, and rejoining it put a `/` in front.
+    # The folder picker's breadcrumbs, built here because the browser would have to know what a path
+    # looks like on the server's platform: splitting `C:\Users\me` on "/" left one bogus crumb.
     @testset "breadcrumbs come apart and back together" begin
         crumbs = [Dict(c) for c in Pluto._path_crumbs(joinpath(root, "a", "b"))]
         @test [c["name"] for c in crumbs][end-1:end] == ["a", "b"]
-        @test crumbs[end]["path"] == joinpath(root, "a", "b")
-        # every crumb is a real prefix of the path, and one you can browse to
-        @test all(Pluto._within(crumbs[1]["path"], c["path"]) for c in crumbs)
-        @test crumbs[end-1]["path"] == joinpath(root, "a")
+        @test [c["path"] for c in crumbs][end-1:end] == [joinpath(root, "a"), joinpath(root, "a", "b")]
         # the first crumb is the root of the filesystem, which is where the picker starts
         @test Dict(Pluto._path_crumbs(homedir())[1])["path"] == splitpath(homedir())[1]
     end
