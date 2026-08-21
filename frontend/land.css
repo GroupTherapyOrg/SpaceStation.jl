@@ -1319,6 +1319,27 @@ body.resizing-v #frames iframe {
     padding: 0.45rem 0.55rem 0.3rem;
     overflow: hidden;
 }
+/* Sits after the (flex: 1) scroller, so it parks at the right edge of the tab strip. */
+.terminal-scheme-toggle {
+    flex-shrink: 0;
+    margin-left: 0.4rem;
+    background: none;
+    border: none;
+    color: inherit;
+    font: inherit;
+    font-size: 0.95rem;
+    line-height: 1;
+    opacity: 0.55;
+    cursor: pointer;
+    padding: 0.3rem 0.45rem;
+    border-radius: 1000px;
+    transition: opacity 0.08s linear, background-color 0.08s linear;
+}
+.terminal-scheme-toggle:hover {
+    opacity: 1;
+    background-color: var(--main-bg-color);
+}
+
 .terminal-tab-scroller {
     flex: 1;
     min-width: 0;

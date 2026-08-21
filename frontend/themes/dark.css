@@ -199,9 +199,13 @@
         --cm-color-editor-li-aria-selected: white;
         --cm-color-editor-li-notexported: rgba(255, 255, 255, 0.5);
         --code-background: hsl(222deg 16% 19%);
-        /* the integrated terminal interior is dark in both themes (same values as light.css) */
+        /* The integrated terminal has its OWN light/dark switch (the ☀/☾ button on the terminal tab
+           strip), independent of the page theme — a light UI with a dark terminal is a common
+           preference. Both palettes are therefore identical in light.css and dark.css. */
         --terminal-bg: hsl(222deg 16% 19%);
         --terminal-fg: hsl(0deg 0% 77%);
+        --terminal-light-bg: hsl(0deg 0% 99%);
+        --terminal-light-fg: hsl(213deg 14% 16%);
         --cm-color-code-differs-gutters: rgb(235 213 28 / 11%);
         --cm-color-line-numbers: #8d86875e;
         --cm-selection-background: hsl(215deg 64% 59% / 48%);

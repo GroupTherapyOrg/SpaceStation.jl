@@ -597,7 +597,49 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
  *  bytes as binary frames. The shell starts in the workspace folder and PERSISTS on the server by
  *  `tid` — so reattaching (a tab switch, a reload) replays scrollback. Used by both the docked
  *  terminal and each terminal tab; the only difference is which `tid` they own. */
-const TerminalView = ({ tid, cwd, visible }) => {
+/** The terminal's own colour scheme, deliberately independent of the page theme: a light UI with a
+ *  dark terminal is a common preference, so this is a per-user choice rather than something derived
+ *  from `prefers-color-scheme`.
+ *
+ *  Dark sets only background/foreground and leaves xterm's default ANSI palette alone — that is what
+ *  SpaceStation has always shipped, and it is already tuned for a dark ground. Light has to name all
+ *  sixteen: xterm's bright defaults (yellow #fce94f, cyan #34e2e2, white #eeeeec) are close to
+ *  invisible on a pale background. The values below are GitHub's light ANSI set, which is built for
+ *  exactly this contrast. */
+const terminal_theme_for = (scheme) => {
+    const styles = getComputedStyle(document.documentElement)
+    const v = (name, fallback) => styles.getPropertyValue(name).trim() || fallback
+    return scheme === "light"
+        ? {
+              background: v("--terminal-light-bg", "#fbfbfb"),
+              foreground: v("--terminal-light-fg", "#24292f"),
+              cursor: "#24292f",
+              cursorAccent: "#fbfbfb",
+              selectionBackground: "#b4d5fe",
+              black: "#24292f",
+              red: "#cf222e",
+              green: "#116329",
+              yellow: "#4d2d00",
+              blue: "#0969da",
+              magenta: "#8250df",
+              cyan: "#1b7c83",
+              white: "#6e7781",
+              brightBlack: "#57606a",
+              brightRed: "#a40e26",
+              brightGreen: "#1a7f37",
+              brightYellow: "#633c01",
+              brightBlue: "#218bff",
+              brightMagenta: "#a475f9",
+              brightCyan: "#3192aa",
+              brightWhite: "#8c959f",
+          }
+        : {
+              background: v("--terminal-bg", "#1f1f1f"),
+              foreground: v("--terminal-fg", "#dddddd"),
+          }
+}
+
+const TerminalView = ({ tid, cwd, visible, scheme }) => {
     const node_ref = useRef(null)
     const started = useRef(false)
     const fit_ref = useRef(null)
@@ -612,6 +654,19 @@ const TerminalView = ({ tid, cwd, visible }) => {
     const term_ref = useRef(/** @type {any} */ (null))
     const ro_ref = useRef(/** @type {ResizeObserver?} */ (null))
     const paste_cleanup_ref = useRef(/** @type {(() => void)?} */ (null))
+
+    // Recolour in place. The scheme goes through a ref so it stays OUT of the mount effect's deps:
+    // that effect owns the websocket and the xterm instance, and re-running it would kill the live
+    // shell just to change its colours. The ref also covers the gap where the scheme changes while
+    // the dynamic `import()`s are still in flight — construction reads it, not the captured prop.
+    const scheme_ref = useRef(scheme)
+    useEffect(() => {
+        scheme_ref.current = scheme
+        if (term_ref.current == null) return
+        try {
+            term_ref.current.options.theme = terminal_theme_for(scheme)
+        } catch {}
+    }, [scheme])
 
     // Fit ONLY when the host is genuinely on-screen at a real size, and debounced so a panel that
     // is animating open settles before we measure. Fitting a hidden tab (display:none → 0px) makes
@@ -645,7 +700,6 @@ const TerminalView = ({ tid, cwd, visible }) => {
                 import("https://esm.sh/@xterm/addon-fit@0.10.0?target=es2020"),
                 get_json("./api/v1/config").catch(() => null),
             ])
-            const styles = getComputedStyle(document.documentElement)
             const term = new Terminal({
                 fontSize: 13,
                 fontFamily: "JuliaMono, SFMono-Regular, Menlo, Consolas, monospace",
@@ -656,11 +710,7 @@ const TerminalView = ({ tid, cwd, visible }) => {
                 // around ConPTY's full-viewport repaints) or redraw-in-place TUIs — Claude Code, vim,
                 // anything Ink-style — leave stale duplicated frames stacked above the live one.
                 ...(config?.windows ? { windowsPty: { backend: "conpty" } } : {}),
-                theme: {
-                    // the terminal interior stays dark in both themes (see --terminal-bg/fg in themes/*.css)
-                    background: styles.getPropertyValue("--terminal-bg").trim() || "#1f1f1f",
-                    foreground: styles.getPropertyValue("--terminal-fg").trim() || "#dddddd",
-                },
+                theme: terminal_theme_for(scheme_ref.current),
             })
             const fit = new FitAddon()
             term.loadAddon(fit)
@@ -984,6 +1034,9 @@ const Land = () => {
     const [terminal_height, set_terminal_height] = useState(() => Number(localStorage.getItem("spacestation terminal height")) || 280)
     const [terminal_width, set_terminal_width] = useState(() => Number(localStorage.getItem("spacestation terminal width")) || 420)
     const [terminal_dock, set_terminal_dock] = useState(() => (localStorage.getItem("spacestation terminal dock") === "right" ? "right" : "bottom"))
+    // The terminal's colours are its own preference, not the page theme's: plenty of people want a
+    // light UI with a dark terminal. Defaults to dark, which is what the terminal has always been.
+    const [terminal_scheme, set_terminal_scheme] = useState(() => (localStorage.getItem("spacestation terminal scheme") === "light" ? "light" : "dark"))
     const terminal_ever_opened = useRef(false)
     if (terminal_open) terminal_ever_opened.current = true
     const [show_opener, set_show_opener] = useState(false)
@@ -1132,9 +1185,10 @@ const Land = () => {
         localStorage.setItem("spacestation sidebar hidden", String(sidebar_hidden))
         localStorage.setItem("spacestation terminal open", String(terminal_open))
         localStorage.setItem("spacestation terminal height", String(terminal_height))
+        localStorage.setItem("spacestation terminal scheme", terminal_scheme)
         localStorage.setItem("spacestation terminal width", String(terminal_width))
         localStorage.setItem("spacestation terminal dock", terminal_dock)
-    }, [sidebar_width, sidebar_hidden, terminal_open, terminal_height, terminal_width, terminal_dock])
+    }, [sidebar_width, sidebar_hidden, terminal_open, terminal_height, terminal_width, terminal_dock, terminal_scheme])
 
     useEffect(() => {
         const root = workspace?.root ?? null
@@ -1458,11 +1512,19 @@ const Land = () => {
                     <span class="nt-icon">⌨</span><span class="nt-plus">＋</span>
                 </button>
             </div>
+            <button
+                class="terminal-scheme-toggle"
+                title=${terminal_scheme === "light" ? "Terminal colours: light — switch to dark" : "Terminal colours: dark — switch to light"}
+                aria-label="Toggle terminal colours"
+                onClick=${() => set_terminal_scheme((s) => (s === "light" ? "dark" : "light"))}
+            >
+                ${terminal_scheme === "light" ? "☀" : "☾"}
+            </button>
         </div>
         <div class="terminal-bodies">
             ${(terminals_workspace.current === workspace?.root ? terminals : []).map(
                 (t) => html`<div key=${t.tid} class="terminal-body ${t.tid === active_terminal ? "active" : ""}">
-                    <${TerminalView} tid=${t.tid} cwd=${workspace?.root} visible=${shown && t.tid === active_terminal} />
+                    <${TerminalView} tid=${t.tid} cwd=${workspace?.root} visible=${shown && t.tid === active_terminal} scheme=${terminal_scheme} />
                 </div>`
             )}
         </div>
