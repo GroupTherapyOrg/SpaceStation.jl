@@ -14,6 +14,7 @@
 //   POST ./move?id=…&newpath=…     rename/move (used to place new notebooks in the workspace)
 //   POST ./shutdown?id=…           stop a notebook session
 import { html, render, useState, useEffect, useCallback, useRef } from "./imports/Preact.js"
+import { pluto_file_extensions, has_pluto_file_extension } from "./common/PlutoFileExtensions.js"
 
 const get_text = async (url, opts) => {
     const r = await fetch(url, opts)
@@ -1019,11 +1020,23 @@ const Land = () => {
     // This server may be reached over an SSH tunnel (when it's a remote workspace). If so, its child
     // workspace ports aren't forwarded to the browser, so workspaces open IN-PLACE rather than in new tabs.
     const [tunneled, set_tunneled] = useState(false)
+    // Which extensions make a new file a notebook. The server owns the list (`pluto_file_extensions`),
+    // so the create prompts below agree with the `type` the sidebar already gets decided server-side.
+    // The bundled list is the fallback, so a failed or older-server config request still recognises
+    // every extension this frontend knows about.
+    const [notebook_extensions, set_notebook_extensions] = useState(/** @type {Array<String>} */ (pluto_file_extensions))
     useEffect(() => {
         get_json("./api/v1/config")
-            .then((c) => set_tunneled(!!(c && c.tunneled)))
+            .then((c) => {
+                set_tunneled(!!(c && c.tunneled))
+                if (Array.isArray(c?.notebook_extensions) && c.notebook_extensions.length > 0) set_notebook_extensions(c.notebook_extensions)
+            })
             .catch(() => {})
     }, [])
+
+    /** Would a file with this name be opened as a notebook? Mirrors `_is_pluto_notebook_file`'s
+     *  extension half — the header half only applies to files that already exist. */
+    const has_notebook_extension = useCallback((name) => has_pluto_file_extension(name, notebook_extensions), [notebook_extensions])
 
     // The launcher (no workspace of its own) is THE homebase — name the tab so workspaces can target it.
     useEffect(() => {
@@ -1325,14 +1338,15 @@ const Land = () => {
         if (name == null) return
         try {
             const id = await get_text("./new", { method: "POST" })
-            const newpath = `${workspace.root}/${name.endsWith(".jl") ? name : name + ".jl"}`
+            // "notes.plutojl" is already a notebook name — appending .jl would make "notes.plutojl.jl"
+            const newpath = `${workspace.root}/${has_notebook_extension(name) ? name : name + ".jl"}`
             await get_text(`./move?id=${encodeURIComponent(id)}&newpath=${encodeURIComponent(newpath)}`, { method: "POST" })
             add_tab(id, newpath)
             refresh()
         } catch (e) {
             set_error(String(e))
         }
-    }, [workspace, add_tab, refresh])
+    }, [workspace, add_tab, refresh, has_notebook_extension])
 
     const close_tab = useCallback(async (id) => {
         if (id.startsWith("file:")) {
@@ -1350,11 +1364,11 @@ const Land = () => {
 
     const create_in = useCallback(
         async (dir) => {
-            const name = prompt(`New file in ${basename(dir)}/ — a name ending in .jl becomes a Pluto notebook:`, "notebook.jl")
+            const name = prompt(`New file in ${basename(dir)}/ — a name ending in .jl or .plutojl becomes a Pluto notebook:`, "notebook.jl")
             if (name == null || name.trim() === "") return
             const path = `${dir}/${name.trim()}`
             try {
-                if (name.trim().endsWith(".jl")) {
+                if (has_notebook_extension(name.trim())) {
                     const id = await get_text("./new", { method: "POST" })
                     await get_text(`./move?id=${encodeURIComponent(id)}&newpath=${encodeURIComponent(path)}`, { method: "POST" })
                     add_tab(id, path)
@@ -1371,7 +1385,7 @@ const Land = () => {
                 set_error(String(e))
             }
         },
-        [add_tab, open_file, refresh, toggle_dir, load_listing, workspace]
+        [add_tab, open_file, refresh, toggle_dir, load_listing, workspace, has_notebook_extension]
     )
 
     const delete_entry = useCallback(
