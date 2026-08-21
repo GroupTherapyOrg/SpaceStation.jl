@@ -584,7 +584,89 @@ function cancel_remote_session!(host::String)
     nothing
 end
 
+# --- keeping tunnels up ---------------------------------------------------------------------------
+#
+# `ssh -N -L` is a child process, and nothing was watching it. With ServerAliveInterval=15 and
+# ServerAliveCountMax=4 it gives up about a minute after the network stops answering — which is what
+# closing a laptop lid does. The remote server itself survives (it is nohup'd and disowned), so the
+# work is all still there; only the path to it is gone. But `open_remote_session!` rebuilds a dead
+# tunnel just once, when something calls it, and the only caller was the Connect button. So a lid
+# close meant: reopen homebase, find the host, click connect.
+#
+# The watchdog closes that loop. It re-runs the ordinary connect path, which is idempotent and
+# already handles "remote server also died" — and now lands on the same local port every time, so a
+# tab left open across the gap starts working again by itself.
+const TUNNEL_WATCHDOG_PERIOD = 5.0
+const TUNNEL_RETRY_MIN = 5.0
+const TUNNEL_RETRY_MAX = 120.0
+const TUNNEL_RETRY = Dict{String,Tuple{Float64,Float64}}() # host => (next attempt at, current delay)
+const TUNNEL_WATCHDOG = Ref{Union{Task,Nothing}}(nothing)
+
+"Is this session's path to the remote actually usable right now?"
+function _tunnel_healthy(r::RemoteSession)::Bool
+    r.tunnel === nothing && return false
+    process_exited(r.tunnel) && return false
+    _local_ping_ok(r.local_port)
+end
+
+function _supervise_tunnels_once()
+    ready = lock(REMOTE_SESSIONS_LOCK) do
+        [(h, r) for (h, r) in REMOTE_SESSIONS if r.state == "ready" && !r.cancelled]
+    end
+    for (host, r) in ready
+        if _tunnel_healthy(r)
+            lock(REMOTE_SESSIONS_LOCK) do
+                delete!(TUNNEL_RETRY, host) # healthy again: forget the backoff
+            end
+            continue
+        end
+
+        now = time()
+        due = lock(REMOTE_SESSIONS_LOCK) do
+            at, delay = get(TUNNEL_RETRY, host, (0.0, TUNNEL_RETRY_MIN))
+            now < at && return false
+            # back off while it keeps failing: a node that is off for the weekend must not be
+            # probed every 5s, and each probe costs an SSH round trip.
+            TUNNEL_RETRY[host] = (now + delay, min(delay * 2, TUNNEL_RETRY_MAX))
+            true
+        end
+        due || continue
+
+        # Say so in the UI rather than leaving a stale "ready" while nothing works.
+        r.state = "tunneling"
+        r.detail = "connection lost — reconnecting to $(host)"
+        try
+            t = r.tunnel
+            t === nothing || process_exited(t) || kill(t)
+        catch
+        end
+        lock(REMOTE_SESSIONS_LOCK) do
+            # only start a rebuild if one is not already running for this host
+            if r.task === nothing || istaskdone(r.task)
+                r.task = @asynclog _remote_connect_task!(r)
+            end
+        end
+    end
+end
+
+"Start the tunnel watchdog once per server process."
+function start_tunnel_watchdog!()
+    TUNNEL_WATCHDOG[] === nothing || return
+    TUNNEL_WATCHDOG[] = @asynclog while true
+        sleep(TUNNEL_WATCHDOG_PERIOD)
+        try
+            _supervise_tunnels_once()
+        catch e
+            # a watchdog that dies on one bad host is worse than no watchdog
+            @debug "tunnel watchdog iteration failed" exception = (e, catch_backtrace())
+        end
+    end
+    nothing
+end
+
 function register_collab_remote!(router, session::ServerSession)
+    start_tunnel_watchdog!()
+
     function remote_status_json(r::RemoteSession)
         _json(Pair[
             "host" => r.host,

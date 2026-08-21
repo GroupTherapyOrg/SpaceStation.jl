@@ -1,5 +1,6 @@
 using Test
 import SpaceStation: Pluto
+import Sockets
 
 # The browser addresses a remote workspace as `http://localhost:<local_port>/`, so that port is the
 # workspace's identity to an open tab, a bookmark or a reload. It used to be handed out by
@@ -51,6 +52,67 @@ import SpaceStation: Pluto
             write(joinpath(state, "pluto", "servers", "tunnel-ports.tsv"), "garbage\nnot\ta\tport\n")
             @test Pluto._read_tunnel_ports() isa Dict
             @test Pluto.stable_tunnel_port("gpu-node-3") isa Int
+        end
+
+        # `ssh -N -L` gives up about a minute after the network stops answering, which is what a
+        # closed laptop lid looks like. Nothing used to notice: the session stayed "ready" while
+        # every request through it failed, until you reconnected by hand from homebase.
+        @testset "the watchdog notices a dead tunnel and schedules a retry" begin
+            port = Pluto.stable_tunnel_port("watchdog-node")
+            # a socket that answers /ping stands in for a live tunnel. `Connection: close` keeps
+            # HTTP.jl from pooling the socket and reusing one we already hung up on.
+            srv = Sockets.listen(Sockets.localhost, UInt16(port))
+            @async while isopen(srv)
+                try
+                    conn = Sockets.accept(srv)
+                    @async try
+                        readavailable(conn)
+                        write(conn, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                        close(conn)
+                    catch
+                    end
+                catch
+                    break
+                end
+            end
+            proc = run(`sleep 600`; wait=false) # stands in for the ssh child
+            session = Pluto.RemoteSession("watchdog-node", "ready", "", port, "s", "julia", proc, nothing, false)
+            # A task that never finishes, so the supervisor sees "a rebuild is already running" and
+            # does not launch a real SSH connect for a host that does not exist.
+            session.task = @async sleep(600)
+            lock(Pluto.REMOTE_SESSIONS_LOCK) do
+                Pluto.REMOTE_SESSIONS["watchdog-node"] = session
+            end
+            try
+                sleep(0.5)
+                @test Pluto._tunnel_healthy(session)
+                Pluto._supervise_tunnels_once()
+                @test session.state == "ready"            # healthy: left alone
+                @test !haskey(Pluto.TUNNEL_RETRY, "watchdog-node")
+
+                kill(proc)   # the lid closes
+                close(srv)
+                sleep(0.6)
+                @test !Pluto._tunnel_healthy(session)
+
+                Pluto._supervise_tunnels_once()
+                @test session.state == "tunneling"        # the UI is told, instead of a stale "ready"
+                @test haskey(Pluto.TUNNEL_RETRY, "watchdog-node")
+
+                # a node that is off for the weekend must not cost an SSH round trip every 5s
+                at_first, _ = Pluto.TUNNEL_RETRY["watchdog-node"]
+                Pluto._supervise_tunnels_once()
+                at_second, delay = Pluto.TUNNEL_RETRY["watchdog-node"]
+                @test at_first == at_second               # held off by the backoff
+                @test delay > Pluto.TUNNEL_RETRY_MIN      # and the next wait is longer
+            finally
+                try kill(proc) catch end
+                try close(srv) catch end
+                lock(Pluto.REMOTE_SESSIONS_LOCK) do
+                    delete!(Pluto.REMOTE_SESSIONS, "watchdog-node")
+                    delete!(Pluto.TUNNEL_RETRY, "watchdog-node")
+                end
+            end
         end
     end
 end
