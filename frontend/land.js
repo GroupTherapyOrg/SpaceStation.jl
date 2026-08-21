@@ -1522,6 +1522,9 @@ const Land = () => {
                         </button>
                         <div class="header-text">
                             <h1 title=${workspace?.root ?? ""}>Space<span class="land-accent">Station</span></h1>
+                            ${workspace?.root
+                                ? html`<p class="workspace-root" title=${workspace.root}>${basename(workspace.root) || workspace.root}</p>`
+                                : null}
                         </div>
                         <div class="header-buttons">
                             <div class="header-menu" ref=${menu_ref}>

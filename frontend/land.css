@@ -78,7 +78,8 @@ body.resizing #frames iframe {
 
 #land .header-row {
     display: flex;
-    align-items: center; /* single-line wordmark: icon, text, buttons share one centerline */
+    align-items: center; /* logo and buttons centre against the wordmark block, which is two lines
+                            tall whenever a workspace is open (name under "SpaceStation") */
     gap: 0.45rem;
 }
 
