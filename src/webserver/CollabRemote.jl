@@ -55,6 +55,34 @@ const TUNNEL_PORT_SPAN = 300
 
 tunnel_ports_path() = joinpath(collab_registry_dir(), "tunnel-ports.tsv")
 
+# Which hosts the user is currently attached to. Remembered so a hub restart (a reboot, a crash,
+# quitting and relaunching) can put the tunnels back on their stable ports — otherwise a workspace
+# tab left open over lunch answers a hard refresh with the browser's own "can't be reached" page,
+# and nothing in it can help, because our code never runs. The remote servers themselves are
+# deliberately left running when the hub goes away, so restoring is just re-opening the door to work
+# that is still there. A host leaves this list only when the user explicitly disconnects it.
+active_remotes_path() = joinpath(collab_registry_dir(), "active-remotes.tsv")
+
+function _read_active_remotes()::Vector{String}
+    path = active_remotes_path()
+    isfile(path) || return String[]
+    try
+        String[String(l) for l in strip.(readlines(path)) if !isempty(l)]
+    catch
+        String[]
+    end
+end
+
+function _set_active_remote!(host::AbstractString, active::Bool)
+    try
+        hosts = Set(_read_active_remotes())
+        active ? push!(hosts, String(host)) : delete!(hosts, String(host))
+        mkpath(collab_registry_dir())
+        _write_private_file(active_remotes_path(), isempty(hosts) ? "" : join(sort(collect(hosts)), "\n") * "\n")
+    catch
+    end
+end
+
 # Julia's `hash` is not promised to be stable across versions, and this value has to mean the same
 # thing next month as it does today — so spell the hash out.
 _stable_hash(s::AbstractString) = foldl((h, c) -> (h * UInt64(31) + UInt64(c)) & 0x00ffffffffffffff, codeunits(s); init=UInt64(7))
@@ -510,6 +538,7 @@ function _remote_connect_task!(r::RemoteSession)
             # 0o600 from creation (holds the remote's secret) — see _write_private_file.
             _write_private_file(path, """{"pid": $(getpid()), "host": "127.0.0.1", "port": $(local_port), "node": $(_json_string(gethostname())), "secret": $(_json_string(remote.secret)), "remote_ssh_host": $(_json_string(r.host)), "spacestation_version": $(_json_string(PLUTO_VERSION_STR)), "pluto_version": $(_json_string(PLUTO_VERSION_STR)), "started_at": $(time())}\n""")
         catch end
+        _set_active_remote!(r.host, true) # so a hub restart can put this tunnel back by itself
         r.state = "ready"
         r.detail = "connected — the workspace runs on $(r.host)"
     catch e
@@ -568,6 +597,7 @@ function cancel_remote_session!(host::String)
     r = lock(REMOTE_SESSIONS_LOCK) do
         get(REMOTE_SESSIONS, host, nothing)
     end
+    _set_active_remote!(host, false) # an explicit disconnect must not come back on the next start
     if r !== nothing
         r.cancelled = true
         t = r.tunnel
@@ -601,6 +631,7 @@ const TUNNEL_RETRY_MIN = 5.0
 const TUNNEL_RETRY_MAX = 120.0
 const TUNNEL_RETRY = Dict{String,Tuple{Float64,Float64}}() # host => (next attempt at, current delay)
 const TUNNEL_WATCHDOG = Ref{Union{Task,Nothing}}(nothing)
+const MAX_RESTORED_REMOTES = 8
 
 "Is this session's path to the remote actually usable right now?"
 function _tunnel_healthy(r::RemoteSession)::Bool
@@ -649,6 +680,32 @@ function _supervise_tunnels_once()
     end
 end
 
+"""
+Re-attach to every host the user was connected to when the hub last ran.
+
+Each host lands back on its stable local port, so a workspace tab that was left open across a
+reboot answers a hard refresh normally instead of the browser's "site can't be reached". Failures
+are quiet — the host may simply be off — and the watchdog then retries with backoff.
+"""
+function restore_remote_sessions!()
+    hosts = _read_active_remotes()
+    isempty(hosts) && return
+    # Bounded: reconnecting is several SSH round trips per host, and a long-lived install can
+    # accumulate hosts. The rest reattach on demand from homebase, as before.
+    if length(hosts) > MAX_RESTORED_REMOTES
+        @info "SpaceStation: reattaching to the $(MAX_RESTORED_REMOTES) most recent remote hosts; open the others from homebase" skipped = length(hosts) - MAX_RESTORED_REMOTES
+        hosts = hosts[1:MAX_RESTORED_REMOTES]
+    end
+    @asynclog for host in hosts
+        try
+            open_remote_session!(host)
+        catch e
+            @debug "could not reattach to remote host" host exception = (e, catch_backtrace())
+        end
+    end
+    nothing
+end
+
 "Start the tunnel watchdog once per server process."
 function start_tunnel_watchdog!()
     TUNNEL_WATCHDOG[] === nothing || return
@@ -666,6 +723,7 @@ end
 
 function register_collab_remote!(router, session::ServerSession)
     start_tunnel_watchdog!()
+    restore_remote_sessions!()
 
     function remote_status_json(r::RemoteSession)
         _json(Pair[

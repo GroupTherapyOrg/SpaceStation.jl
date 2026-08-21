@@ -54,6 +54,25 @@ import Sockets
             @test Pluto.stable_tunnel_port("gpu-node-3") isa Int
         end
 
+        # A hub restart (reboot, crash, quit-and-relaunch) used to leave every tunnel down until the
+        # user reconnected by hand. A workspace tab left open over lunch then answered a refresh
+        # with the browser's own "site can't be reached", where none of our code runs.
+        @testset "hosts the user is attached to are remembered across a hub restart" begin
+            @test Pluto._read_active_remotes() == String[]
+            Pluto._set_active_remote!("gpu-a", true)
+            Pluto._set_active_remote!("gpu-b", true)
+            @test sort(Pluto._read_active_remotes()) == ["gpu-a", "gpu-b"]
+            Pluto._set_active_remote!("gpu-a", true) # idempotent
+            @test sort(Pluto._read_active_remotes()) == ["gpu-a", "gpu-b"]
+            # an explicit disconnect must NOT come back on the next start
+            Pluto._set_active_remote!("gpu-a", false)
+            @test Pluto._read_active_remotes() == ["gpu-b"]
+            Pluto._set_active_remote!("gpu-b", false)
+            @test Pluto._read_active_remotes() == String[]
+            # nothing recorded: restoring is a no-op, and never throws during server startup
+            @test Pluto.restore_remote_sessions!() === nothing
+        end
+
         # `ssh -N -L` gives up about a minute after the network stops answering, which is what a
         # closed laptop lid looks like. Nothing used to notice: the session stayed "ready" while
         # every request through it failed, until you reconnected by hand from homebase.

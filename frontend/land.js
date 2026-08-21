@@ -1073,6 +1073,9 @@ const Land = () => {
     // This server may be reached over an SSH tunnel (when it's a remote workspace). If so, its child
     // workspace ports aren't forwarded to the browser, so workspaces open IN-PLACE rather than in new tabs.
     const [tunneled, set_tunneled] = useState(false)
+    // Nothing is answering on our own origin. For an SSH workspace this is the ordinary consequence
+    // of the laptop having been shut — see the recovery loop further down.
+    const [offline, set_offline] = useState(false)
     // Which extensions make a new file a notebook. The server owns the list (`pluto_file_extensions`),
     // so the create prompts below agree with the `type` the sidebar already gets decided server-side.
     // The bundled list is the fallback, so a failed or older-server config request still recognises
@@ -1350,7 +1353,13 @@ const Land = () => {
             }
             set_error(null)
         } catch (e) {
-            set_error(String(e))
+            // A rejected fetch (TypeError) means nothing answered — the server is gone, or for a
+            // remote workspace the SSH tunnel is down, which is just what a closed laptop lid looks
+            // like. That is not an error the user has to act on: the hub's watchdog is already
+            // rebuilding the tunnel, on the same local port, so this tab's URL stays valid. Wait for
+            // it instead. A response that arrives and is bad (a thrown status) is still a real error.
+            if (e instanceof TypeError) set_offline(true)
+            else set_error(String(e))
         }
     }, [add_tab])
 
@@ -1359,6 +1368,49 @@ const Land = () => {
         const interval = setInterval(refresh, 10_000)
         return () => clearInterval(interval)
     }, [])
+
+    // Reopening the laptop should not cost a 10s wait for the next poll, and coming back from
+    // sleep does not always fire `online`. Probe on any signal that the machine is awake again.
+    useEffect(() => {
+        const probe = () => {
+            if (document.visibilityState === "visible") refresh()
+        }
+        window.addEventListener("online", probe)
+        document.addEventListener("visibilitychange", probe)
+        window.addEventListener("focus", probe)
+        return () => {
+            window.removeEventListener("online", probe)
+            document.removeEventListener("visibilitychange", probe)
+            window.removeEventListener("focus", probe)
+        }
+    }, [refresh])
+
+    // While unreachable, poll our OWN origin until something answers, then reload. Reloading (rather
+    // than just clearing the banner) is deliberate: the notebook iframes each hold their own dead
+    // websocket, and a reload is the one action that revives all of them at once.
+    useEffect(() => {
+        if (!offline) return
+        let cancelled = false
+        let timer = null
+        let delay = 1000
+        const tick = async () => {
+            if (cancelled) return
+            try {
+                const r = await fetch("./ping", { cache: "no-store" })
+                if (r.ok) {
+                    window.location.reload()
+                    return
+                }
+            } catch {}
+            delay = Math.min(delay * 1.5, 5000)
+            if (!cancelled) timer = setTimeout(tick, delay)
+        }
+        timer = setTimeout(tick, 700)
+        return () => {
+            cancelled = true
+            if (timer != null) clearTimeout(timer)
+        }
+    }, [offline])
 
     const start_sidebar_resize = useCallback((e) => {
         e.preventDefault()
@@ -1574,6 +1626,20 @@ const Land = () => {
 
     return html`
         <div id="land">
+            ${offline
+                ? html`<div class="reconnect-overlay" role="status" aria-live="polite">
+                      <div class="reconnect-card">
+                          <span class="reconnect-spinner"></span>
+                          <div>
+                              <b>Reconnecting…</b>
+                              <p>
+                                  Waiting for this workspace to come back. Notebooks and terminals on the server keep running — this page reloads
+                                  itself as soon as it can reach them again.
+                              </p>
+                          </div>
+                      </div>
+                  </div>`
+                : null}
             ${sidebar_hidden
                 ? html`<button id="sidebar-reopen" title="Show sidebar" onClick=${() => set_sidebar_hidden(false)}>☰</button>`
                 : html`<aside style=${`width: ${sidebar_width}px`}>
