@@ -1,6 +1,7 @@
 using Test
 import SpaceStation: Pluto
 import Sockets
+import HTTP
 
 # The browser addresses a remote workspace as `http://localhost:<local_port>/`, so that port is the
 # workspace's identity to an open tab, a bookmark or a reload. It used to be handed out by
@@ -52,6 +53,35 @@ import Sockets
             write(joinpath(state, "pluto", "servers", "tunnel-ports.tsv"), "garbage\nnot\ta\tport\n")
             @test Pluto._read_tunnel_ports() isa Dict
             @test Pluto.stable_tunnel_port("gpu-node-3") isa Int
+        end
+
+        # `ssh -L` owns the local port, so when ssh dies the port goes silent and a reload gets the
+        # browser's own "site can't be reached" — a page none of our code runs in, so the tab can do
+        # nothing for itself. While the tunnel is down the hub holds the port instead.
+        @testset "the hub holds the port while the tunnel is down" begin
+            port = Pluto.stable_tunnel_port("held-node")
+            @test !Pluto._local_ping_ok(port)   # nothing there: this is the dead-end case
+
+            Pluto._start_placeholder!("held-node", port)
+            try
+                sleep(0.6)
+                r = HTTP.get("http://127.0.0.1:$(port)/anything"; status_exception=false, retry=false)
+                @test r.status == 503
+                @test HTTP.header(r, "X-SpaceStation-Reconnecting") == "1"
+                @test occursin("held-node", String(r.body)) # names the host you are waiting on
+
+                # The one that must never regress: 503 keeps `_local_ping_ok` false, so the watchdog
+                # still knows there is something to fix. A placeholder that looked healthy would
+                # convince it the tunnel was fine and stop the reconnect for good.
+                @test !Pluto._local_ping_ok(port)
+
+                Pluto._start_placeholder!("held-node", port) # idempotent
+                @test HTTP.get("http://127.0.0.1:$(port)/"; status_exception=false, retry=false).status == 503
+            finally
+                Pluto._stop_placeholder!("held-node")
+            end
+            sleep(0.6)
+            @test Pluto._port_bindable(port) # released, so `ssh -L` can take it back
         end
 
         # A hub restart (reboot, crash, quit-and-relaunch) used to leave every tunnel down until the

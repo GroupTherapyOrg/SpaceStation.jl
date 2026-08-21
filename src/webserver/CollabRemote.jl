@@ -114,6 +114,97 @@ function _save_tunnel_port(host::AbstractString, port::Integer)
     end
 end
 
+# --- holding the port while the tunnel is down ------------------------------------------------------
+#
+# `ssh -L` owns the local port, so when ssh dies the port goes silent and the browser answers a
+# reload with its OWN "this site can't be reached" — a page none of our code runs in. The tab can do
+# nothing about it, which is why a dropped tunnel used to mean closing the tab and reopening the
+# workspace from homebase.
+#
+# So while the tunnel is down the hub takes the port over itself and answers 503 with a page that
+# waits for the real server to return. A hard refresh then lands on *our* page. The status has to
+# stay 503: `_local_ping_ok` treats only 200 as healthy, and a placeholder that looked healthy would
+# convince the watchdog there was nothing to fix.
+const PLACEHOLDERS = Dict{String,Any}()
+const PLACEHOLDERS_LOCK = ReentrantLock()
+
+function _placeholder_page(host::AbstractString)
+    """<!doctype html><html><head><meta charset="utf-8"><title>Reconnecting…</title>
+    <meta name="color-scheme" content="light dark">
+    <style>
+      body{font:15px/1.6 system-ui,-apple-system,sans-serif;display:grid;place-items:center;height:100vh;margin:0;
+           background:#1b1e28;color:#dfe1e8}
+      @media (prefers-color-scheme: light){body{background:#f7f7f9;color:#22242b}}
+      .c{max-width:32rem;padding:0 1.5rem;text-align:center}
+      h1{font-size:1.05rem;margin:0 0 .4rem}
+      p{opacity:.7;margin:.3rem 0}
+      code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+      .s{width:1.1rem;height:1.1rem;margin:0 auto 1rem;border-radius:50%;border:2px solid currentColor;
+         border-top-color:transparent;animation:r .8s linear infinite;opacity:.6}
+      @keyframes r{to{transform:rotate(360deg)}}
+    </style></head><body><div class="c">
+      <div class="s"></div>
+      <h1>Reconnecting to <code>$(host)</code>…</h1>
+      <p>The workspace is still running on the remote machine. This page reloads itself as soon as the
+         connection is back.</p>
+    </div>
+    <script>
+      // Reload only once the REAL server answers: the placeholder marks its own replies, so a reply
+      // carrying that marker means we are still talking to the stand-in.
+      setInterval(async () => {
+        try {
+          const r = await fetch("./ping", { cache: "no-store" })
+          if (!r.headers.get("X-SpaceStation-Reconnecting")) location.reload()
+        } catch (e) {}
+      }, 2000)
+    </script></body></html>"""
+end
+
+"Take over `port` with a page that waits for the tunnel to come back. Idempotent per host."
+function _start_placeholder!(host::AbstractString, port::Integer)
+    lock(PLACEHOLDERS_LOCK) do
+        haskey(PLACEHOLDERS, String(host)) && return
+        body = _placeholder_page(host)
+        try
+            server = HTTP.listen!(Sockets.localhost, UInt16(port); verbose=-1) do http::HTTP.Stream
+                HTTP.setstatus(http, 503)
+                HTTP.setheader(http, "Content-Type" => "text/html; charset=utf-8")
+                HTTP.setheader(http, "X-SpaceStation-Reconnecting" => "1")
+                HTTP.setheader(http, "Cache-Control" => "no-store")
+                HTTP.setheader(http, "Retry-After" => "2")
+                # Explicit length rather than chunked: without it HTTP.jl streams the body chunked
+                # and Chrome aborts the navigation (net::ERR_ABORTED), which puts the browser's own
+                # error page back on screen — the exact thing this server exists to prevent. curl is
+                # lenient about the missing terminator, so this only shows up in a real browser.
+                HTTP.setheader(http, "Content-Length" => string(sizeof(body)))
+                HTTP.startwrite(http)
+                # a HEAD (or a probe that hangs up early) must not take the placeholder down
+                try
+                    write(http, body)
+                catch
+                end
+            end
+            PLACEHOLDERS[String(host)] = server
+        catch
+            # the port is busy — most likely the tunnel is already back, which is the good case
+        end
+    end
+    nothing
+end
+
+"Release the port so `ssh -L` can bind it."
+function _stop_placeholder!(host::AbstractString)
+    server = lock(PLACEHOLDERS_LOCK) do
+        pop!(PLACEHOLDERS, String(host), nothing)
+    end
+    server === nothing && return
+    try
+        close(server)
+    catch
+    end
+    nothing
+end
+
 "Can we bind this local port right now? (The tunnel binds it a moment later — same small race the old `listenany` had.)"
 function _port_bindable(port::Integer)::Bool
     try
@@ -501,6 +592,10 @@ function _remote_connect_task!(r::RemoteSession)
 
         r.state = "tunneling"
         r.detail = "opening the SSH tunnel"
+        # Hand the port back before picking it: while the tunnel was down we were holding it
+        # ourselves, and `stable_tunnel_port` would otherwise see it as occupied and move this host
+        # somewhere else — losing the very stability the tab depends on.
+        _stop_placeholder!(r.host)
         local_port = stable_tunnel_port(r.host)
         # `-n` + stdin=devnull keep the tunnel ssh OFF the launching terminal's stdin: a backgrounded
         # `ssh -N` otherwise fights the shell for the terminal, so quitting the server (or just having a
@@ -520,6 +615,7 @@ function _remote_connect_task!(r::RemoteSession)
         if !ok
             r.state = "error"
             r.detail = "tunnel did not come up (local port $local_port → $(r.host):$(remote.port))"
+            _start_placeholder!(r.host, local_port) # keep answering, so a reload is not a dead end
             return
         end
         _remote_bail(r) && return
@@ -544,6 +640,7 @@ function _remote_connect_task!(r::RemoteSession)
     catch e
         r.state = "error"
         r.detail = sprint(showerror, e)
+        r.local_port > 0 && _start_placeholder!(r.host, r.local_port)
     end
 end
 
@@ -607,6 +704,7 @@ function cancel_remote_session!(host::String)
         end
         # see close_all_remote_tunnels: the tunnel's connection file outlives its dead port otherwise
         r.local_port > 0 && remove_collab_registry_file(r.local_port)
+        _stop_placeholder!(host) # disconnecting means the port goes quiet, not that we keep waiting
     end
     lock(REMOTE_SESSIONS_LOCK) do
         delete!(REMOTE_SESSIONS, host)
@@ -671,6 +769,9 @@ function _supervise_tunnels_once()
             t === nothing || process_exited(t) || kill(t)
         catch
         end
+        # Take the port over straight away: between here and the tunnel coming back is exactly the
+        # window in which a reload would otherwise hit the browser's own error page.
+        r.local_port > 0 && _start_placeholder!(host, r.local_port)
         lock(REMOTE_SESSIONS_LOCK) do
             # only start a rebuild if one is not already running for this host
             if r.task === nothing || istaskdone(r.task)
