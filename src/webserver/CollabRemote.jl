@@ -34,6 +34,100 @@ end
 const REMOTE_SESSIONS = Dict{String,RemoteSession}()
 const REMOTE_SESSIONS_LOCK = ReentrantLock()
 
+# --- stable local ports -------------------------------------------------------------------------
+#
+# The browser addresses a remote workspace as `http://localhost:<local_port>/`, so that port IS the
+# workspace's identity as far as an open tab, a bookmark or a reload is concerned. Handing it out
+# with `listenany(45200)` made it "first free port at this moment", i.e. assigned by arrival order:
+#
+#   • reconnect a host after its tunnel died and it could come back on a DIFFERENT port, so every
+#     tab already open on the old one was dead for good — you had to close it and reopen from
+#     homebase, which is the opposite of "refresh and it just works";
+#   • worse, a host reconnecting first could inherit a port another host had been using, silently
+#     pointing that host's still-open tabs at the WRONG machine.
+#
+# So a host gets the same port every time. The mapping is remembered on disk (the local hub restarts
+# and its tunnels die with it, but the tabs survive — they only need the port to come back), and a
+# host that has never been seen starts from a hash of its name so two hosts rarely want the same
+# port in the first place. Ports handed to other hosts are never reused while they are remembered.
+const TUNNEL_PORT_BASE = 45200
+const TUNNEL_PORT_SPAN = 300
+
+tunnel_ports_path() = joinpath(collab_registry_dir(), "tunnel-ports.tsv")
+
+# Julia's `hash` is not promised to be stable across versions, and this value has to mean the same
+# thing next month as it does today — so spell the hash out.
+_stable_hash(s::AbstractString) = foldl((h, c) -> (h * UInt64(31) + UInt64(c)) & 0x00ffffffffffffff, codeunits(s); init=UInt64(7))
+
+function _read_tunnel_ports()::Dict{String,Int}
+    d = Dict{String,Int}()
+    path = tunnel_ports_path()
+    isfile(path) || return d
+    try
+        for line in eachline(path)
+            parts = split(line, '\t')
+            length(parts) == 2 || continue
+            p = tryparse(Int, parts[2])
+            p === nothing || (d[String(parts[1])] = p)
+        end
+    catch
+    end
+    d
+end
+
+function _save_tunnel_port(host::AbstractString, port::Integer)
+    try
+        d = _read_tunnel_ports()
+        d[String(host)] = Int(port)
+        mkpath(collab_registry_dir())
+        # 0o600 like the other files here: this one names the hosts you connect to.
+        _write_private_file(tunnel_ports_path(), join(("$(h)\t$(p)" for (h, p) in d), "\n") * "\n")
+    catch
+    end
+end
+
+"Can we bind this local port right now? (The tunnel binds it a moment later — same small race the old `listenany` had.)"
+function _port_bindable(port::Integer)::Bool
+    try
+        server = Sockets.listen(Sockets.localhost, UInt16(port))
+        close(server)
+        true
+    catch
+        false
+    end
+end
+
+"""
+The local port for `host`'s tunnel: the same one every time, so a tab opened on it keeps working
+across reconnects, sleep/wake and hub restarts.
+
+Falls back to the next free port only when the preferred one is genuinely occupied, and never picks
+one that is remembered for a *different* host — that swap is what used to cross-wire two nodes.
+"""
+function stable_tunnel_port(host::String)::Int
+    remembered = _read_tunnel_ports()
+    # Ports promised to OTHER hosts are off limits even when free right now — a disconnected host's
+    # port being idle is precisely when a newcomer would otherwise steal it and inherit its tabs.
+    # `host`'s own remembered port is not in here, so it always gets first refusal on it.
+    reserved = Set(p for (h, p) in remembered if h != host)
+    preferred = get(remembered, host, TUNNEL_PORT_BASE + Int(mod(_stable_hash(host), TUNNEL_PORT_SPAN)))
+    if preferred ∉ reserved && _port_bindable(preferred)
+        _save_tunnel_port(host, preferred)
+        return preferred
+    end
+    for candidate in TUNNEL_PORT_BASE:(TUNNEL_PORT_BASE + TUNNEL_PORT_SPAN + 200)
+        candidate ∈ reserved && continue
+        if _port_bindable(candidate)
+            _save_tunnel_port(host, candidate)
+            return candidate
+        end
+    end
+    # Everything in the range is spoken for — better a working tunnel on an odd port than none.
+    port, probe = Sockets.listenany(Sockets.localhost, TUNNEL_PORT_BASE)
+    close(probe)
+    Int(port)
+end
+
 # ssh joins its argument vector into ONE space-separated string and the remote shell
 # re-splits it — so the command must be shell-quoted by US to survive the trip as a
 # single `bash -lc` argument. (Without this, `bash -lc rm -rf x` runs bare `rm`.)
@@ -379,9 +473,7 @@ function _remote_connect_task!(r::RemoteSession)
 
         r.state = "tunneling"
         r.detail = "opening the SSH tunnel"
-        local_port, probe_server = Sockets.listenany(Sockets.localhost, 45200)
-        close(probe_server)
-        local_port = Int(local_port)
+        local_port = stable_tunnel_port(r.host)
         # `-n` + stdin=devnull keep the tunnel ssh OFF the launching terminal's stdin: a backgrounded
         # `ssh -N` otherwise fights the shell for the terminal, so quitting the server (or just having a
         # remote open) can leave that terminal "disconnected". stdout→devnull too — we only watch
