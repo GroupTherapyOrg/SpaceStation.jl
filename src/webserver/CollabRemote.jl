@@ -114,6 +114,88 @@ function _save_tunnel_port(host::AbstractString, port::Integer)
     end
 end
 
+# --- diagnosing a shadowed ssh_config entry ---------------------------------------------------------
+#
+# OpenSSH uses the FIRST value it finds for each keyword, across every block matching a host. Tools
+# that generate config entries per compute job (HPC3 Launcher, and most SLURM helpers) append a new
+# block each time a node is reallocated, so the alias ends up defined several times and the OLDEST
+# definition is the one in force — routing through a jump host whose job finished weeks ago. It
+# resolves, so ssh does not complain; it just fails to connect. That is indistinguishable from "your
+# keys are wrong" unless somebody says otherwise, which is what this does.
+#
+# Strictly diagnosis. Editing somebody's ~/.ssh/config is not ours to do.
+
+"""
+The `ProxyJump` of each block naming `host` EXACTLY, in file order; `nothing` for a block that sets
+none. Only an exact token counts, so a wildcard block (`Host hpc3-*`) is never mistaken for a second
+definition of this alias.
+"""
+function _host_blocks(config_text::AbstractString, host::AbstractString)::Vector{Union{Nothing,String}}
+    blocks = Union{Nothing,String}[]
+    in_block = false
+    for line in eachline(IOBuffer(String(config_text)))
+        stripped = strip(line)
+        (isempty(stripped) || startswith(stripped, "#")) && continue
+        host_line = match(r"^(?i:Host)\s+(.*)$", stripped)
+        if host_line !== nothing
+            in_block = String(host) ∈ split(host_line.captures[1])
+            in_block && push!(blocks, nothing)
+            continue
+        end
+        if in_block
+            jump = match(r"^(?i:ProxyJump)\s+(\S+)", stripped)
+            jump === nothing || (blocks[end] = String(jump.captures[1]))
+        end
+    end
+    blocks
+end
+
+"""
+Say what is wrong when duplicate blocks disagree, or `nothing` when there is nothing to say.
+
+Deliberately quiet unless the situation is both unambiguous and actionable: several blocks, more
+than one `ProxyJump` among them, and ssh landing on one that is not the last written. If ssh already
+resolves to the newest definition the duplication is harmless today, and if the effective value came
+from somewhere we did not read (a wildcard block, an `Include`, /etc/ssh) we do not understand the
+file well enough to advise on it.
+"""
+function _describe_ssh_config_conflict(host, effective, blocks::Vector{Union{Nothing,String}})
+    length(blocks) < 2 && return nothing
+    effective === nothing && return nothing
+    jumps = String[b for b in blocks if b !== nothing]
+    length(unique(jumps)) < 2 && return nothing
+    String(effective) ∈ jumps || return nothing
+    String(effective) == jumps[end] && return nothing
+    string(
+        "Your ~/.ssh/config defines `", host, "` ", length(blocks),
+        " times with different ProxyJump values. SSH uses the FIRST one it finds, so this connection went through `",
+        effective, "`, while the last block names `", jumps[end],
+        "`. If that first block belongs to a job that has ended, delete it — or move the newest block above the others.",
+    )
+end
+
+"Look for a shadowed duplicate entry for `host`. Never throws, and says nothing unless it is sure."
+function ssh_config_conflict(host::AbstractString)::Union{Nothing,String}
+    try
+        path = joinpath(homedir(), ".ssh", "config")
+        isfile(path) || return nothing
+        # `ssh -G` resolves the config without connecting, and is the authority on what ssh will
+        # actually use — far safer than re-implementing Match/Include/wildcard precedence ourselves.
+        out = read(pipeline(`ssh -G $(host)`; stderr=devnull), String)
+        effective = nothing
+        for line in eachline(IOBuffer(out))
+            m = match(r"^proxyjump\s+(\S+)", line)
+            if m !== nothing
+                effective = String(m.captures[1])
+                break
+            end
+        end
+        _describe_ssh_config_conflict(host, effective, _host_blocks(read(path, String), host))
+    catch
+        nothing
+    end
+end
+
 # --- holding the port while the tunnel is down ------------------------------------------------------
 #
 # `ssh -L` owns the local port, so when ssh dies the port goes silent and the browser answers a
@@ -413,11 +495,15 @@ function _remote_connect_task!(r::RemoteSession)
         ok, probe_out = _ssh_try(r.host, "true")
         if !ok
             r.state = "error"
-            r.detail = if occursin(r"banner exchange|timed out|timeout|Connection reset"i, probe_out)
+            base = if occursin(r"banner exchange|timed out|timeout|Connection reset"i, probe_out)
                 "timed out reaching $(r.host) — the SSH hop is slow right now (often a busy ProxyJump login node), not an auth problem. Try connecting again; it usually goes through on a retry."
             else
                 "cannot reach $(r.host) with key-based SSH (check `ssh $(r.host)` works without a password prompt)"
             end
+            # A stale duplicate entry produces exactly these two symptoms, and the advice above sends
+            # you looking at keys or at the network instead of at the config. Say so when we can tell.
+            conflict = ssh_config_conflict(r.host)
+            r.detail = conflict === nothing ? base : base * "\n\n" * conflict
             return
         end
 

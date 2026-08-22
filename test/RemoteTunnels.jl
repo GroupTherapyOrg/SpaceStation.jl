@@ -84,6 +84,56 @@ import HTTP
             @test Pluto._port_bindable(port) # released, so `ssh -L` can take it back
         end
 
+        # OpenSSH uses the FIRST value it finds for each keyword across every matching block. Tools
+        # that write a config entry per compute job append a new block each time a node is
+        # reallocated, so the alias ends up defined several times and the OLDEST wins — routing
+        # through a jump host whose job ended weeks ago. ssh does not complain; it just fails to
+        # connect, which is indistinguishable from bad keys unless somebody says otherwise.
+        @testset "a shadowed ssh_config entry is diagnosed, not guessed at" begin
+            blk(jid, node) = """
+            Host hpc_login_$(jid)
+                HostName hpc3
+                User u
+
+            Host $(node)
+                HostName $(node)
+                User u
+                ProxyJump hpc_login_$(jid)
+            """
+            two = blk("111", "gpu-a") * blk("999", "gpu-a")
+
+            @test Pluto._host_blocks(two, "gpu-a") == ["hpc_login_111", "hpc_login_999"]
+            @test Pluto._host_blocks(two, "gpu-zzz") == []
+            # a wildcard block is not a second definition of this alias
+            @test Pluto._host_blocks("Host gpu-*\n    ProxyJump w\n", "gpu-a") == []
+            # a block that sets no ProxyJump still counts as a definition
+            @test Pluto._host_blocks("Host gpu-a\n    User u\n", "gpu-a") == [nothing]
+            # keywords are case-insensitive, as in ssh
+            @test Pluto._host_blocks("host gpu-a\n    proxyjump j\n", "gpu-a") == ["j"]
+
+            blocks = Pluto._host_blocks(two, "gpu-a")
+            msg = Pluto._describe_ssh_config_conflict("gpu-a", "hpc_login_111", blocks)
+            @test msg !== nothing
+            @test occursin("2 times", msg)
+            @test occursin("hpc_login_111", msg) && occursin("hpc_login_999", msg)
+
+            # Quiet unless it is both unambiguous and actionable:
+            #   already on the newest -> the duplication is harmless today
+            @test Pluto._describe_ssh_config_conflict("gpu-a", "hpc_login_999", blocks) === nothing
+            #   effective value we never saw -> we do not understand this file well enough to advise
+            @test Pluto._describe_ssh_config_conflict("gpu-a", "elsewhere", blocks) === nothing
+            @test Pluto._describe_ssh_config_conflict("gpu-a", nothing, blocks) === nothing
+            #   one definition, or duplicates that agree
+            @test Pluto._describe_ssh_config_conflict("gpu-a", "hpc_login_111",
+                      Pluto._host_blocks(blk("111", "gpu-a"), "gpu-a")) === nothing
+            @test Pluto._describe_ssh_config_conflict("gpu-a", "hpc_login_111",
+                      Pluto._host_blocks(blk("111", "gpu-a") * blk("111", "gpu-a"), "gpu-a")) === nothing
+
+            # it runs `ssh -G`, so it must survive anything: a bad host, no config, no ssh at all
+            @test Pluto.ssh_config_conflict("definitely-not-a-host-xyz") === nothing
+            @test Pluto.ssh_config_conflict("") === nothing
+        end
+
         # A hub restart (reboot, crash, quit-and-relaunch) used to leave every tunnel down until the
         # user reconnected by hand. A workspace tab left open over lunch then answered a refresh
         # with the browser's own "site can't be reached", where none of our code runs.
