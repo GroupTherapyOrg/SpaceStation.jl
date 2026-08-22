@@ -810,7 +810,14 @@ end
 # The watchdog closes that loop. It re-runs the ordinary connect path, which is idempotent and
 # already handles "remote server also died" — and now lands on the same local port every time, so a
 # tab left open across the gap starts working again by itself.
-const TUNNEL_WATCHDOG_PERIOD = 5.0
+# 2s, not 5: this poll is the ONLY thing that notices the common failure. When a laptop sleeps, ssh
+# is frozen rather than killed — on wake it is alive with dead TCP and can sit there for up to a
+# minute (ServerAliveInterval 15 x CountMax 4) accepting connections and resetting them instantly,
+# so waiting for the process to exit would be waiting for a signal that arrives far too late. Until
+# we notice, a reload gets a browser error either way, so the period IS the exposure. It costs
+# nothing to shorten: the probe is a local connect, and a dead one comes back refused in about a
+# millisecond. A slow probe cannot pile up — iterations run one after another, never concurrently.
+const TUNNEL_WATCHDOG_PERIOD = 2.0
 const TUNNEL_RETRY_MIN = 5.0
 const TUNNEL_RETRY_MAX = 120.0
 const TUNNEL_RETRY = Dict{String,Tuple{Float64,Float64}}() # host => (next attempt at, current delay)
