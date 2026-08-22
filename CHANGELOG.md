@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.2.7...v0.3.0) (2026-08-22)
+
+
+### Features
+
+* SSH workspace robustness, Safe preview fixes, and .plutojl support ([#28](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/28)) ([96aef78](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/96aef78364308231dcfab65e6bb3aabb517e9664))
+
 ## [0.2.7](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.2.6...v0.2.7) (2026-08-18)
 
 
