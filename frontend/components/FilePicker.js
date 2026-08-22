@@ -1,6 +1,7 @@
 import { html, useState, useRef, useLayoutEffect } from "../imports/Preact.js"
 
 import { utf8index_to_ut16index } from "../common/UnicodeTools.js"
+import { has_pluto_file_extension } from "../common/PlutoFileExtensions.js"
 
 import {
     EditorState,
@@ -328,7 +329,15 @@ const pathhints =
                 })
 
                 if (suggest_new_file != null) {
-                    for (let initLength = 3; initLength >= 0; initLength--) {
+                    // Already a complete notebook name — ".jl", but also ".plutojl", ".pluto.jl", …
+                    // Nothing left to suggest, so get the popup out of the way. Previously only
+                    // ".jl" took this path, which left a ".plutojl" name being offered the
+                    // double-extension "notes.plutojl.jl" by the loop below.
+                    if (has_pluto_file_extension(queryFileName)) {
+                        return null
+                    }
+                    // …otherwise offer to complete the partially-typed extension (".j", ".", "").
+                    for (let initLength = 2; initLength >= 0; initLength--) {
                         const init = ".jl".substring(0, initLength)
                         if (queryFileName.endsWith(init)) {
                             let suggestedFileName = queryFileName + ".jl".substring(initLength)
@@ -337,9 +346,6 @@ const pathhints =
                                 suggestedFileName = "notebook.jl"
                             }
 
-                            if (initLength == 3) {
-                                return null
-                            }
                             if (!results.includes(suggestedFileName)) {
                                 styledResults.push({
                                     label: suggestedFileName + " (new)",

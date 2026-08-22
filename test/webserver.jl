@@ -8,6 +8,32 @@ using SpaceStation.WorkspaceManager: WorkspaceManager, poll
 
 @testset "Web server" begin
 
+# An SSH tunnel makes the port the browser dialled differ from the port we bound, and every
+# SpaceStation binds port_hint 1234 by default — so a local hub and every tunnelled remote node all
+# used to claim the cookie name `pluto_secret_1234` on `localhost` and clobber each other. Opening a
+# second workspace 403'd the first; refreshing the first 403'd the second.
+@testset "auth cookie is scoped by the port the browser used" begin
+    req(headers...) = HTTP.Request("GET", "/", collect(headers))
+
+    @test Pluto.browser_visible_port(req("Host" => "localhost:45200"), 1234) == 45200
+    @test Pluto.browser_visible_port(req("Host" => "127.0.0.1:1236"), 1234) == 1236
+    @test Pluto.browser_visible_port(req("Host" => "[::1]:45201"), 1234) == 45201
+    # a colon inside the brackets is part of the address, not a port
+    @test Pluto.browser_visible_port(req("Host" => "[::1]"), 1234) == 1234
+    # no port, no Host, or an unparseable port: fall back to the port we bound
+    @test Pluto.browser_visible_port(req("Host" => "example.com"), 1234) == 1234
+    @test Pluto.browser_visible_port(req(), 1234) == 1234
+    @test Pluto.browser_visible_port(req("Host" => "localhost:not-a-port"), 1234) == 1234
+
+    # two servers that both bound 1234 (a local hub and a remote reached through `ssh -L 45200:…`)
+    # must not share a cookie name, because the browser keeps one jar for all of `localhost`
+    session = ServerSession()
+    session.options.server.port = 1234
+    @test Pluto.secret_cookie_name(session, req("Host" => "localhost:1234")) !=
+          Pluto.secret_cookie_name(session, req("Host" => "localhost:45200"))
+    @test Pluto.secret_cookie_name(session, req("Host" => "localhost:45200")) == "pluto_secret_45200"
+end
+
 @testset "base_url" begin
     port = 13433
     host = "localhost"

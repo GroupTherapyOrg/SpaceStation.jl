@@ -588,7 +588,21 @@ export let RawHTMLContainer = ({ body, className = "", persist_js_state = false,
             }
         }
 
-        if (sanitize_html) return
+        if (sanitize_html) {
+            // Safe preview shows the cached output but runs no notebook code. Everything below this
+            // point executes notebook-provided <script>s and wires up bonds, which is exactly what
+            // Safe preview exists to prevent — but `apply_enhanced_markup_features` is not part of
+            // that: it typesets LaTeX, highlights code blocks and adds copy buttons, all of it pure
+            // presentation over the DOM that DOMPurify has already cleaned. Skipping it left Safe
+            // preview showing unhighlighted code, no copy buttons, and untypeset math.
+            //
+            // Math looked fine more often than the other two only by luck: MathJax is configured
+            // with `startup.typeset`, so its own one-shot pass over the document rescues whatever
+            // has already rendered. Outputs that land after that pass — a slow websocket, a locally
+            // served (fast) MathJax, a re-render — kept their raw $…$ source.
+            apply_enhanced_markup_features(container, pluto_actions)
+            return
+        }
 
         let scripts_in_shadowroots = Array.from(container.querySelectorAll("template[shadowroot]")).flatMap((template) => {
             // @ts-ignore

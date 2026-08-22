@@ -81,6 +81,52 @@ Hello
         await expect_safe_preview(page)
     })
 
+    // Safe preview runs no notebook code, but LaTeX typesetting, syntax highlighting and the
+    // markdown copy button are pure presentation over the DOM DOMPurify has already cleaned. They
+    // used to be skipped along with the script-executing code that follows them, which left Safe
+    // preview showing raw TeX source and unhighlighted code blocks.
+    it("Markup features still apply in safe preview", async () => {
+        await Promise.all([
+            page.waitForNavigation(),
+            paste(
+                page,
+                `### A Pluto.jl notebook ###
+# v0.14.0
+
+using Markdown
+using InteractiveUtils
+
+# ╔═╡ c1d786ec-7f73-11ea-1a0c-f38d7b6bbc1e
+md"""
+Inline \`\`e^{i\\pi} + 1 = 0\`\`
+
+\`\`\`math
+\\int_0^\\infty e^{-x^2}\\,dx
+\`\`\`
+
+\`\`\`julia
+f(x) = x^2 + 1
+\`\`\`
+"""
+
+# ╔═╡ Cell order:
+# ╟─c1d786ec-7f73-11ea-1a0c-f38d7b6bbc1e
+`
+            ),
+        ])
+        await expect_safe_preview(page)
+        await waitForPlutoToCalmDown(page)
+
+        // MathJax replaces each .tex element with an <mjx-container>; if typesetting never ran the
+        // .tex elements are still there untouched. Assert on the containers rather than the text so
+        // a MathJax version bump does not break this.
+        await page.waitForSelector("pluto-output mjx-container", { timeout: 30000 })
+        expect(await page.evaluate(() => document.querySelectorAll("pluto-output mjx-container").length)).toBeGreaterThan(0)
+
+        // highlight.js wraps tokens in <span class="hljs-…"> inside the code block
+        expect(await page.evaluate(() => document.querySelectorAll(`pluto-output code span[class^="hljs"]`).length)).toBeGreaterThan(0)
+    })
+
     it("Notebook from URL source", async () => {
         const url = "https://raw.githubusercontent.com/fonsp/Pluto.jl/v0.14.5/sample/Basic.jl"
 

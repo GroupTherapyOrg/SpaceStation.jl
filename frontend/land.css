@@ -78,7 +78,8 @@ body.resizing #frames iframe {
 
 #land .header-row {
     display: flex;
-    align-items: center; /* single-line wordmark: icon, text, buttons share one centerline */
+    align-items: center; /* logo and buttons centre against the wordmark block, which is two lines
+                            tall whenever a workspace is open (name under "SpaceStation") */
     gap: 0.45rem;
 }
 
@@ -1318,6 +1319,27 @@ body.resizing-v #frames iframe {
     padding: 0.45rem 0.55rem 0.3rem;
     overflow: hidden;
 }
+/* Sits after the (flex: 1) scroller, so it parks at the right edge of the tab strip. */
+.terminal-scheme-toggle {
+    flex-shrink: 0;
+    margin-left: 0.4rem;
+    background: none;
+    border: none;
+    color: inherit;
+    font: inherit;
+    font-size: 0.95rem;
+    line-height: 1;
+    opacity: 0.55;
+    cursor: pointer;
+    padding: 0.3rem 0.45rem;
+    border-radius: 1000px;
+    transition: opacity 0.08s linear, background-color 0.08s linear;
+}
+.terminal-scheme-toggle:hover {
+    opacity: 1;
+    background-color: var(--main-bg-color);
+}
+
 .terminal-tab-scroller {
     flex: 1;
     min-width: 0;
@@ -1459,4 +1481,60 @@ dialog.land-confirm button.go {
 dialog.land-confirm button.go.danger {
     color: rgb(var(--error-color, 240, 168, 168));
     border-color: rgba(var(--error-color, 240, 168, 168), 0.6);
+}
+
+/* Shown while our own origin is unreachable — for an SSH workspace, the normal state after the
+   laptop has been closed. The hub's watchdog rebuilds the tunnel on the same port, so this is a
+   wait, not a dead end. Non-blocking on purpose: what is already on screen stays readable. */
+.reconnect-overlay {
+    position: fixed;
+    inset: auto 0 0 0;
+    display: flex;
+    justify-content: center;
+    padding: 0 0 1.1rem 0;
+    pointer-events: none;
+    z-index: 40;
+}
+
+.reconnect-card {
+    pointer-events: auto;
+    display: flex;
+    gap: 0.7rem;
+    align-items: flex-start;
+    max-width: 30rem;
+    padding: 0.75rem 1rem;
+    border-radius: 0.7rem;
+    background-color: var(--main-bg-color);
+    box-shadow: 0 6px 26px rgba(0, 0, 0, 0.35);
+    border: 1px solid var(--cm-color-builtin, #5e7be1);
+    font-size: 0.82rem;
+    line-height: 1.45;
+}
+
+.reconnect-card p {
+    margin: 0.25rem 0 0 0;
+    opacity: 0.75;
+}
+
+.reconnect-spinner {
+    flex-shrink: 0;
+    width: 1rem;
+    height: 1rem;
+    margin-top: 0.15rem;
+    border-radius: 50%;
+    border: 2px solid var(--cm-color-builtin, #5e7be1);
+    border-top-color: transparent;
+    animation: reconnect-spin 0.8s linear infinite;
+}
+
+@keyframes reconnect-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .reconnect-spinner {
+        animation-duration: 2.4s;
+    }
 }

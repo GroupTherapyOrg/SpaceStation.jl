@@ -1,17 +1,41 @@
 import .Throttled
 
 """
-The name of the auth cookie, scoped by the server's port.
+The port the BROWSER used to reach us, read from the `Host` header — which is the only port that
+scopes anything in a cookie jar. Falls back to the port we are bound to when there is no usable
+`Host` (non-browser clients, which do not carry cookies anyway).
+
+`Host` is `name`, `name:port`, `[::1]` or `[::1]:port`; only a `:` *after* any closing bracket
+introduces a port.
+"""
+function browser_visible_port(request::HTTP.Request, fallback::Integer)::Int
+    host = HTTP.header(request, "Host", "")
+    isempty(host) && return Int(fallback)
+    start = something(findlast(']', host), 0) + 1
+    i = findnext(':', host, start)
+    i === nothing && return Int(fallback)
+    something(tryparse(Int, SubString(host, i + 1)), Int(fallback))
+end
+
+"""
+The name of the auth cookie, scoped by the port the browser used to reach this server.
 
 Cookies are scoped by host + name + path — **the port is not part of a cookie's scope**
 (RFC 6265). So multiple Pluto servers on the same host (e.g. several `spacestation` workspaces
 on `localhost:1234`, `:1235`, …) would all set a cookie named `secret` for `localhost` and
 *clobber each other*: launching a second server logs the first one out of its own browser tab,
 turning every cookie-authenticated request (`./api/v1/notebooks`, `./edit?id=…`, the editor
-WebSocket) into a 403. Putting the port in the cookie *name* gives each server its own cookie,
-so any number of workspaces can run side by side.
+WebSocket) into a 403. Putting the port in the cookie *name* gives each server its own cookie.
+
+The port has to be the one the BROWSER dialled, not the one we bound. An SSH tunnel decouples the
+two — `ssh -L 45200:127.0.0.1:1234` means the browser says `localhost:45200` while the server
+believes it is on `1234` — and every SpaceStation binds `port_hint = 1234` by default, so a local
+hub and every remote node all claimed the name `pluto_secret_1234` on `localhost` and clobbered
+each other. Opening a second workspace 403'd the first; refreshing the first 403'd the second.
+Naming from `Host` restores the intent: one cookie per address the browser can actually name.
 """
-secret_cookie_name(session::ServerSession) = "pluto_secret_$(something(session.options.server.port, 0))"
+secret_cookie_name(session::ServerSession, request::HTTP.Request) =
+    "pluto_secret_$(browser_visible_port(request, something(session.options.server.port, 0)))"
 
 """
 Return whether the `request` was authenticated in one of two ways:
@@ -31,7 +55,7 @@ function is_authenticated(session::ServerSession, request::HTTP.Request)
     ) || (
         secret_in_cookie = try
             cookies = HTTP.cookies(request)
-            cookie_name = secret_cookie_name(session)
+            cookie_name = secret_cookie_name(session, request)
             any(cookies) do cookie
                 cookie.name == cookie_name && cookie.value == session.secret
             end
@@ -52,8 +76,8 @@ const log_secret_throttled = Throttled.simple_leading_throttle(5) do session::Se
 end
 
 
-function add_set_secret_cookie!(session::ServerSession, response::HTTP.Response)
-    HTTP.setheader(response, "Set-Cookie" => "$(secret_cookie_name(session))=$(session.secret); Path=/; SameSite=Strict; HttpOnly")
+function add_set_secret_cookie!(session::ServerSession, request::HTTP.Request, response::HTTP.Response)
+    HTTP.setheader(response, "Set-Cookie" => "$(secret_cookie_name(session, request))=$(session.secret); Path=/; SameSite=Strict; HttpOnly")
     response
 end
 
@@ -170,7 +194,7 @@ function auth_middleware(handler)
                 HTTP.setheader(response, "Access-Control-Allow-Origin" => "*")
             end
             if required || HTTP.URI(request.target).path ∈ ("", "/")
-                add_set_secret_cookie!(session, response)
+                add_set_secret_cookie!(session, request, response)
             end
             response
         else

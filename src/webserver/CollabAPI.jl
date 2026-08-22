@@ -116,9 +116,19 @@ end
 
 # --- the workspace tree (SpaceStation) ---
 
-"Does this file look like a Pluto notebook? (`.jl` extension + the Pluto header on line 1)"
+"""
+Does this file look like a Pluto notebook? (one of the official Pluto file extensions plus the
+Pluto header on line 1.)
+
+The extension list is `pluto_file_extensions` — the same one the rest of Pluto uses — so notebooks
+saved under the extensions Pluto Desktop recommends (`.plutojl`, `.pluto.jl`, `.nb.jl`, …) show up
+in the sidebar as notebooks, not as plain files. The extension only decides whether a file is
+*considered*; the header on line 1 is what actually settles it, so an ordinary `.jl` script stays a
+file. Reading the first line can fail (permissions, a directory racing us, a binary blob with no
+newline) — the sidebar walks whatever is on disk, so failure means "not a notebook", never an error.
+"""
 function _is_pluto_notebook_file(path::String)::Bool
-    endswith(path, ".jl") || return false
+    endswith_pluto_file_extension(path) || return false
     try
         Base.open(io -> startswith(readline(io), _notebook_header), path, "r")
     catch
@@ -686,6 +696,12 @@ function register_collab_api!(router, session::ServerSession)
             # the integrated terminal's pty is ConPTY here — xterm.js needs to know to enable
             # its Windows heuristics (see TerminalView in land.js)
             "windows" => Sys.iswindows(),
+            # The extensions that make a new file a notebook. The hub has to answer this for a name
+            # the user is still typing — no file exists yet, so it cannot ask about `type` the way
+            # the sidebar does — and serving the list lets it answer with THIS server's list rather
+            # than whatever its bundle shipped with. `frontend/common/PlutoFileExtensions.js` is the
+            # fallback for when this request fails; a test pins it to the list above.
+            "notebook_extensions" => pluto_file_extensions,
         ])
         HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], body * "\n")
     end

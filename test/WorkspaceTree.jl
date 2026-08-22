@@ -173,4 +173,40 @@ end
     @testset "a missing folder is empty, not an error" begin
         @test isempty(Pluto._workspace_entries(joinpath(root, "nope")))
     end
+
+    # Pluto Desktop recommends `.plutojl` so that only notebooks get associated with the app, and
+    # `pluto_file_extensions` lists several more. The sidebar used to hardcode `.jl`, so those
+    # notebooks showed up as plain files and opened in the text editor instead of as notebooks.
+    @testset "every official Pluto extension is recognised" begin
+        ext_root = mktempdir()
+        header = "### A Pluto.jl notebook ###\n# v0.19.0\n"
+        for (i, ext) in enumerate(Pluto.pluto_file_extensions)
+            write(joinpath(ext_root, "nb$(i)$(ext)"), header)
+        end
+        # same extensions, but no Pluto header: these are ordinary files
+        for (i, ext) in enumerate(Pluto.pluto_file_extensions)
+            write(joinpath(ext_root, "plain$(i)$(ext)"), "x = 1\n")
+        end
+        listing = Pluto._workspace_entries(ext_root; budget=Ref(500))
+        by_name = Dict(d["name"] => d for d in nodes(listing))
+        for (i, ext) in enumerate(Pluto.pluto_file_extensions)
+            @test by_name["nb$(i)$(ext)"]["type"] == "notebook"
+            @test by_name["plain$(i)$(ext)"]["type"] == "file"
+        end
+        # the extension alone never makes a notebook, and a header alone never does either
+        write(joinpath(ext_root, "readme.md"), header)
+        listing = Pluto._workspace_entries(ext_root; budget=Ref(500))
+        @test find_node(listing, "readme.md")["type"] == "file"
+    end
+
+    # The hub and the editor's rename box must guess whether a name the user is *typing* would
+    # become a notebook — the file does not exist yet, so the server cannot be asked. They read a
+    # copy of the list in `frontend/common/PlutoFileExtensions.js`; this is what keeps it honest.
+    @testset "the frontend's copy of the extension list matches" begin
+        js = read(joinpath(@__DIR__, "..", "frontend", "common", "PlutoFileExtensions.js"), String)
+        m = match(r"export const pluto_file_extensions = \[(.*?)\]"s, js)
+        @test m !== nothing
+        js_list = [String(x.captures[1]) for x in eachmatch(r"\"([^\"]+)\"", m.captures[1])]
+        @test js_list == Pluto.pluto_file_extensions
+    end
 end

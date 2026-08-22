@@ -14,6 +14,7 @@
 //   POST ./move?id=…&newpath=…     rename/move (used to place new notebooks in the workspace)
 //   POST ./shutdown?id=…           stop a notebook session
 import { html, render, useState, useEffect, useCallback, useRef } from "./imports/Preact.js"
+import { pluto_file_extensions, has_pluto_file_extension } from "./common/PlutoFileExtensions.js"
 
 const get_text = async (url, opts) => {
     const r = await fetch(url, opts)
@@ -596,7 +597,49 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
  *  bytes as binary frames. The shell starts in the workspace folder and PERSISTS on the server by
  *  `tid` — so reattaching (a tab switch, a reload) replays scrollback. Used by both the docked
  *  terminal and each terminal tab; the only difference is which `tid` they own. */
-const TerminalView = ({ tid, cwd, visible }) => {
+/** The terminal's own colour scheme, deliberately independent of the page theme: a light UI with a
+ *  dark terminal is a common preference, so this is a per-user choice rather than something derived
+ *  from `prefers-color-scheme`.
+ *
+ *  Dark sets only background/foreground and leaves xterm's default ANSI palette alone — that is what
+ *  SpaceStation has always shipped, and it is already tuned for a dark ground. Light has to name all
+ *  sixteen: xterm's bright defaults (yellow #fce94f, cyan #34e2e2, white #eeeeec) are close to
+ *  invisible on a pale background. The values below are GitHub's light ANSI set, which is built for
+ *  exactly this contrast. */
+const terminal_theme_for = (scheme) => {
+    const styles = getComputedStyle(document.documentElement)
+    const v = (name, fallback) => styles.getPropertyValue(name).trim() || fallback
+    return scheme === "light"
+        ? {
+              background: v("--terminal-light-bg", "#fbfbfb"),
+              foreground: v("--terminal-light-fg", "#24292f"),
+              cursor: "#24292f",
+              cursorAccent: "#fbfbfb",
+              selectionBackground: "#b4d5fe",
+              black: "#24292f",
+              red: "#cf222e",
+              green: "#116329",
+              yellow: "#4d2d00",
+              blue: "#0969da",
+              magenta: "#8250df",
+              cyan: "#1b7c83",
+              white: "#6e7781",
+              brightBlack: "#57606a",
+              brightRed: "#a40e26",
+              brightGreen: "#1a7f37",
+              brightYellow: "#633c01",
+              brightBlue: "#218bff",
+              brightMagenta: "#a475f9",
+              brightCyan: "#3192aa",
+              brightWhite: "#8c959f",
+          }
+        : {
+              background: v("--terminal-bg", "#1f1f1f"),
+              foreground: v("--terminal-fg", "#dddddd"),
+          }
+}
+
+const TerminalView = ({ tid, cwd, visible, scheme }) => {
     const node_ref = useRef(null)
     const started = useRef(false)
     const fit_ref = useRef(null)
@@ -611,6 +654,19 @@ const TerminalView = ({ tid, cwd, visible }) => {
     const term_ref = useRef(/** @type {any} */ (null))
     const ro_ref = useRef(/** @type {ResizeObserver?} */ (null))
     const paste_cleanup_ref = useRef(/** @type {(() => void)?} */ (null))
+
+    // Recolour in place. The scheme goes through a ref so it stays OUT of the mount effect's deps:
+    // that effect owns the websocket and the xterm instance, and re-running it would kill the live
+    // shell just to change its colours. The ref also covers the gap where the scheme changes while
+    // the dynamic `import()`s are still in flight — construction reads it, not the captured prop.
+    const scheme_ref = useRef(scheme)
+    useEffect(() => {
+        scheme_ref.current = scheme
+        if (term_ref.current == null) return
+        try {
+            term_ref.current.options.theme = terminal_theme_for(scheme)
+        } catch {}
+    }, [scheme])
 
     // Fit ONLY when the host is genuinely on-screen at a real size, and debounced so a panel that
     // is animating open settles before we measure. Fitting a hidden tab (display:none → 0px) makes
@@ -644,7 +700,6 @@ const TerminalView = ({ tid, cwd, visible }) => {
                 import("https://esm.sh/@xterm/addon-fit@0.10.0?target=es2020"),
                 get_json("./api/v1/config").catch(() => null),
             ])
-            const styles = getComputedStyle(document.documentElement)
             const term = new Terminal({
                 fontSize: 13,
                 fontFamily: "JuliaMono, SFMono-Regular, Menlo, Consolas, monospace",
@@ -655,11 +710,7 @@ const TerminalView = ({ tid, cwd, visible }) => {
                 // around ConPTY's full-viewport repaints) or redraw-in-place TUIs — Claude Code, vim,
                 // anything Ink-style — leave stale duplicated frames stacked above the live one.
                 ...(config?.windows ? { windowsPty: { backend: "conpty" } } : {}),
-                theme: {
-                    // the terminal interior stays dark in both themes (see --terminal-bg/fg in themes/*.css)
-                    background: styles.getPropertyValue("--terminal-bg").trim() || "#1f1f1f",
-                    foreground: styles.getPropertyValue("--terminal-fg").trim() || "#dddddd",
-                },
+                theme: terminal_theme_for(scheme_ref.current),
             })
             const fit = new FitAddon()
             term.loadAddon(fit)
@@ -983,6 +1034,9 @@ const Land = () => {
     const [terminal_height, set_terminal_height] = useState(() => Number(localStorage.getItem("spacestation terminal height")) || 280)
     const [terminal_width, set_terminal_width] = useState(() => Number(localStorage.getItem("spacestation terminal width")) || 420)
     const [terminal_dock, set_terminal_dock] = useState(() => (localStorage.getItem("spacestation terminal dock") === "right" ? "right" : "bottom"))
+    // The terminal's colours are its own preference, not the page theme's: plenty of people want a
+    // light UI with a dark terminal. Defaults to dark, which is what the terminal has always been.
+    const [terminal_scheme, set_terminal_scheme] = useState(() => (localStorage.getItem("spacestation terminal scheme") === "light" ? "light" : "dark"))
     const terminal_ever_opened = useRef(false)
     if (terminal_open) terminal_ever_opened.current = true
     const [show_opener, set_show_opener] = useState(false)
@@ -1019,11 +1073,26 @@ const Land = () => {
     // This server may be reached over an SSH tunnel (when it's a remote workspace). If so, its child
     // workspace ports aren't forwarded to the browser, so workspaces open IN-PLACE rather than in new tabs.
     const [tunneled, set_tunneled] = useState(false)
+    // Nothing is answering on our own origin. For an SSH workspace this is the ordinary consequence
+    // of the laptop having been shut — see the recovery loop further down.
+    const [offline, set_offline] = useState(false)
+    // Which extensions make a new file a notebook. The server owns the list (`pluto_file_extensions`),
+    // so the create prompts below agree with the `type` the sidebar already gets decided server-side.
+    // The bundled list is the fallback, so a failed or older-server config request still recognises
+    // every extension this frontend knows about.
+    const [notebook_extensions, set_notebook_extensions] = useState(/** @type {Array<String>} */ (pluto_file_extensions))
     useEffect(() => {
         get_json("./api/v1/config")
-            .then((c) => set_tunneled(!!(c && c.tunneled)))
+            .then((c) => {
+                set_tunneled(!!(c && c.tunneled))
+                if (Array.isArray(c?.notebook_extensions) && c.notebook_extensions.length > 0) set_notebook_extensions(c.notebook_extensions)
+            })
             .catch(() => {})
     }, [])
+
+    /** Would a file with this name be opened as a notebook? Mirrors `_is_pluto_notebook_file`'s
+     *  extension half — the header half only applies to files that already exist. */
+    const has_notebook_extension = useCallback((name) => has_pluto_file_extension(name, notebook_extensions), [notebook_extensions])
 
     // The launcher (no workspace of its own) is THE homebase — name the tab so workspaces can target it.
     useEffect(() => {
@@ -1119,9 +1188,10 @@ const Land = () => {
         localStorage.setItem("spacestation sidebar hidden", String(sidebar_hidden))
         localStorage.setItem("spacestation terminal open", String(terminal_open))
         localStorage.setItem("spacestation terminal height", String(terminal_height))
+        localStorage.setItem("spacestation terminal scheme", terminal_scheme)
         localStorage.setItem("spacestation terminal width", String(terminal_width))
         localStorage.setItem("spacestation terminal dock", terminal_dock)
-    }, [sidebar_width, sidebar_hidden, terminal_open, terminal_height, terminal_width, terminal_dock])
+    }, [sidebar_width, sidebar_hidden, terminal_open, terminal_height, terminal_width, terminal_dock, terminal_scheme])
 
     useEffect(() => {
         const root = workspace?.root ?? null
@@ -1283,7 +1353,13 @@ const Land = () => {
             }
             set_error(null)
         } catch (e) {
-            set_error(String(e))
+            // A rejected fetch (TypeError) means nothing answered — the server is gone, or for a
+            // remote workspace the SSH tunnel is down, which is just what a closed laptop lid looks
+            // like. That is not an error the user has to act on: the hub's watchdog is already
+            // rebuilding the tunnel, on the same local port, so this tab's URL stays valid. Wait for
+            // it instead. A response that arrives and is bad (a thrown status) is still a real error.
+            if (e instanceof TypeError) set_offline(true)
+            else set_error(String(e))
         }
     }, [add_tab])
 
@@ -1292,6 +1368,49 @@ const Land = () => {
         const interval = setInterval(refresh, 10_000)
         return () => clearInterval(interval)
     }, [])
+
+    // Reopening the laptop should not cost a 10s wait for the next poll, and coming back from
+    // sleep does not always fire `online`. Probe on any signal that the machine is awake again.
+    useEffect(() => {
+        const probe = () => {
+            if (document.visibilityState === "visible") refresh()
+        }
+        window.addEventListener("online", probe)
+        document.addEventListener("visibilitychange", probe)
+        window.addEventListener("focus", probe)
+        return () => {
+            window.removeEventListener("online", probe)
+            document.removeEventListener("visibilitychange", probe)
+            window.removeEventListener("focus", probe)
+        }
+    }, [refresh])
+
+    // While unreachable, poll our OWN origin until something answers, then reload. Reloading (rather
+    // than just clearing the banner) is deliberate: the notebook iframes each hold their own dead
+    // websocket, and a reload is the one action that revives all of them at once.
+    useEffect(() => {
+        if (!offline) return
+        let cancelled = false
+        let timer = null
+        let delay = 1000
+        const tick = async () => {
+            if (cancelled) return
+            try {
+                const r = await fetch("./ping", { cache: "no-store" })
+                if (r.ok) {
+                    window.location.reload()
+                    return
+                }
+            } catch {}
+            delay = Math.min(delay * 1.5, 5000)
+            if (!cancelled) timer = setTimeout(tick, delay)
+        }
+        timer = setTimeout(tick, 700)
+        return () => {
+            cancelled = true
+            if (timer != null) clearTimeout(timer)
+        }
+    }, [offline])
 
     const start_sidebar_resize = useCallback((e) => {
         e.preventDefault()
@@ -1325,14 +1444,15 @@ const Land = () => {
         if (name == null) return
         try {
             const id = await get_text("./new", { method: "POST" })
-            const newpath = `${workspace.root}/${name.endsWith(".jl") ? name : name + ".jl"}`
+            // "notes.plutojl" is already a notebook name — appending .jl would make "notes.plutojl.jl"
+            const newpath = `${workspace.root}/${has_notebook_extension(name) ? name : name + ".jl"}`
             await get_text(`./move?id=${encodeURIComponent(id)}&newpath=${encodeURIComponent(newpath)}`, { method: "POST" })
             add_tab(id, newpath)
             refresh()
         } catch (e) {
             set_error(String(e))
         }
-    }, [workspace, add_tab, refresh])
+    }, [workspace, add_tab, refresh, has_notebook_extension])
 
     const close_tab = useCallback(async (id) => {
         if (id.startsWith("file:")) {
@@ -1350,11 +1470,11 @@ const Land = () => {
 
     const create_in = useCallback(
         async (dir) => {
-            const name = prompt(`New file in ${basename(dir)}/ — a name ending in .jl becomes a Pluto notebook:`, "notebook.jl")
+            const name = prompt(`New file in ${basename(dir)}/ — a name ending in .jl or .plutojl becomes a Pluto notebook:`, "notebook.jl")
             if (name == null || name.trim() === "") return
             const path = `${dir}/${name.trim()}`
             try {
-                if (name.trim().endsWith(".jl")) {
+                if (has_notebook_extension(name.trim())) {
                     const id = await get_text("./new", { method: "POST" })
                     await get_text(`./move?id=${encodeURIComponent(id)}&newpath=${encodeURIComponent(path)}`, { method: "POST" })
                     add_tab(id, path)
@@ -1371,7 +1491,7 @@ const Land = () => {
                 set_error(String(e))
             }
         },
-        [add_tab, open_file, refresh, toggle_dir, load_listing, workspace]
+        [add_tab, open_file, refresh, toggle_dir, load_listing, workspace, has_notebook_extension]
     )
 
     const delete_entry = useCallback(
@@ -1444,11 +1564,19 @@ const Land = () => {
                     <span class="nt-icon">⌨</span><span class="nt-plus">＋</span>
                 </button>
             </div>
+            <button
+                class="terminal-scheme-toggle"
+                title=${terminal_scheme === "light" ? "Terminal colours: light — switch to dark" : "Terminal colours: dark — switch to light"}
+                aria-label="Toggle terminal colours"
+                onClick=${() => set_terminal_scheme((s) => (s === "light" ? "dark" : "light"))}
+            >
+                ${terminal_scheme === "light" ? "☀" : "☾"}
+            </button>
         </div>
         <div class="terminal-bodies">
             ${(terminals_workspace.current === workspace?.root ? terminals : []).map(
                 (t) => html`<div key=${t.tid} class="terminal-body ${t.tid === active_terminal ? "active" : ""}">
-                    <${TerminalView} tid=${t.tid} cwd=${workspace?.root} visible=${shown && t.tid === active_terminal} />
+                    <${TerminalView} tid=${t.tid} cwd=${workspace?.root} visible=${shown && t.tid === active_terminal} scheme=${terminal_scheme} />
                 </div>`
             )}
         </div>
@@ -1498,6 +1626,20 @@ const Land = () => {
 
     return html`
         <div id="land">
+            ${offline
+                ? html`<div class="reconnect-overlay" role="status" aria-live="polite">
+                      <div class="reconnect-card">
+                          <span class="reconnect-spinner"></span>
+                          <div>
+                              <b>Reconnecting…</b>
+                              <p>
+                                  Waiting for this workspace to come back. Notebooks and terminals on the server keep running — this page reloads
+                                  itself as soon as it can reach them again.
+                              </p>
+                          </div>
+                      </div>
+                  </div>`
+                : null}
             ${sidebar_hidden
                 ? html`<button id="sidebar-reopen" title="Show sidebar" onClick=${() => set_sidebar_hidden(false)}>☰</button>`
                 : html`<aside style=${`width: ${sidebar_width}px`}>
@@ -1508,6 +1650,9 @@ const Land = () => {
                         </button>
                         <div class="header-text">
                             <h1 title=${workspace?.root ?? ""}>Space<span class="land-accent">Station</span></h1>
+                            ${workspace?.root
+                                ? html`<p class="workspace-root" title=${workspace.root}>${basename(workspace.root) || workspace.root}</p>`
+                                : null}
                         </div>
                         <div class="header-buttons">
                             <div class="header-menu" ref=${menu_ref}>
