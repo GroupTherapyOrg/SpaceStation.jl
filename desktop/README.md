@@ -16,14 +16,17 @@ management, a boot splash, and packaging.
 4. The window navigates to `http://127.0.0.1:<port>/?secret=…`. Closing it SIGTERMs the server,
    which reaps terminals, SSH tunnels, and child workspace servers on its way down.
 
-`SPACESTATION_DESKTOP=1` surfaces as `desktop: true` in `/api/v1/config` (and the shell appends
-`?desktop=1` so the hub knows synchronously). Workspaces run exactly like in the browser — each is
-its own child server, listed live under Running Workspaces — but the single window **navigates**
-between launcher and workspaces instead of opening tabs, carrying the homebase fragment as the way
-back. Home returns to the launcher in place; the workspace keeps running.
+The window shows the **deck**: a Warp-style tab strip in the title-bar area (the shell serves it
+at `/deck`) with the Launcher pinned first and each workspace as a tab, every tab a live iframe.
+Workspaces run exactly like in the browser — each is its own child server, listed live under
+Running Workspaces — and the hub pages detect desktop mode STRUCTURALLY (they are framed by the
+deck: `window.self !== window.top`), so it survives auth redirects and children that never saw an
+env var. Opening a workspace posts a message to the deck, which opens (or focuses — one tab per
+server) its tab; Home focuses the Launcher tab; closing a tab leaves the workspace running, ready
+to reopen from the Launcher. `SPACESTATION_DESKTOP=1` / `?desktop=1` remain as secondary hints.
 
-The window has a native menu: Edit roles (so clipboard shortcuts reach the webview), **⌘R Reload**,
-and **⌘⇧L Back to Launcher** — conveniences, not crutches; the hub keeps itself current.
+The window has a native menu: Edit roles (so clipboard shortcuts reach the webview), **⌘R Reload**
+(deck tabs survive it via sessionStorage), and **⌘⇧L Back to Launcher**.
 
 Which Julia project runs, in priority order:
 

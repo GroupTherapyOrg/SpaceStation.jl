@@ -77,10 +77,24 @@ const homebase_self_url = () => window.location.origin + window.location.pathnam
 // workspace it opens knows where "home" is.
 const with_homebase = (url) => (url == null ? url : `${url}#homebase=${encodeURIComponent(homebase_self_url())}`)
 
-// The desktop shell (desktop/) appends ?desktop=1 to the URL it opens, so desktop mode is known
-// SYNCHRONOUSLY — before the async /api/v1/config fetch lands. Without this, a click in the first
-// moments of the launcher could still take a new-tab path the webview can't host.
-const desktop_boot_hint = new URLSearchParams(window.location.search).has("desktop")
+// The desktop shell (desktop/) frames every hub page inside its deck — the tab-strip chrome — so
+// being framed IS the desktop signal: structural, known synchronously, and it survives auth
+// redirects and reattached child servers that never saw the env var. The ?desktop=1 the shell
+// appends and the /api/v1/config flag remain as secondary hints.
+const in_desktop_frame = (() => {
+    try {
+        return window.self !== window.top
+    } catch (e) {
+        return true // a cross-origin parent blocked the check — framed by definition
+    }
+})()
+const desktop_boot_hint = in_desktop_frame || new URLSearchParams(window.location.search).has("desktop")
+// Ask the deck to do something (open a workspace tab, focus the Launcher tab).
+const post_to_deck = (message) => {
+    try {
+        window.parent.postMessage(message, "*")
+    } catch (e) {}
+}
 
 // `new URL(..., import.meta.url)` works unbundled in the browser AND gets rewritten by
 // the bundler — a string src would 404 in frontend-dist where filenames are hashed.
@@ -234,6 +248,8 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
     const desktop_url = (url) => (desktop_ref.current ? `${url}${url.includes("?") ? "&" : "?"}desktop=1` : url)
     const open_href = (url) => with_homebase(desktop_url(url))
     const open_target = desktop ? "_self" : "_blank"
+    // Desktop: workspaces open as DECK TABS — the deck dedupes by server, so reopening focuses.
+    const post_open_tab = (url, title) => post_to_deck({ type: "spacestation:open-workspace", url: desktop_url(url), title })
     const [listing, set_listing] = useState(
         /** @type {{path: String, parent: String, entries: Array<{name: String, path: String}>, crumbs: Array<{name: String, path: String}>}?} */ (null)
     )
@@ -277,9 +293,8 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
                 set_remote_states((s) => ({ ...s, [host]: status }))
             }
             if (status.state === "ready" && status.url != null) {
-                // Desktop: one webview window, no tabs — go there in place (open_href keeps the
-                // homebase fragment: the way back to this launcher).
-                if (desktop_ref.current) window.location.assign(open_href(status.url))
+                // Desktop: open this remote workspace as a deck tab.
+                if (desktop_ref.current) post_open_tab(status.url, host)
                 else window.open(open_href(status.url), "_blank") // may be blocked: the pill stays a clickable link either way
             }
         } catch (e) {
@@ -317,8 +332,8 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
             }
             if (status.state === "ready" && status.url != null) {
                 remember_workspace(path)
-                // Desktop: navigate this single window to the child (homebase fragment = way back).
-                if (desktop_ref.current) window.location.assign(open_href(status.url))
+                // Desktop: open this workspace as a deck tab.
+                if (desktop_ref.current) post_open_tab(status.url, basename(path) || path)
                 else window.open(open_href(status.url), "_blank") // may be blocked: the ready card stays a clickable link either way
             }
         } catch (e) {
@@ -449,7 +464,19 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
                           ${running.map(
                               (w) => html`<div class="recent-card running-card ${w.state === "ready" ? "" : "running-busy"}" key=${w.key}>
                                   ${w.url != null
-                                      ? html`<a class="running-open" href=${open_href(w.url)} target=${open_target} rel="opener" title=${`Open ${w.name}`}>
+                                      ? html`<a
+                                            class="running-open"
+                                            href=${open_href(w.url)}
+                                            target=${open_target}
+                                            rel="opener"
+                                            title=${`Open ${w.name}`}
+                                            onClick=${desktop
+                                                ? (e) => {
+                                                      e.preventDefault()
+                                                      post_open_tab(w.url, w.name)
+                                                  }
+                                                : undefined}
+                                        >
                                             <span class="recent-icon">${w.kind === "remote" ? "🛰" : "🗂"}</span>
                                             <span class="recent-name">${w.name}</span>
                                             <span class="recent-path">${w.sub}</span>
@@ -556,7 +583,19 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
                               const st = remote_states[h]
                               const busy = st != null && st.state !== "ready" && st.state !== "error"
                               return st?.state === "ready" && st.url != null
-                                  ? html`<a class="dir-pill remote-ready" href=${open_href(st.url)} target=${open_target} rel="opener" title=${st.detail}>
+                                  ? html`<a
+                                        class="dir-pill remote-ready"
+                                        href=${open_href(st.url)}
+                                        target=${open_target}
+                                        rel="opener"
+                                        title=${st.detail}
+                                        onClick=${desktop
+                                            ? (e) => {
+                                                  e.preventDefault()
+                                                  post_open_tab(st.url, h)
+                                              }
+                                            : undefined}
+                                    >
                                         <span class="dir-icon">🛰</span>${h} →
                                     </a>`
                                   : html`<button
@@ -1173,8 +1212,13 @@ const Land = () => {
     // remote homebase). Otherwise: focus the homebase tab if open, or reopen it if it was closed — one
     // shared homebase, never a disconnected duplicate. (In-tab opener only when no homebase is known.)
     const go_home = useCallback(() => {
-        // Desktop with a known homebase: one window — navigate back to the launcher server in
-        // place. This workspace's child server keeps running (it stays on the Running list).
+        // Desktop: the deck chrome has a pinned Launcher tab — just focus it. This workspace's
+        // tab and child server stay alive.
+        if (desktop && in_desktop_frame) {
+            post_to_deck({ type: "spacestation:focus-launcher" })
+            return
+        }
+        // Desktop outside the deck (shouldn't happen): fall back to navigating home in place.
         if (desktop && homebase_url.current != null) {
             window.location.href = homebase_url.current
             return

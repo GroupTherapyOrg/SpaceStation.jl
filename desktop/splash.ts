@@ -3,6 +3,7 @@
 // real SpaceStation URL once the server is ready.
 
 import type { BootState } from "./boot.ts"
+import { deck_html } from "./deck.ts"
 
 export const splash_html = /* html */ `<!doctype html>
 <html>
@@ -54,13 +55,19 @@ export const splash_html = /* html */ `<!doctype html>
 </body>
 </html>`
 
-/** Serve the splash + a /status endpoint main.ts's window polls. Deno.serve with no options binds
- *  to DENO_SERVE_ADDRESS, which is how the desktop runtime knows where to point the window. */
+/** Serve the shell UI: the splash (+ /status it polls) while booting, and /deck — the tabbed
+ *  chrome main.ts navigates to once the server is ready. Deno.serve with no options binds to
+ *  DENO_SERVE_ADDRESS, which is how the desktop runtime knows where to point the window. */
 export const serve_splash = (state: () => BootState) =>
     Deno.serve((req) => {
         const path = new URL(req.url).pathname
         if (path === "/status") {
             return new Response(JSON.stringify(state()), { headers: { "content-type": "application/json" } })
+        }
+        if (path === "/deck") {
+            const url = state().url
+            if (url == null) return new Response(null, { status: 302, headers: { location: "/" } })
+            return new Response(deck_html(url), { headers: { "content-type": "text/html; charset=utf-8" } })
         }
         return new Response(splash_html, { headers: { "content-type": "text/html; charset=utf-8" } })
     })
