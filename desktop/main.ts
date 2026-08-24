@@ -12,6 +12,7 @@
 
 import { SpaceStationServer } from "./boot.ts"
 import { serve_splash } from "./splash.ts"
+import { extend_under_titlebar } from "./macos_titlebar.ts"
 
 const server = new SpaceStationServer()
 serve_splash(() => server.state)
@@ -25,13 +26,11 @@ if (BrowserWindow == null) {
 }
 
 // The first construction adopts the implicit startup window (already showing the splash).
-// transparentTitlebar blends the native bar into the page and the empty title removes its text,
-// so the header reads as ONE dark surface: traffic lights top-left, the deck's tabs right under.
-// (True Warp-style — tabs at the exact traffic-light level — needs content-under-titlebar, which
-// this Deno version doesn't do: measured innerHeight is identical with and without the flag. The
-// remaining native strip is 28px of blended background. Revisit when the API grows full-size
-// content or hidden-title options; frameless isn't it — it drops the native window chrome.)
-const win = new BrowserWindow({ title: "", width: 1280, height: 850, transparentTitlebar: true })
+// On macOS the FFI tweak below then extends the content under the title bar, so the deck's tab
+// strip shares the traffic lights' row — the Warp look. (+28px height compensates the window
+// re-normalizing when the style bit lands.)
+const win = new BrowserWindow({ title: "", width: 1280, height: 878, transparentTitlebar: true })
+const under_titlebar = extend_under_titlebar()
 
 // The shell's own pages (splash and deck) live on the Deno.serve address the runtime wired the
 // window to. Once the Julia server is ready we navigate to the deck, whose Launcher tab frames it.
@@ -83,7 +82,9 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
 
 server.onchange = () => {
     if (server.state.phase === "ready" && server.state.url != null) {
-        win.navigate(shell_url("/deck"))
+        // ?inset=1 → the deck lays its tab strip out ON the traffic-light row (content extends
+        // under the title bar); without it the strip sits just below the native bar.
+        win.navigate(shell_url(under_titlebar ? "/deck?inset=1" : "/deck"))
     }
     // On a post-ready crash the splash server is still running — bring the window back to it so
     // the error and log tail are visible instead of a dead page.

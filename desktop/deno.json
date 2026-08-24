@@ -3,15 +3,15 @@
     "version": "0.1.0",
     "exports": "./main.ts",
     "tasks": {
-        "dev": "deno desktop --hmr --allow-run --allow-net --allow-read --allow-write --allow-env main.ts",
+        "dev": "deno desktop --hmr --allow-run --allow-net --allow-read --allow-write --allow-env --allow-ffi main.ts",
         "smoke": "deno run --allow-run --allow-net --allow-read --allow-write --allow-env smoke.ts",
         "buildinfo": "deno run --allow-run --allow-read --allow-write gen_buildinfo.ts",
         "buildinfo:restore": "git checkout -- buildinfo.ts",
-        "build": "deno task buildinfo && deno desktop --allow-run --allow-net --allow-read --allow-write --allow-env -o dist/SpaceStation.app main.ts && deno task buildinfo:restore",
-        "build:dmg": "deno task buildinfo && deno desktop --allow-run --allow-net --allow-read --allow-write --allow-env --compress -o dist/SpaceStation.dmg main.ts && deno task buildinfo:restore",
-        "build:mac-intel": "deno task buildinfo && deno desktop --allow-run --allow-net --allow-read --allow-write --allow-env --target x86_64-apple-darwin -o dist/SpaceStation-mac-intel.app main.ts && deno task buildinfo:restore",
-        "build:win": "deno task buildinfo && deno desktop --allow-run --allow-net --allow-read --allow-write --allow-env --target x86_64-pc-windows-msvc -o dist/SpaceStation-win-x64 main.ts && deno task buildinfo:restore",
-        "build:linux": "deno task buildinfo && deno desktop --allow-run --allow-net --allow-read --allow-write --allow-env --target x86_64-unknown-linux-gnu -o dist/SpaceStation-linux-x64.AppImage main.ts && deno task buildinfo:restore"
+        "build": "deno task buildinfo && deno desktop --allow-run --allow-net --allow-read --allow-write --allow-env --allow-ffi -o dist/SpaceStation.app main.ts && deno task buildinfo:restore",
+        "build:dmg": "deno task buildinfo && deno desktop --allow-run --allow-net --allow-read --allow-write --allow-env --allow-ffi --compress -o dist/SpaceStation.dmg main.ts && deno task buildinfo:restore",
+        "build:mac-intel": "deno task buildinfo && deno desktop --allow-run --allow-net --allow-read --allow-write --allow-env --allow-ffi --target x86_64-apple-darwin -o dist/SpaceStation-mac-intel.app main.ts && deno task buildinfo:restore",
+        "build:win": "deno task buildinfo && deno desktop --allow-run --allow-net --allow-read --allow-write --allow-env --allow-ffi --target x86_64-pc-windows-msvc -o dist/SpaceStation-win-x64 main.ts && deno task buildinfo:restore",
+        "build:linux": "deno task buildinfo && deno desktop --allow-run --allow-net --allow-read --allow-write --allow-env --allow-ffi --target x86_64-unknown-linux-gnu -o dist/SpaceStation-linux-x64.AppImage main.ts && deno task buildinfo:restore"
     },
     "desktop": {
         "app": {

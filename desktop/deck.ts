@@ -14,12 +14,15 @@ export const deck_html = (launcher_url: string) => /* html */ `<!doctype html>
     :root { color-scheme: dark; }
     * { box-sizing: border-box; }
     body { margin: 0; height: 100vh; display: flex; flex-direction: column; background: #0f0d16; font-family: system-ui, -apple-system, sans-serif; }
-    /* The native title bar above is blended (transparentTitlebar + empty title): just traffic
-       lights on this same dark ground. The strip sits directly under it as part of one header. */
+    /* Two layouts. Default: the strip sits under the (blended, untitled) native bar. Inset
+       (?inset=1 — macOS with content extended under the title bar): the strip IS the title-bar
+       row — Warp-style — so it leaves room for the traffic lights and centers the tabs. */
     #strip {
         height: 30px; flex-shrink: 0; display: flex; align-items: stretch; gap: 2px;
         padding: 0 8px 0 10px; background: #0f0d16; -webkit-app-region: drag; user-select: none;
     }
+    body.inset #strip { height: 38px; padding: 5px 8px 5px 84px; }
+    body.inset .tab { border-radius: 6px; }
     .tab {
         -webkit-app-region: no-drag; display: flex; align-items: center; gap: 0.45rem; max-width: 15rem;
         padding: 0 0.65rem; border-radius: 7px 7px 0 0; color: #9a93b8; font-size: 12.5px; cursor: default;
@@ -45,6 +48,7 @@ export const deck_html = (launcher_url: string) => /* html */ `<!doctype html>
         const LAUNCHER_URL = ${JSON.stringify(launcher_url)}
         const strip = document.getElementById("strip")
         const stage = document.getElementById("stage")
+        document.body.classList.toggle("inset", new URLSearchParams(location.search).has("inset"))
 
         /** @type {Array<{id: string, title: string, url: string}>} */
         let tabs = [{ id: "launcher", title: "Launcher", url: LAUNCHER_URL }]
