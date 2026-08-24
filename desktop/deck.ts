@@ -40,16 +40,42 @@ export const deck_html = (launcher_url: string) => /* html */ `<!doctype html>
     #stage { flex: 1; position: relative; background: #16141f; }
     #stage iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: none; }
     #stage iframe.active { display: block; }
+    /* Fullscreen: hide the strip with the native chrome and slide it down when the cursor hits
+       the top — same gesture as the macOS menu bar. The hover zone is a thin overlay because
+       mouse moves inside the iframes never reach this document. */
+    #hoverzone { display: none; }
+    body.fullscreen #hoverzone { display: block; position: fixed; top: 0; left: 0; right: 0; height: 6px; z-index: 9; }
+    body.fullscreen #strip {
+        position: fixed; top: 0; left: 0; right: 0; z-index: 10;
+        transform: translateY(-100%); transition: transform 0.12s ease-out;
+    }
+    body.fullscreen #strip.revealed { transform: translateY(0); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.55); }
 </style>
 </head>
 <body>
     <div id="strip"></div>
+    <div id="hoverzone"></div>
     <div id="stage"></div>
     <script>
         const LAUNCHER_URL = ${JSON.stringify(launcher_url)}
         const strip = document.getElementById("strip")
         const stage = document.getElementById("stage")
         document.body.classList.toggle("inset", new URLSearchParams(location.search).has("inset"))
+
+        // macOS fullscreen = the window covers the screen exactly (the menu bar is hidden, and
+        // our content extends under the title bar, so the webview IS the full screen).
+        const hoverzone = document.getElementById("hoverzone")
+        const update_fullscreen = () => {
+            const fs = innerWidth === screen.width && innerHeight === screen.height
+            document.body.classList.toggle("fullscreen", fs)
+            if (!fs) strip.classList.remove("revealed")
+        }
+        addEventListener("resize", update_fullscreen)
+        update_fullscreen()
+        hoverzone.addEventListener("mouseenter", () => strip.classList.add("revealed"))
+        strip.addEventListener("mouseleave", () => {
+            if (document.body.classList.contains("fullscreen")) strip.classList.remove("revealed")
+        })
 
         /** @type {Array<{id: string, title: string, url: string}>} */
         let tabs = [{ id: "launcher", title: "Launcher", url: LAUNCHER_URL }]

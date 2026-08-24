@@ -1,11 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-<rect x="32" y="32" width="960" height="960" rx="216" fill="#16141f"/>
+<rect x="100" y="100" width="824" height="824" rx="185" fill="#16141f"/>
 
 <!-- SpaceStation "Planets" mark (in-page logo): three Julia-family spheres — radial gradient,
      highlight top-left, shadowed rim — with a blue twinkle. Same three-dot layout the Julia
      ecosystem shares, but lit as celestial bodies rather than flat fills, so it's distinctly
      ours (and no longer Pluto's exact tinted circles). Kept in sync with favicon.svg. -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="12 5 82 82" x="184" y="184" width="656" height="656">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="12 5 82 82" x="232" y="232" width="560" height="560">
   <defs>
     <radialGradient id="st-g" cx="0.36" cy="0.30" r="0.82"><stop offset="0" stop-color="#8fe07d"/><stop offset="0.52" stop-color="#389826"/><stop offset="1" stop-color="#1a5312"/></radialGradient>
     <radialGradient id="st-p" cx="0.36" cy="0.30" r="0.82"><stop offset="0" stop-color="#d3a6e8"/><stop offset="0.52" stop-color="#9558B2"/><stop offset="1" stop-color="#4f2668"/></radialGradient>
