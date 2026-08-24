@@ -17,8 +17,8 @@ export const deck_html = (launcher_url: string) => /* html */ `<!doctype html>
     /* The native title bar above is blended (transparentTitlebar + empty title): just traffic
        lights on this same dark ground. The strip sits directly under it as part of one header. */
     #strip {
-        height: 34px; flex-shrink: 0; display: flex; align-items: stretch; gap: 2px;
-        padding: 2px 8px 0 10px; background: #0f0d16; -webkit-app-region: drag; user-select: none;
+        height: 30px; flex-shrink: 0; display: flex; align-items: stretch; gap: 2px;
+        padding: 0 8px 0 10px; background: #0f0d16; -webkit-app-region: drag; user-select: none;
     }
     .tab {
         -webkit-app-region: no-drag; display: flex; align-items: center; gap: 0.45rem; max-width: 15rem;
