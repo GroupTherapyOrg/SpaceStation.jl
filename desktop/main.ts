@@ -27,6 +27,46 @@ if (BrowserWindow == null) {
 // The first construction adopts the implicit startup window (already showing the splash).
 const win = new BrowserWindow({ title: "SpaceStation", width: 1280, height: 850 })
 
+// Native menu: Edit roles make the OS-level clipboard shortcuts work inside the webview (macOS
+// routes Cmd+C/V through the menu), and View adds the escape hatches every webview app needs —
+// Reload, and a jump back to the launcher from wherever the window has navigated. Nothing
+// REQUIRES them: the hub keeps itself current (running workspaces poll live).
+try {
+    win.setApplicationMenu([
+        { submenu: { label: "SpaceStation", items: [{ role: { role: "quit" } }] } },
+        {
+            submenu: {
+                label: "Edit",
+                items: [
+                    { role: { role: "undo" } },
+                    { role: { role: "redo" } },
+                    "separator",
+                    { role: { role: "cut" } },
+                    { role: { role: "copy" } },
+                    { role: { role: "paste" } },
+                    { role: { role: "selectAll" } },
+                ],
+            },
+        },
+        {
+            submenu: {
+                label: "View",
+                items: [
+                    { item: { label: "Reload", id: "reload", accelerator: "CmdOrCtrl+R", enabled: true } },
+                    { item: { label: "Back to Launcher", id: "launcher", accelerator: "CmdOrCtrl+Shift+L", enabled: true } },
+                ],
+            },
+        },
+        { submenu: { label: "Window", items: [{ role: { role: "minimize" } }] } },
+    ])
+} catch (e) {
+    console.warn("could not install the application menu:", e)
+}
+win.addEventListener("menuclick", (e: any) => {
+    if (e.detail?.id === "reload") win.reload()
+    if (e.detail?.id === "launcher" && server.state.url != null) win.navigate(server.state.url)
+})
+
 let closing = false
 const shutdown = async () => {
     if (closing) return

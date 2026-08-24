@@ -228,9 +228,11 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
     // (the config fetch landing just after mount), and must honour the value at COMPLETION time.
     const desktop_ref = useRef(desktop)
     desktop_ref.current = desktop
-    // Workspace links: a browser tab elsewhere gets a new tab + a homebase fragment to return by;
-    // the desktop's single webview window navigates in place (no tabs to open or return to).
-    const open_href = (url) => (desktop ? url : with_homebase(url))
+    // Workspace links: a browser homebase opens them in a new tab; the desktop's single webview
+    // window navigates in place. Both carry the homebase fragment — the workspace's way back — and
+    // desktop destinations also carry ?desktop=1 so the workspace knows its mode synchronously.
+    const desktop_url = (url) => (desktop_ref.current ? `${url}${url.includes("?") ? "&" : "?"}desktop=1` : url)
+    const open_href = (url) => with_homebase(desktop_url(url))
     const open_target = desktop ? "_self" : "_blank"
     const [listing, set_listing] = useState(
         /** @type {{path: String, parent: String, entries: Array<{name: String, path: String}>, crumbs: Array<{name: String, path: String}>}?} */ (null)
@@ -275,10 +277,10 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
                 set_remote_states((s) => ({ ...s, [host]: status }))
             }
             if (status.state === "ready" && status.url != null) {
-                // Desktop: one webview window, no tabs — go there in place. (The remote server runs
-                // tunneled, so its own hub keeps everything in-place too.)
-                if (desktop_ref.current) window.location.assign(status.url)
-                else window.open(with_homebase(status.url), "_blank") // may be blocked: the pill stays a clickable link either way
+                // Desktop: one webview window, no tabs — go there in place (open_href keeps the
+                // homebase fragment: the way back to this launcher).
+                if (desktop_ref.current) window.location.assign(open_href(status.url))
+                else window.open(open_href(status.url), "_blank") // may be blocked: the pill stays a clickable link either way
             }
         } catch (e) {
             if (cancelled_hosts.current.has(host)) return
@@ -315,9 +317,9 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
             }
             if (status.state === "ready" && status.url != null) {
                 remember_workspace(path)
-                // Desktop never reaches here (open_workspace goes in-place), but keep it coherent.
-                if (desktop_ref.current) window.location.assign(status.url)
-                else window.open(with_homebase(status.url), "_blank") // may be blocked: the ready card stays a clickable link either way
+                // Desktop: navigate this single window to the child (homebase fragment = way back).
+                if (desktop_ref.current) window.location.assign(open_href(status.url))
+                else window.open(open_href(status.url), "_blank") // may be blocked: the ready card stays a clickable link either way
             }
         } catch (e) {
             if (cancelled_paths.current.has(path)) return
@@ -359,13 +361,14 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
         set_running((rs) => rs.filter((w) => !(w.kind === "local" && w.path === path)))
     }, [])
 
-    // Open a folder as a workspace. Local: spawn a child server in its own tab (connect_local). Over a
-    // tunnel (a remote server): switch THIS server's workspace in-place and reload — the child's port
-    // wouldn't be reachable from the browser, so a new tab would just fail to connect. The desktop
-    // shell is one webview window with no tabs, so it opens in-place the same way.
+    // Open a folder as a workspace. Local: spawn a child server in its own tab (connect_local) —
+    // the desktop shell does this too, just navigating its single window there instead of opening
+    // a tab, so the workspace stays a real running child this launcher lists and returns to. Over
+    // a tunnel (a remote server): switch THIS server's workspace in-place and reload — the child's
+    // port wouldn't be reachable from the browser, so a new tab would just fail to connect.
     const open_workspace = useCallback(
         async (path) => {
-            if (!tunneled && !desktop) return connect_local(path)
+            if (!tunneled) return connect_local(path)
             try {
                 await get_json(`./api/v1/workspace/open?path=${encodeURIComponent(path)}`, { method: "POST" })
                 remember_workspace(path)
@@ -374,7 +377,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
                 set_error(String(e))
             }
         },
-        [tunneled, desktop, connect_local]
+        [tunneled, connect_local]
     )
 
     // The ✕ on a Running Workspace card: cancel a connecting one, dismiss an errored one, disconnect a
@@ -1170,6 +1173,12 @@ const Land = () => {
     // remote homebase). Otherwise: focus the homebase tab if open, or reopen it if it was closed — one
     // shared homebase, never a disconnected duplicate. (In-tab opener only when no homebase is known.)
     const go_home = useCallback(() => {
+        // Desktop with a known homebase: one window — navigate back to the launcher server in
+        // place. This workspace's child server keeps running (it stays on the Running list).
+        if (desktop && homebase_url.current != null) {
+            window.location.href = homebase_url.current
+            return
+        }
         if (tunneled || desktop) {
             fetch("./api/v1/workspace/close", { method: "POST" }).finally(() => window.location.reload())
             return

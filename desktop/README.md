@@ -16,9 +16,14 @@ management, a boot splash, and packaging.
 4. The window navigates to `http://127.0.0.1:<port>/?secret=…`. Closing it SIGTERMs the server,
    which reaps terminals, SSH tunnels, and child workspace servers on its way down.
 
-`SPACESTATION_DESKTOP=1` surfaces as `desktop: true` in `/api/v1/config`: the hub opens
-workspaces **in-place** (one window, no browser tabs — same mechanism as tunneled servers) while
-keeping the SSH sections visible.
+`SPACESTATION_DESKTOP=1` surfaces as `desktop: true` in `/api/v1/config` (and the shell appends
+`?desktop=1` so the hub knows synchronously). Workspaces run exactly like in the browser — each is
+its own child server, listed live under Running Workspaces — but the single window **navigates**
+between launcher and workspaces instead of opening tabs, carrying the homebase fragment as the way
+back. Home returns to the launcher in place; the workspace keeps running.
+
+The window has a native menu: Edit roles (so clipboard shortcuts reach the webview), **⌘R Reload**,
+and **⌘⇧L Back to Launcher** — conveniences, not crutches; the hub keeps itself current.
 
 Which Julia project runs, in priority order:
 
