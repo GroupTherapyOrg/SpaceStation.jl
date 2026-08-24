@@ -16,7 +16,11 @@
     "desktop": {
         "app": {
             "name": "SpaceStation",
-            "identifier": "org.grouptherapyorg.spacestation"
+            "identifier": "org.grouptherapyorg.spacestation",
+            "icons": {
+                "macos": "./icons/spacestation.icns",
+                "linux": "./icons/spacestation-1024.png"
+            }
         },
         "backend": "webview"
     }

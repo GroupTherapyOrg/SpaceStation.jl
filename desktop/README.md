@@ -25,8 +25,9 @@ env var. Opening a workspace posts a message to the deck, which opens (or focuse
 server) its tab; Home focuses the Launcher tab; closing a tab leaves the workspace running, ready
 to reopen from the Launcher. `SPACESTATION_DESKTOP=1` / `?desktop=1` remain as secondary hints.
 
-The window has a native menu: Edit roles (so clipboard shortcuts reach the webview), **⌘R Reload**
-(deck tabs survive it via sessionStorage), and **⌘⇧L Back to Launcher**.
+The menu carries OS-standard roles only (Edit roles are required plumbing — macOS routes ⌘C/⌘V
+through the menu, matching what the browser gives Pluto for free). **No app-specific shortcuts**:
+that design is deliberately deferred; anything Pluto ships itself works untouched.
 
 Which Julia project runs, in priority order:
 
@@ -54,7 +55,13 @@ Julia itself is **not** bundled — the app finds or asks for it (juliaup bootst
 
 ## Known limitations (v1)
 
-- **No app icon yet** — ships with the default Deno icon (`--icon` / `desktop.app.icons` TODO).
+- **Tabs sit just below the traffic lights, not on their exact row.** The native title bar is
+  blended and untitled so the header reads as one surface, but this Deno version never extends
+  web content under the title bar (measured: identical innerHeight with/without
+  `transparentTitlebar`), and `frameless` would drop the native window chrome. Revisit when the
+  API grows full-size-content / hidden-title options.
+- **Windows has no icon yet** — `icons/spacestation.icns` (macOS, built from the SVG mark via
+  iconutil) and the 1024 PNG (Linux) exist; a proper multi-size `.ico` still needs generating.
 - **Unsigned** — macOS builds get an ad-hoc signature; real signing needs `macos.codesignIdentity`
   in `deno.json` + notarization. Windows needs `signtool` post-build.
 - **SSH workspace "open" degrades**: the ready-pill's `window.open` is inert in a webview, but the

@@ -14,11 +14,11 @@ export const deck_html = (launcher_url: string) => /* html */ `<!doctype html>
     :root { color-scheme: dark; }
     * { box-sizing: border-box; }
     body { margin: 0; height: 100vh; display: flex; flex-direction: column; background: #0f0d16; font-family: system-ui, -apple-system, sans-serif; }
-    /* The strip sits where the (transparent) macOS title bar is: leave room for the traffic
-       lights, and let the bar act as the drag area where the platform supports it. */
+    /* The native title bar above is blended (transparentTitlebar + empty title): just traffic
+       lights on this same dark ground. The strip sits directly under it as part of one header. */
     #strip {
-        height: 38px; flex-shrink: 0; display: flex; align-items: stretch; gap: 2px;
-        padding: 5px 8px 0 84px; background: #0f0d16; -webkit-app-region: drag; user-select: none;
+        height: 34px; flex-shrink: 0; display: flex; align-items: stretch; gap: 2px;
+        padding: 2px 8px 0 10px; background: #0f0d16; -webkit-app-region: drag; user-select: none;
     }
     .tab {
         -webkit-app-region: no-drag; display: flex; align-items: center; gap: 0.45rem; max-width: 15rem;
@@ -33,24 +33,18 @@ export const deck_html = (launcher_url: string) => /* html */ `<!doctype html>
         padding: 1px 4px; border-radius: 4px; cursor: pointer; line-height: 1;
     }
     .tab .close:hover { background: #2b2740; color: #e8e4f5; }
-    #newtab {
-        -webkit-app-region: no-drag; border: 0; background: none; color: #9a93b8; font-size: 16px;
-        padding: 0 0.55rem; border-radius: 7px 7px 0 0; cursor: pointer; align-self: stretch;
-    }
-    #newtab:hover { background: #1a1725; color: #e8e4f5; }
     #stage { flex: 1; position: relative; background: #16141f; }
     #stage iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: none; }
     #stage iframe.active { display: block; }
 </style>
 </head>
 <body>
-    <div id="strip"><button id="newtab" title="Open another workspace (from the Launcher)">＋</button></div>
+    <div id="strip"></div>
     <div id="stage"></div>
     <script>
         const LAUNCHER_URL = ${JSON.stringify(launcher_url)}
         const strip = document.getElementById("strip")
         const stage = document.getElementById("stage")
-        const newtab = document.getElementById("newtab")
 
         /** @type {Array<{id: string, title: string, url: string}>} */
         let tabs = [{ id: "launcher", title: "Launcher", url: LAUNCHER_URL }]
@@ -110,7 +104,7 @@ export const deck_html = (launcher_url: string) => /* html */ `<!doctype html>
                     el.appendChild(close)
                 }
                 el.onclick = () => activate(tab.id)
-                strip.insertBefore(el, newtab)
+                strip.appendChild(el)
             }
             for (const tab of tabs) frame_for(tab).className = tab.id === active ? "active" : ""
         }
@@ -145,7 +139,6 @@ export const deck_html = (launcher_url: string) => /* html */ `<!doctype html>
             if (d.type === "spacestation:open-workspace" && typeof d.url === "string") open_tab(d.url, d.title)
             if (d.type === "spacestation:focus-launcher") activate("launcher")
         })
-        newtab.onclick = () => activate("launcher")
         render()
     </script>
 </body>

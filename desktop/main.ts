@@ -25,19 +25,23 @@ if (BrowserWindow == null) {
 }
 
 // The first construction adopts the implicit startup window (already showing the splash).
-// transparentTitlebar: the deck's tab strip extends into the title bar area, Warp-style — the
-// native bar still handles dragging; the strip leaves room for the traffic lights.
-const win = new BrowserWindow({ title: "SpaceStation", width: 1280, height: 850, transparentTitlebar: true })
+// transparentTitlebar blends the native bar into the page and the empty title removes its text,
+// so the header reads as ONE dark surface: traffic lights top-left, the deck's tabs right under.
+// (True Warp-style — tabs at the exact traffic-light level — needs content-under-titlebar, which
+// this Deno version doesn't do: measured innerHeight is identical with and without the flag. The
+// remaining native strip is 28px of blended background. Revisit when the API grows full-size
+// content or hidden-title options; frameless isn't it — it drops the native window chrome.)
+const win = new BrowserWindow({ title: "", width: 1280, height: 850, transparentTitlebar: true })
 
 // The shell's own pages (splash and deck) live on the Deno.serve address the runtime wired the
 // window to. Once the Julia server is ready we navigate to the deck, whose Launcher tab frames it.
 const shell_port = Deno.env.get("DENO_SERVE_ADDRESS")?.split(":").pop()
 const shell_url = (path: string) => `http://127.0.0.1:${shell_port}${path}`
 
-// Native menu: Edit roles make the OS-level clipboard shortcuts work inside the webview (macOS
-// routes Cmd+C/V through the menu), and View adds the escape hatches every webview app needs —
-// Reload, and a jump back to the launcher from wherever the window has navigated. Nothing
-// REQUIRES them: the hub keeps itself current (running workspaces poll live).
+// OS-standard menu roles ONLY — no app-specific shortcuts (that design is deliberately deferred;
+// anything Pluto ships itself works inside the webview untouched). The Edit roles are required
+// plumbing, not additions: macOS routes Cmd+C/V through the menu, so without them clipboard
+// shortcuts never reach the webview — parity with what the browser gives Pluto for free.
 try {
     win.setApplicationMenu([
         { submenu: { label: "SpaceStation", items: [{ role: { role: "quit" } }] } },
@@ -55,30 +59,11 @@ try {
                 ],
             },
         },
-        {
-            submenu: {
-                label: "View",
-                items: [
-                    { item: { label: "Reload", id: "reload", accelerator: "CmdOrCtrl+R", enabled: true } },
-                    { item: { label: "Back to Launcher", id: "launcher", accelerator: "CmdOrCtrl+Shift+L", enabled: true } },
-                ],
-            },
-        },
         { submenu: { label: "Window", items: [{ role: { role: "minimize" } }] } },
     ])
 } catch (e) {
     console.warn("could not install the application menu:", e)
 }
-win.addEventListener("menuclick", (e: any) => {
-    if (e.detail?.id === "reload") win.reload()
-    // focus the deck's Launcher tab; if the window somehow left the deck, go back to it
-    if (e.detail?.id === "launcher") {
-        win.executeJs("window.focus_launcher != null").then((on_deck: unknown) => {
-            if (on_deck) win.executeJs("window.focus_launcher()")
-            else win.navigate(shell_url("/deck"))
-        }).catch(() => {})
-    }
-})
 
 let closing = false
 const shutdown = async () => {
