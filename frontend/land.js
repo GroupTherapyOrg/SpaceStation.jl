@@ -644,6 +644,9 @@ const TerminalView = ({ tid, cwd, visible, scheme }) => {
     const started = useRef(false)
     const fit_ref = useRef(null)
     const refit_timer = useRef(null)
+    // Where the view was when the tab went hidden, as lines above the bottom (0 = pinned to the
+    // bottom, the common case; null = nothing to restore). Set on hide, consumed by the next refit.
+    const restore_scroll_ref = useRef(/** @type {number?} */ (null))
     // Held so the unmount cleanup can tear them all down. Without this, unmounting (closing the
     // tab, switching dock — which remounts under a different parent — or closing the panel) would
     // leak the WebSocket, the xterm instance, and the ResizeObserver: the socket's onmessage
@@ -682,11 +685,46 @@ const TerminalView = ({ tid, cwd, visible, scheme }) => {
             try {
                 fit.fit()
             } catch {}
+            // fit() is a NO-OP when the geometry is unchanged (FitAddon only acts when the proposed
+            // rows/cols differ) — which is exactly the case when returning to a terminal tab, since
+            // every tab lives in the same panel. But while this terminal was display:none, xterm's
+            // viewport kept syncing against a 0-height element: the scroll-area height was computed
+            // from offsetHeight 0, scrollTop writes were clamped to 0, and the browser dropped the
+            // element's scroll position outright. A REAL resize repairs all of that (xterm's
+            // _afterResize re-syncs the viewport — which is why dragging the panel width "fixed" a
+            // broken tab); an unchanged-size reveal repaired nothing. So repair here: put the view
+            // back where it was when the tab was hidden, then force the scroll geometry to re-sync.
+            // (viewport.syncScrollArea is internal API, but the xterm import is pinned to 5.5.0 —
+            // and FitAddon itself reaches through _core the same way.)
+            const term = term_ref.current
+            if (term == null) return
+            try {
+                const lines_from_bottom = restore_scroll_ref.current
+                restore_scroll_ref.current = null
+                if (lines_from_bottom != null) {
+                    const buf = term.buffer.active
+                    if (lines_from_bottom <= 0) term.scrollToBottom()
+                    else term.scrollLines(Math.max(0, buf.baseY - lines_from_bottom) - buf.viewportY)
+                }
+                term._core?.viewport?.syncScrollArea?.(true)
+                term.refresh(0, term.rows - 1)
+            } catch {}
         }, 120)
     }, [])
 
     useEffect(() => {
-        if (!visible) return
+        if (!visible) {
+            // Going hidden (display:none): the browser zeroes the element's scroll position and
+            // xterm can't maintain its viewport while unmeasurable. Remember where the user was so
+            // the reveal repair in refit() can put them back.
+            const term = term_ref.current
+            if (term != null) {
+                try {
+                    restore_scroll_ref.current = term.buffer.active.baseY - term.buffer.active.viewportY
+                } catch {}
+            }
+            return
+        }
         // returning to this tab (or first reveal of an already-started one): re-measure once painted
         if (started.current) {
             refit()
