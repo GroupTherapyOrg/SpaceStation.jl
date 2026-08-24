@@ -692,6 +692,10 @@ function register_collab_api!(router, session::ServerSession)
     function serve_api_config(request::HTTP.Request)
         body = _json(Pair[
             "tunneled" => haskey(ENV, "SPACESTATION_TUNNELED") || haskey(ENV, "PLUTOSPACE_TUNNELED"),
+            # The desktop shell (desktop/) sets this: one webview window, no browser tabs — so the
+            # hub opens workspaces in-place like a tunneled server, but keeps the SSH sections
+            # (which `tunneled` hides, since tunnel-over-tunnel ports would be unreachable).
+            "desktop" => haskey(ENV, "SPACESTATION_DESKTOP"),
             "pluto_version" => PLUTO_VERSION_STR,
             # the integrated terminal's pty is ConPTY here — xterm.js needs to know to enable
             # its Windows heuristics (see TerminalView in land.js)

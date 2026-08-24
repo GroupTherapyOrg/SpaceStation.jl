@@ -218,7 +218,7 @@ const FileEntry = ({ entry, listings, expanded, on_toggle, on_open_notebook, on_
  *  list of every running workspace — local children AND SSH remotes — to reattach to or shut down.
  *  Picking a folder spawns a child server in a new tab (see connect_local); this view never leaves.
  *  `on_cancel` (optional) shows a back button when opened on top of an existing workspace. */
-const WorkspaceOpener = ({ on_cancel, tunneled }) => {
+const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
     const [listing, set_listing] = useState(
         /** @type {{path: String, parent: String, entries: Array<{name: String, path: String}>, crumbs: Array<{name: String, path: String}>}?} */ (null)
     )
@@ -343,10 +343,11 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
 
     // Open a folder as a workspace. Local: spawn a child server in its own tab (connect_local). Over a
     // tunnel (a remote server): switch THIS server's workspace in-place and reload — the child's port
-    // wouldn't be reachable from the browser, so a new tab would just fail to connect.
+    // wouldn't be reachable from the browser, so a new tab would just fail to connect. The desktop
+    // shell is one webview window with no tabs, so it opens in-place the same way.
     const open_workspace = useCallback(
         async (path) => {
-            if (!tunneled) return connect_local(path)
+            if (!tunneled && !desktop) return connect_local(path)
             try {
                 await get_json(`./api/v1/workspace/open?path=${encodeURIComponent(path)}`, { method: "POST" })
                 remember_workspace(path)
@@ -355,7 +356,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                 set_error(String(e))
             }
         },
-        [tunneled, connect_local]
+        [tunneled, desktop, connect_local]
     )
 
     // The ✕ on a Running Workspace card: cancel a connecting one, dismiss an errored one, disconnect a
@@ -1111,6 +1112,9 @@ const Land = () => {
     // This server may be reached over an SSH tunnel (when it's a remote workspace). If so, its child
     // workspace ports aren't forwarded to the browser, so workspaces open IN-PLACE rather than in new tabs.
     const [tunneled, set_tunneled] = useState(false)
+    // The desktop shell (desktop/): one webview window, no browser tabs — workspaces open in-place
+    // like tunneled ones, but the SSH sections stay (their tunnels come FROM this local server).
+    const [desktop, set_desktop] = useState(false)
     // Nothing is answering on our own origin. For an SSH workspace this is the ordinary consequence
     // of the laptop having been shut — see the recovery loop further down.
     const [offline, set_offline] = useState(false)
@@ -1123,6 +1127,7 @@ const Land = () => {
         get_json("./api/v1/config")
             .then((c) => {
                 set_tunneled(!!(c && c.tunneled))
+                set_desktop(!!(c && c.desktop))
                 if (Array.isArray(c?.notebook_extensions) && c.notebook_extensions.length > 0) set_notebook_extensions(c.notebook_extensions)
             })
             .catch(() => {})
@@ -1147,7 +1152,7 @@ const Land = () => {
     // remote homebase). Otherwise: focus the homebase tab if open, or reopen it if it was closed — one
     // shared homebase, never a disconnected duplicate. (In-tab opener only when no homebase is known.)
     const go_home = useCallback(() => {
-        if (tunneled) {
+        if (tunneled || desktop) {
             fetch("./api/v1/workspace/close", { method: "POST" }).finally(() => window.location.reload())
             return
         }
@@ -1193,7 +1198,7 @@ const Land = () => {
             return
         }
         set_show_opener(true)
-    }, [tunneled])
+    }, [tunneled, desktop])
 
     // Terminals are tabs INSIDE the terminal panel (like VS Code). Each is a persistent shell
     // keyed by tid; the list + active terminal are restored on reload. `terminal_seq` numbers them.
@@ -1659,7 +1664,7 @@ const Land = () => {
     // workspace" button). Picking a folder spawns a child server in a new tab — it never takes over this
     // tab — so the launcher persists as the place you see and manage every running workspace.
     if (no_workspace || show_opener) {
-        return html`<${WorkspaceOpener} on_cancel=${no_workspace ? null : () => set_show_opener(false)} tunneled=${tunneled} />`
+        return html`<${WorkspaceOpener} on_cancel=${no_workspace ? null : () => set_show_opener(false)} tunneled=${tunneled} desktop=${desktop} />`
     }
 
     return html`

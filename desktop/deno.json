@@ -1,0 +1,21 @@
+{
+    "name": "spacestation-desktop",
+    "version": "0.1.0",
+    "exports": "./main.ts",
+    "tasks": {
+        "dev": "deno desktop --hmr --allow-run --allow-net --allow-read --allow-write --allow-env main.ts",
+        "smoke": "deno run --allow-run --allow-net --allow-read --allow-write --allow-env smoke.ts",
+        "build": "deno desktop --allow-run --allow-net --allow-read --allow-write --allow-env -o dist/SpaceStation.app main.ts",
+        "build:dmg": "deno desktop --allow-run --allow-net --allow-read --allow-write --allow-env --compress -o dist/SpaceStation.dmg main.ts",
+        "build:mac-intel": "deno desktop --allow-run --allow-net --allow-read --allow-write --allow-env --target x86_64-apple-darwin -o dist/SpaceStation-mac-intel.app main.ts",
+        "build:win": "deno desktop --allow-run --allow-net --allow-read --allow-write --allow-env --target x86_64-pc-windows-msvc -o dist/SpaceStation-win-x64 main.ts",
+        "build:linux": "deno desktop --allow-run --allow-net --allow-read --allow-write --allow-env --target x86_64-unknown-linux-gnu -o dist/SpaceStation-linux-x64.AppImage main.ts"
+    },
+    "desktop": {
+        "app": {
+            "name": "SpaceStation",
+            "identifier": "org.grouptherapyorg.spacestation"
+        },
+        "backend": "webview"
+    }
+}
