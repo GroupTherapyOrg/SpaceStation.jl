@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.3.0...v0.3.1) (2026-08-24)
+
+
+### Bug Fixes
+
+* repair xterm scroll state when a hidden terminal tab is revealed ([#32](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/32)) ([e90a860](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/e90a860b819544c57d3239216179ba598af5308f))
+
 ## [0.3.0](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.2.7...v0.3.0) (2026-08-22)
 
 
