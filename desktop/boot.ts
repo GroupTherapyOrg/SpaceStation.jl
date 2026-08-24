@@ -1,6 +1,8 @@
 // Julia server lifecycle for the SpaceStation desktop shell. GUI-free on purpose: main.ts wires
 // this to a Deno.BrowserWindow, smoke.ts drives it from a plain `deno run` for headless testing.
 
+import * as buildinfo from "./buildinfo.ts"
+
 export type Phase = "finding-julia" | "installing" | "starting" | "ready" | "error"
 
 export interface BootState {
@@ -63,18 +65,28 @@ export class SpaceStationServer {
         return null
     }
 
-    /** The Julia project to run. Priority: explicit override → the repo this file sits in (dev
-     *  checkout) → a managed environment in the platform app-data dir (compiled app; SpaceStation
-     *  is installed from the General registry on first run). */
+    /** The Julia project to run. Priority: explicit override → the checkout the app was BUILT
+     *  from, when it still exists on this machine (buildinfo) → the repo this file sits in (dev
+     *  run) → a managed environment in the platform app-data dir (distributed app; SpaceStation is
+     *  installed on first run, pinned to the built git rev when buildinfo carries one). */
     resolve_project(): { project: string; managed: boolean } {
         const override = Deno.env.get("SPACESTATION_PROJECT")
         if (override) return { project: override, managed: false }
+        const is_spacestation_repo = (dir: string) => {
+            try {
+                return /name\s*=\s*"SpaceStation"/.test(Deno.readTextFileSync(`${dir}/Project.toml`))
+            } catch {
+                return false
+            }
+        }
+        if (buildinfo.project != null && is_spacestation_repo(buildinfo.project)) {
+            return { project: buildinfo.project, managed: false }
+        }
         try {
             const here = new URL(".", import.meta.url)
             if (here.protocol === "file:") {
                 const repo = new URL("..", here).pathname
-                const toml = Deno.readTextFileSync(`${repo}/Project.toml`)
-                if (/name\s*=\s*"SpaceStation"/.test(toml)) return { project: repo, managed: false }
+                if (is_spacestation_repo(repo)) return { project: repo, managed: false }
             }
         } catch {
             // not running from a source checkout — fall through to the managed environment
@@ -128,15 +140,22 @@ export class SpaceStationServer {
         this.state.port = port
         this.set("starting", managed ? `starting SpaceStation (managed environment)` : `starting SpaceStation from ${project}`)
 
-        // One -e script covers both modes: a managed env bootstraps itself from the General
-        // registry on first run; a dev checkout just imports the local package.
+        // One -e script per mode. A managed env installs SpaceStation on first run — pinned to the
+        // git rev the app was built from when buildinfo carries one (so a branch build runs that
+        // branch, not the last registry release), the registry otherwise. A marker file records
+        // what's installed, so a rebuilt app upgrades a stale env instead of trusting `import`.
+        const want = buildinfo.source ? `${buildinfo.source.url}#${buildinfo.source.rev}` : "registry"
+        const add = buildinfo.source
+            ? `Pkg.add(url=${JSON.stringify(buildinfo.source.url)}, rev=${JSON.stringify(buildinfo.source.rev)})`
+            : `Pkg.add("SpaceStation")`
         const boot = managed
-            ? `import Pkg; Pkg.activate(ENV["SPACESTATION_DESKTOP_ENV"]);
-               try @eval import SpaceStation
-               catch; println("Installing SpaceStation into the managed environment..."); flush(stdout);
-                   Pkg.add("SpaceStation"); @eval import SpaceStation
+            ? `import Pkg; env = ENV["SPACESTATION_DESKTOP_ENV"]; Pkg.activate(env);
+               marker = joinpath(env, ".spacestation-source"); want = ${JSON.stringify(want)};
+               if !isfile(marker) || read(marker, String) != want
+                   println("Installing SpaceStation ($(want))..."); flush(stdout);
+                   ${add}; write(marker, want)
                end;
-               SpaceStation.run(port=${port}, launch_browser=false)`
+               import SpaceStation; SpaceStation.run(port=${port}, launch_browser=false)`
             : `import SpaceStation; SpaceStation.run(port=${port}, launch_browser=false)`
         const args = managed ? ["--startup-file=no", "-e", boot] : [`--project=${project}`, "--startup-file=no", "-e", boot]
         if (managed) Deno.mkdirSync(project, { recursive: true })
@@ -169,7 +188,9 @@ export class SpaceStationServer {
                 await res.body?.cancel()
                 if (res.ok) {
                     const secret = this.read_secret(port)
-                    this.state.url = secret ? `http://127.0.0.1:${port}/?secret=${secret}` : `http://127.0.0.1:${port}/`
+                    // ?desktop=1 tells the hub SYNCHRONOUSLY that it's inside the desktop shell
+                    // (the server env flag arrives too, but only after an async config fetch)
+                    this.state.url = `http://127.0.0.1:${port}/?${secret ? `secret=${secret}&` : ""}desktop=1`
                     this.set("ready", "")
                     return
                 }

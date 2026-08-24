@@ -77,6 +77,11 @@ const homebase_self_url = () => window.location.origin + window.location.pathnam
 // workspace it opens knows where "home" is.
 const with_homebase = (url) => (url == null ? url : `${url}#homebase=${encodeURIComponent(homebase_self_url())}`)
 
+// The desktop shell (desktop/) appends ?desktop=1 to the URL it opens, so desktop mode is known
+// SYNCHRONOUSLY — before the async /api/v1/config fetch lands. Without this, a click in the first
+// moments of the launcher could still take a new-tab path the webview can't host.
+const desktop_boot_hint = new URLSearchParams(window.location.search).has("desktop")
+
 // `new URL(..., import.meta.url)` works unbundled in the browser AND gets rewritten by
 // the bundler — a string src would 404 in frontend-dist where filenames are hashed.
 const logo_url = new URL("img/spacestation.svg", import.meta.url).href
@@ -219,6 +224,14 @@ const FileEntry = ({ entry, listings, expanded, on_toggle, on_open_notebook, on_
  *  Picking a folder spawns a child server in a new tab (see connect_local); this view never leaves.
  *  `on_cancel` (optional) shows a back button when opened on top of an existing workspace. */
 const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
+    // Read through a ref inside the long-running connect polls: they can outlive a `desktop` flip
+    // (the config fetch landing just after mount), and must honour the value at COMPLETION time.
+    const desktop_ref = useRef(desktop)
+    desktop_ref.current = desktop
+    // Workspace links: a browser tab elsewhere gets a new tab + a homebase fragment to return by;
+    // the desktop's single webview window navigates in place (no tabs to open or return to).
+    const open_href = (url) => (desktop ? url : with_homebase(url))
+    const open_target = desktop ? "_self" : "_blank"
     const [listing, set_listing] = useState(
         /** @type {{path: String, parent: String, entries: Array<{name: String, path: String}>, crumbs: Array<{name: String, path: String}>}?} */ (null)
     )
@@ -262,7 +275,10 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
                 set_remote_states((s) => ({ ...s, [host]: status }))
             }
             if (status.state === "ready" && status.url != null) {
-                window.open(with_homebase(status.url), "_blank") // may be blocked: the pill stays a clickable link either way
+                // Desktop: one webview window, no tabs — go there in place. (The remote server runs
+                // tunneled, so its own hub keeps everything in-place too.)
+                if (desktop_ref.current) window.location.assign(status.url)
+                else window.open(with_homebase(status.url), "_blank") // may be blocked: the pill stays a clickable link either way
             }
         } catch (e) {
             if (cancelled_hosts.current.has(host)) return
@@ -299,7 +315,9 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
             }
             if (status.state === "ready" && status.url != null) {
                 remember_workspace(path)
-                window.open(with_homebase(status.url), "_blank") // may be blocked: the ready card stays a clickable link either way
+                // Desktop never reaches here (open_workspace goes in-place), but keep it coherent.
+                if (desktop_ref.current) window.location.assign(status.url)
+                else window.open(with_homebase(status.url), "_blank") // may be blocked: the ready card stays a clickable link either way
             }
         } catch (e) {
             if (cancelled_paths.current.has(path)) return
@@ -428,7 +446,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
                           ${running.map(
                               (w) => html`<div class="recent-card running-card ${w.state === "ready" ? "" : "running-busy"}" key=${w.key}>
                                   ${w.url != null
-                                      ? html`<a class="running-open" href=${with_homebase(w.url)} target="_blank" rel="opener" title=${`Open ${w.name}`}>
+                                      ? html`<a class="running-open" href=${open_href(w.url)} target=${open_target} rel="opener" title=${`Open ${w.name}`}>
                                             <span class="recent-icon">${w.kind === "remote" ? "🛰" : "🗂"}</span>
                                             <span class="recent-name">${w.name}</span>
                                             <span class="recent-path">${w.sub}</span>
@@ -535,7 +553,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
                               const st = remote_states[h]
                               const busy = st != null && st.state !== "ready" && st.state !== "error"
                               return st?.state === "ready" && st.url != null
-                                  ? html`<a class="dir-pill remote-ready" href=${with_homebase(st.url)} target="_blank" rel="opener" title=${st.detail}>
+                                  ? html`<a class="dir-pill remote-ready" href=${open_href(st.url)} target=${open_target} rel="opener" title=${st.detail}>
                                         <span class="dir-icon">🛰</span>${h} →
                                     </a>`
                                   : html`<button
@@ -1114,7 +1132,7 @@ const Land = () => {
     const [tunneled, set_tunneled] = useState(false)
     // The desktop shell (desktop/): one webview window, no browser tabs — workspaces open in-place
     // like tunneled ones, but the SSH sections stay (their tunnels come FROM this local server).
-    const [desktop, set_desktop] = useState(false)
+    const [desktop, set_desktop] = useState(desktop_boot_hint)
     // Nothing is answering on our own origin. For an SSH workspace this is the ordinary consequence
     // of the laptop having been shut — see the recovery loop further down.
     const [offline, set_offline] = useState(false)
@@ -1127,7 +1145,7 @@ const Land = () => {
         get_json("./api/v1/config")
             .then((c) => {
                 set_tunneled(!!(c && c.tunneled))
-                set_desktop(!!(c && c.desktop))
+                set_desktop(desktop_boot_hint || !!(c && c.desktop))
                 if (Array.isArray(c?.notebook_extensions) && c.notebook_extensions.length > 0) set_notebook_extensions(c.notebook_extensions)
             })
             .catch(() => {})
