@@ -21,7 +21,8 @@ export const deck_html = (launcher_url: string) => /* html */ `<!doctype html>
         height: 30px; flex-shrink: 0; display: flex; align-items: stretch; gap: 2px;
         padding: 0 8px 0 10px; background: #0f0d16; -webkit-app-region: drag; user-select: none;
     }
-    body.inset #strip { height: 38px; padding: 5px 8px 5px 84px; }
+    /* 28px = the native title bar height, so the tab pills center on the traffic lights' row */
+    body.inset #strip { height: 28px; padding: 3px 8px 3px 84px; }
     body.inset .tab { border-radius: 6px; }
     .tab {
         -webkit-app-region: no-drag; display: flex; align-items: center; gap: 0.45rem; max-width: 15rem;
@@ -122,15 +123,21 @@ export const deck_html = (launcher_url: string) => /* html */ `<!doctype html>
 
         // A tab is one server (one origin/port): opening the same workspace again focuses its tab.
         const open_tab = (url, title) => {
-            let origin
+            let u
             try {
-                origin = new URL(url).origin
+                u = new URL(url)
             } catch {
                 return
             }
+            // Keep every tab SAME-SITE with the deck: the servers' auth cookie is SameSite=Strict,
+            // and "localhost" vs "127.0.0.1" are different sites — a mismatched iframe still loads
+            // (the URL carries ?secret) but the cookie is withheld and every API call 403s. Child
+            // and SSH-tunnel URLs are loopback by construction, so unify the hostname on ours.
+            if (u.hostname === "localhost" || u.hostname === "127.0.0.1") u.hostname = location.hostname
+            const origin = u.origin
             const existing = tabs.find((t) => t.id !== "launcher" && new URL(t.url).origin === origin)
             if (existing) return activate(existing.id)
-            const tab = { id: "ws-" + origin.replace(/\\W/g, "-"), title: String(title || origin), url }
+            const tab = { id: "ws-" + origin.replace(/\\W/g, "-"), title: String(title || origin), url: u.href }
             tabs.push(tab)
             activate(tab.id)
         }
