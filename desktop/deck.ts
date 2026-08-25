@@ -47,7 +47,7 @@ export const deck_html = (launcher_url: string) => /* html */ `<!doctype html>
     body.fullscreen #hoverzone { display: block; position: fixed; top: 0; left: 0; right: 0; height: 6px; z-index: 9; }
     body.fullscreen #strip {
         position: fixed; top: 0; left: 0; right: 0; z-index: 10;
-        transform: translateY(-100%); transition: transform 0.12s ease-out;
+        transform: translateY(-100%); transition: transform 0.12s ease-out, top 0.15s ease-out;
     }
     body.fullscreen #strip.revealed { transform: translateY(0); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.55); }
 </style>
@@ -62,28 +62,40 @@ export const deck_html = (launcher_url: string) => /* html */ `<!doctype html>
         const stage = document.getElementById("stage")
         document.body.classList.toggle("inset", new URLSearchParams(location.search).has("inset"))
 
-        // Fullscreen detection: exact screen size works on plain displays, but a notched MacBook's
-        // fullscreen is screen height MINUS the notch band — so also ask the shell, which reads
-        // the NSWindow fullscreen style bit over FFI (/fullscreen). POLLED, not event-driven: the
-        // webview's resize timing around the fullscreen transition proved unreliable, and a local
-        // GET every 1.5s is free.
+        // Fullscreen handling, polled from the shell (/fullscreen): the NSWindow style bit says
+        // whether we're fullscreen (size heuristics fail on notched Macs), and overlay_px says how
+        // far the NATIVE overlay (menu bar + title-bar band, on hover at the screen top) currently
+        // covers our window. The strip reveals WITH that overlay — sitting right below it — and
+        // retracts with it, so the two read as one piece of chrome; the in-window hover zone is
+        // the secondary trigger, since the native overlay only drops at the true screen top.
         const hoverzone = document.getElementById("hoverzone")
-        const update_fullscreen = async () => {
-            let fs = innerWidth === screen.width && innerHeight === screen.height
-            if (!fs) {
-                try {
-                    fs = !!(await (await fetch("/fullscreen")).json()).fullscreen
-                } catch {}
-            }
-            document.body.classList.toggle("fullscreen", fs)
-            if (!fs) strip.classList.remove("revealed")
+        let hover = false
+        let last = { fullscreen: false, overlay_px: 0 }
+        const render_strip = () => {
+            document.body.classList.toggle("fullscreen", last.fullscreen)
+            strip.style.top = last.fullscreen && last.overlay_px > 0 ? last.overlay_px + "px" : ""
+            strip.classList.toggle("revealed", last.fullscreen && (hover || last.overlay_px > 0))
         }
-        setInterval(update_fullscreen, 1500)
-        addEventListener("resize", update_fullscreen)
+        const update_fullscreen = async () => {
+            const size_fs = innerWidth === screen.width && innerHeight === screen.height
+            let next = { fullscreen: size_fs, overlay_px: 0 }
+            try {
+                const r = await (await fetch("/fullscreen")).json()
+                next = { fullscreen: size_fs || !!r.fullscreen, overlay_px: r.overlay_px || 0 }
+            } catch {}
+            last = next
+            render_strip()
+            // follow the native overlay closely while fullscreen; idle cheaply otherwise
+            setTimeout(update_fullscreen, last.fullscreen ? 250 : 1500)
+        }
         update_fullscreen()
-        hoverzone.addEventListener("mouseenter", () => strip.classList.add("revealed"))
+        hoverzone.addEventListener("mouseenter", () => {
+            hover = true
+            render_strip()
+        })
         strip.addEventListener("mouseleave", () => {
-            if (document.body.classList.contains("fullscreen")) strip.classList.remove("revealed")
+            hover = false
+            render_strip()
         })
 
         /** @type {Array<{id: string, title: string, url: string}>} */
