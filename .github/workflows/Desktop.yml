@@ -74,10 +74,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: mac-arm64, os: macos-14, task: "build:dmg", file: SpaceStation-mac-arm64.dmg }
-          - { name: mac-x64, os: macos-15-intel, task: "build:dmg-intel", file: SpaceStation-mac-x64.dmg }
-          - { name: windows-x64, os: windows-latest, task: "build:msi", file: SpaceStation-win-x64.msi }
-          - { name: linux-x64, os: ubuntu-latest, task: "build:linux", file: SpaceStation-linux-x64.AppImage }
+          # `built` is what the build produces — always the clean product name, because the
+          # bundle inside inherits it (an .app named SpaceStation-mac-arm64 would install into
+          # /Applications under that name). `file` is the platform-suffixed release asset.
+          - { name: mac-arm64, os: macos-14, task: "build:dmg", built: SpaceStation.dmg, file: SpaceStation-mac-arm64.dmg }
+          - { name: mac-x64, os: macos-15-intel, task: "build:dmg-intel", built: SpaceStation.dmg, file: SpaceStation-mac-x64.dmg }
+          - { name: windows-x64, os: windows-latest, task: "build:msi", built: SpaceStation.msi, file: SpaceStation-win-x64.msi }
+          - { name: linux-x64, os: ubuntu-latest, task: "build:linux", built: SpaceStation.AppImage, file: SpaceStation-linux-x64.AppImage }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
@@ -106,6 +109,10 @@ jobs:
       - name: Build installer
         working-directory: desktop
         run: deno task ${{ matrix.task }}
+      - name: Name the release asset
+        shell: bash
+        working-directory: desktop
+        run: mv "dist/${{ matrix.built }}" "dist/${{ matrix.file }}"
       - name: Sign + notarize (macOS, when credentials exist)
         # NOTE: signing a finished .dmg requires the .app INSIDE to be signed at build time —
         # once enrolled, set desktop.macos.codesignIdentity in deno.json so `deno desktop` signs
