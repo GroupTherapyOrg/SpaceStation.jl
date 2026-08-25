@@ -63,14 +63,38 @@ const rewrite = (rule, scheme) => {
     if (rule.media.mediaText !== next) rule.media.mediaText = next
 }
 
+// WKWebView keeps drawing the page's scroller with its pre-flip state after a color-scheme
+// change — on a dark OS, forcing light left the notebook with no visible scrollbar at all.
+// Destroying and recreating the scroller is the reliable fix: hide the root's overflow for one
+// frame, then restore it along with the scroll position.
+const recreate_scrollbars = () => {
+    const de = document.documentElement
+    const x = window.scrollX
+    const y = window.scrollY
+    const prev = de.style.overflow
+    de.style.overflow = "hidden"
+    requestAnimationFrame(() => {
+        de.style.overflow = prev
+        window.scrollTo(x, y)
+    })
+}
+
+let last_applied = null
+
 const apply = (scheme) => {
     // The media rewrite below only governs AUTHOR styles — the UA still colors its own defaults
     // (default text, form controls, scrollbars) from the page's declared color-scheme and the OS.
     // With a dark OS and a forced-light page that meant white UA text on light backgrounds
     // (invisible buttons, washed-out logs). The color-scheme PROPERTY on :root overrides the
     // meta and pins the UA side too. (The desktop shell additionally flips the native window
-    // appearance to match, so WKWebView's own chrome — scrollbars included — follows along.)
+    // appearance to match, so WKWebView's own chrome follows along.)
     document.documentElement.style.colorScheme = scheme === "system" ? "" : scheme
+    // apply() re-runs constantly (new stylesheets arrive with cell output) — only nudge the
+    // scroller when the scheme actually changed, or it would flicker on every mutation.
+    if (last_applied !== scheme) {
+        last_applied = scheme
+        recreate_scrollbars()
+    }
     const walk_rules = (rules) => {
         for (const rule of rules) {
             if (rule.styleSheet != null) {

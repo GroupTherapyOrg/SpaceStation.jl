@@ -43,6 +43,12 @@ ${base_css}
         <a id="pick" href="/launch?change=1">choose a different Julia version…</a>
     </div>
     <script>
+        // WKWebView has no CSS drag regions — mousedown here asks the shell to start a native
+        // window drag (AppKit tracks it from there)
+        document.querySelector(".dragbar").addEventListener("mousedown", (e) => {
+            if (e.button === 0) fetch("./api/drag", { method: "POST" }).catch(() => {})
+        })
+
         const tick = async () => {
             try {
                 const s = await (await fetch("./status")).json()
@@ -67,15 +73,21 @@ export interface UiHandlers {
     julia_info: () => Promise<unknown>
     on_launch: (opts: BootOptions & { remember?: boolean }) => Promise<void>
     on_appearance?: (scheme: "light" | "dark" | "system") => void
+    on_drag?: () => void
 }
 
-export const serve_ui = ({ state, julia_info, on_launch, on_appearance }: UiHandlers) =>
+export const serve_ui = ({ state, julia_info, on_launch, on_appearance, on_drag }: UiHandlers) =>
     Deno.serve(async (req) => {
         const path = new URL(req.url).pathname
         const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } })
         const page = (html: string) => new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } })
         if (path === "/status") return json(state())
         if (path === "/api/julia") return json(await julia_info())
+        // fired on mousedown in a page's drag area: the shell starts a native window drag
+        if (path === "/api/drag" && req.method === "POST") {
+            on_drag?.()
+            return json({ ok: true })
+        }
         if (path === "/api/appearance" && req.method === "POST") {
             try {
                 const { scheme } = await req.json()

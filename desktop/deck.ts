@@ -50,6 +50,12 @@ export const deck_html = (launcher_url: string) => /* html */ `<!doctype html>
         const strip = document.getElementById("strip")
         const stage = document.getElementById("stage")
         document.body.classList.toggle("inset", new URLSearchParams(location.search).has("inset"))
+        // The strip's -webkit-app-region CSS is inert in WKWebView (a Chromium feature), so the
+        // window was never draggable from it. Instead: mousedown on strip background (not a tab)
+        // asks the shell to start a native window drag.
+        strip.addEventListener("mousedown", (e) => {
+            if (e.button === 0 && e.target.closest(".tab") == null) fetch("./api/drag", { method: "POST" }).catch(() => {})
+        })
         // NOTE: no fullscreen special-casing, deliberately. Auto-hiding the strip in sync with the
         // native fullscreen overlay was tried and looked broken more ways than it looked native
         // (notch geometry, the overlay stealing the mouse, unrelated helper windows). The strip is

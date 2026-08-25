@@ -71,6 +71,12 @@ ${base_css}
         <div class="note" id="restart-note" style="display: none">Switching versions restarts the SpaceStation server — running notebooks stop.</div>
     </div>
     <script>
+        // WKWebView has no CSS drag regions — mousedown here asks the shell to start a native
+        // window drag (AppKit tracks it from there)
+        document.querySelector(".dragbar").addEventListener("mousedown", (e) => {
+            if (e.button === 0) fetch("./api/drag", { method: "POST" }).catch(() => {})
+        })
+
         const content = document.getElementById("content")
         let launching = false
 
