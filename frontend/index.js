@@ -1,5 +1,6 @@
 import { html, render } from "./imports/Preact.js"
 import "./common/NodejsCompatibilityPolyfill.js"
+import "./common/ColorScheme.js" // applies the app-wide light/dark override + follows hub toggles live
 
 import { Welcome } from "./components/welcome/Welcome.js"
 import { getCurrentLanguage, getWritingDirection } from "./common/lang.js"

@@ -15,6 +15,7 @@
 //   POST ./shutdown?id=…           stop a notebook session
 import { html, render, useState, useEffect, useCallback, useRef } from "./imports/Preact.js"
 import { pluto_file_extensions, has_pluto_file_extension } from "./common/PlutoFileExtensions.js"
+import { cycle_color_scheme, get_color_scheme, prefers_dark } from "./common/ColorScheme.js"
 
 const get_text = async (url, opts) => {
     const r = await fetch(url, opts)
@@ -89,6 +90,21 @@ const in_desktop_frame = (() => {
     }
 })()
 const desktop_boot_hint = in_desktop_frame || new URLSearchParams(window.location.search).has("desktop")
+
+// App-wide light/dark/auto — one choice themes the hub AND every notebook editor (they share the
+// origin, so ColorScheme.js keeps them in sync live). The integrated terminal keeps its OWN
+// toggle: a light UI with a dark terminal is a legitimate preference.
+const AppSchemeToggle = ({ classname }) => {
+    const [scheme, set_scheme] = useState(get_color_scheme())
+    return html`<button
+        class="app-scheme-toggle ${classname ?? ""}"
+        title=${scheme === "system" ? "Appearance: follow the system — switch to light" : scheme === "light" ? "Appearance: light — switch to dark" : "Appearance: dark — follow the system"}
+        aria-label="Toggle light/dark appearance"
+        onClick=${() => set_scheme(cycle_color_scheme())}
+    >
+        ${scheme === "system" ? "◐" : scheme === "light" ? "☀" : "☾"}
+    </button>`
+}
 // Ask the deck to do something (open a workspace tab, focus the Launcher tab).
 const post_to_deck = (message) => {
     try {
@@ -454,6 +470,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
                 <img class="land-logo opener-logo" src=${logo_url} alt="SpaceStation" />
                 <h1>Space<span class="land-accent">Station</span></h1>
                 <p class="subtitle">Open a folder as your workspace — notebooks inside it open as tabs.</p>
+                <${AppSchemeToggle} classname=${on_cancel == null ? "opener-corner" : "opener-corner beside-cancel"} />
                 ${on_cancel == null ? null : html`<button class="opener-cancel" title="Close — back to your workspace" onClick=${on_cancel}><span class="opener-cancel-icon"></span></button>`}
             </header>
 
@@ -1067,7 +1084,7 @@ const FileEditorPane = ({ path, visible }) => {
                                     set_dirty(true)
                                 }
                             }),
-                            cm.EditorView.theme({}, { dark: window.matchMedia("(prefers-color-scheme: dark)").matches }),
+                            cm.EditorView.theme({}, { dark: prefers_dark() }),
                         ],
                     }),
                     parent: node_ref.current,
@@ -1874,6 +1891,7 @@ const Land = () => {
                                       ${terminal_dock === "bottom" ? "◨" : terminal_dock === "right" ? "▭" : "⬓"}
                                   </button>`
                                 : null}
+                            <${AppSchemeToggle} />
                         </nav>
                         <div id="frames">
                             ${tabs.map((t) =>

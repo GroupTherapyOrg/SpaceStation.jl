@@ -1340,6 +1340,36 @@ body.resizing-v #frames iframe {
     background-color: var(--main-bg-color);
 }
 
+/* the APP-wide light/dark/auto toggle (the terminal's scheme toggle above stays its own thing) */
+.app-scheme-toggle {
+    flex-shrink: 0;
+    margin-left: 0.4rem;
+    background: none;
+    border: none;
+    color: inherit;
+    font: inherit;
+    font-size: 0.95rem;
+    line-height: 1;
+    opacity: 0.55;
+    cursor: pointer;
+    padding: 0.3rem 0.45rem;
+    border-radius: 1000px;
+    transition: opacity 0.08s linear, background-color 0.08s linear;
+}
+.app-scheme-toggle:hover {
+    opacity: 1;
+    background-color: var(--main-bg-color);
+}
+/* in the launcher card it sits in the top-right corner (left of the ✕ when that is shown) */
+.app-scheme-toggle.opener-corner {
+    position: absolute;
+    top: 0;
+    right: 0;
+}
+.app-scheme-toggle.opener-corner.beside-cancel {
+    right: 2.6rem;
+}
+
 .terminal-tab-scroller {
     flex: 1;
     min-width: 0;

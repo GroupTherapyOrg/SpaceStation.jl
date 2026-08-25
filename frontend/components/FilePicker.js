@@ -1,3 +1,4 @@
+import { prefers_dark } from "../common/ColorScheme.js"
 import { html, useState, useRef, useLayoutEffect } from "../imports/Preact.js"
 
 import { utf8index_to_ut16index } from "../common/UnicodeTools.js"
@@ -122,7 +123,7 @@ export const FilePicker = ({ value, readonly, suggest_new_file, button_label, pl
     }
 
     useLayoutEffect(() => {
-        const usesDarkTheme = window.matchMedia("(prefers-color-scheme: dark)").matches
+        const usesDarkTheme = prefers_dark()
         const keyMapSubmit = () => {
             onSubmit()
             return true

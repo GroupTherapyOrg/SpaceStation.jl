@@ -1,3 +1,4 @@
+import { prefers_dark } from "../common/ColorScheme.js"
 import { html, useRef, useLayoutEffect, useState, useEffect, useCallback, useContext } from "../imports/Preact.js"
 import { has_ctrl_or_cmd_pressed } from "../common/KeyboardShortcuts.js"
 import _ from "../imports/lodash-es.js"
@@ -149,7 +150,7 @@ export const ProjectTomlEditor = ({ notebook, process_waiting_for_permission }) 
     const get_avaible_versions = (...args) => pluto_actions?.get_avaible_versions?.(...args)
 
     useLayoutEffect(() => {
-        const usesDarkTheme = window.matchMedia("(prefers-color-scheme: dark)").matches
+        const usesDarkTheme = prefers_dark()
         cm.current = new EditorView({
             state: EditorState.create({
                 doc: "Loading...",
