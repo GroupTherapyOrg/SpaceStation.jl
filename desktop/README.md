@@ -82,8 +82,20 @@ Julia itself is **not** bundled — the app finds or asks for it (juliaup bootst
   binary, identical rendering everywhere.
 - **Julia is not auto-installed** — a friendly error points at julialang.org/downloads.
 
-## Release integration (future)
+## CI, signing, and release artifacts
 
-`deno desktop --all-targets` + a GitHub Actions matrix can attach `.dmg` / `.msi` / `.AppImage`
-artifacts to the release-please releases. Deliberately not wired up while this folder is
-experimental.
+`.github/workflows/Desktop.yml` runs on every push touching the shell or the server:
+
+- **test** (macOS / Windows / Linux): typechecks the shell and runs the headless smoke test,
+  which boots the REAL stack — Julia, the SpaceStation server, `/ping`, the connection-file
+  secret, the authenticated hub, desktop config — on every OS. Trust by booting, not stubbing.
+- **build**: packages `.app` (arm64 + intel), the Windows directory bundle, and the Linux
+  AppImage; uploads them as CI artifacts, and **attaches them to the GitHub release** when a
+  release is published (so release-please releases ship desktop downloads automatically).
+
+**macOS signing + notarization** activates when the repo has these secrets (skipped otherwise —
+bundles ship ad-hoc-signed): `MACOS_CERTIFICATE_P12` (base64 `.p12` export of a *Developer ID
+Application* certificate — requires an Apple Developer Program membership), 
+`MACOS_CERTIFICATE_PASSWORD`, `MACOS_SIGN_IDENTITY` (e.g. `Developer ID Application: Name (TEAMID)`),
+and for notarization `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD` (an app-specific password).
+Windows Authenticode signing is still TODO (needs a cert + `signtool` step).

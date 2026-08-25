@@ -1,0 +1,129 @@
+# The desktop shell, tested and packaged across macOS / Windows / Linux.
+#
+# test: the headless smoke test (desktop/smoke.ts) boots the REAL stack on every OS — finds
+#   Julia, starts the SpaceStation server, waits for /ping, reads the connection-file secret,
+#   fetches the authenticated hub, checks desktop mode, shuts down cleanly. Trust comes from
+#   booting the whole thing, not from unit stubs.
+# build: packages the per-OS bundle (.app / directory / .AppImage) and uploads it as a CI
+#   artifact; on a published release it attaches the bundles to the release. macOS bundles are
+#   signed + notarized when the repo has the signing secrets (see desktop/README.md), and ship
+#   ad-hoc-signed otherwise.
+
+name: Desktop
+
+on:
+  push:
+    branches: [main, feat/deno-desktop]
+    paths: ["desktop/**", ".github/workflows/Desktop.yml", "src/**", "frontend/**", "Project.toml"]
+  pull_request:
+    paths: ["desktop/**", ".github/workflows/Desktop.yml"]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: smoke · ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1"
+      - uses: julia-actions/cache@v2
+      - name: Instantiate the Julia project
+        run: julia --project=. -e 'import Pkg; Pkg.instantiate()'
+      - name: Typecheck the shell
+        working-directory: desktop
+        run: deno check main.ts boot.ts splash.ts deck.ts launch.ts julia.ts theme.ts macos_titlebar.ts smoke.ts
+      - name: Headless smoke test (boots the full stack)
+        working-directory: desktop
+        env:
+          # setup-julia installs plain julia (no juliaup); the smoke finds it on PATH
+          SPACESTATION_PROJECT: ${{ github.workspace }}
+        run: deno task smoke
+
+  build:
+    name: bundle · ${{ matrix.name }}
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: mac-arm64, os: macos-14, task: build, artifact: dist/SpaceStation.app, zip: SpaceStation-mac-arm64.zip }
+          - { name: mac-x64, os: macos-15-intel, task: build:mac-intel, artifact: dist/SpaceStation-mac-intel.app, zip: SpaceStation-mac-x64.zip }
+          - { name: windows-x64, os: windows-latest, task: build:win, artifact: dist/SpaceStation-win-x64, zip: SpaceStation-windows-x64.zip }
+          - { name: linux-x64, os: ubuntu-latest, task: build:linux, artifact: dist/SpaceStation-linux-x64.AppImage, zip: SpaceStation-linux-x64.AppImage.zip }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      # secrets are not readable in `if:` conditions directly — surface them as env first;
+      # absent secrets leave these empty and the signing steps skip (ad-hoc-signed bundles)
+      MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Import macOS signing certificate
+        if: runner.os == 'macOS' && env.MACOS_CERTIFICATE_P12 != ''
+        env:
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN=build.keychain
+          security create-keychain -p ci $KEYCHAIN
+          security default-keychain -s $KEYCHAIN
+          security unlock-keychain -p ci $KEYCHAIN
+          echo "$MACOS_CERTIFICATE_P12" | base64 --decode > cert.p12
+          security import cert.p12 -k $KEYCHAIN -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci $KEYCHAIN
+          rm cert.p12
+      - name: Build bundle
+        working-directory: desktop
+        run: deno task ${{ matrix.task }}
+      - name: Sign + notarize (macOS, when credentials exist)
+        if: runner.os == 'macOS' && env.MACOS_SIGN_IDENTITY != ''
+        env:
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        working-directory: desktop
+        run: |
+          codesign --force --deep --options runtime --timestamp -s "$MACOS_SIGN_IDENTITY" "${{ matrix.artifact }}"
+          ditto -c -k --keepParent "${{ matrix.artifact }}" notarize.zip
+          xcrun notarytool submit notarize.zip --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple "${{ matrix.artifact }}"
+      - name: Zip bundle
+        working-directory: desktop
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            ditto -c -k --keepParent "${{ matrix.artifact }}" "${{ matrix.zip }}"
+          else
+            cd "$(dirname "${{ matrix.artifact }}")" && 7z a "../${{ matrix.zip }}" "$(basename "${{ matrix.artifact }}")" && cd ..
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.zip }}
+          path: desktop/${{ matrix.zip }}
+          if-no-files-found: error
+      - name: Attach to release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: desktop
+        run: gh release upload "${{ github.event.release.tag_name }}" "${{ matrix.zip }}" --clobber
