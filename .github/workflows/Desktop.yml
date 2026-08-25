@@ -156,22 +156,65 @@ jobs:
         run: |
           TAG="${{ github.event.release.tag_name || inputs.release_tag }}"
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body > notes.md
-          if grep -q "## Install the desktop app" notes.md; then exit 0; fi
+          # Drop any guide appended by an earlier run so this job UPDATES in place rather than
+          # skipping — otherwise wording fixes never reach releases that already have one.
+          awk '/^## Install the desktop app$/{exit} {print}' notes.md > trimmed.md
+          mv trimmed.md notes.md
           cat >> notes.md <<'EOF'
 
           ## Install the desktop app
 
-          No Julia needed — the app installs one for you (bundled juliaup), or uses the ones you have.
+          No Julia needed — the app installs one for you (bundled juliaup), or uses whichever
+          Julia versions you already have.
 
-          | Platform | Download | First launch (builds are not code-signed yet — one-time step) |
-          |----------|----------|------------------------------------------------|
-          | macOS (Apple Silicon) | `SpaceStation-mac-arm64.dmg` | drag to Applications, then run `xattr -dr com.apple.quarantine "/Applications/SpaceStation.app"` in Terminal — or right-click → Open, then **System Settings → Privacy & Security → Open Anyway** |
-          | macOS (Intel) | `SpaceStation-mac-x64.dmg` | same as above |
-          | Windows | `SpaceStation-win-x64.msi` | double-click; at the SmartScreen prompt choose **More info → Run anyway** |
-          | Linux | `SpaceStation-linux-x64.AppImage` | `chmod +x SpaceStation-linux-x64.AppImage` and run it |
+          | Platform | Download |
+          |----------|----------|
+          | macOS (Apple Silicon) | `SpaceStation-mac-arm64.dmg` |
+          | macOS (Intel) | `SpaceStation-mac-x64.dmg` |
+          | Windows | `SpaceStation-win-x64.msi` |
+          | Linux | `SpaceStation-linux-x64.AppImage` |
 
-          Prefer the terminal? `julia> import Pkg; Pkg.Apps.add(url="https://github.com/GroupTherapyOrg/SpaceStation.jl")` installs the `spacestation` CLI — and the desktop app registers that same CLI for you AND puts it on your PATH (new terminals pick it up).
+          ### First launch — one time only
+
+          These builds are **not code-signed yet**, so each OS asks once before it will run a new
+          app. Nothing here is permanent; it is the same step you take for any unsigned download.
+
+          **macOS** — open the `.dmg`, drag **SpaceStation** into **Applications**, then paste this
+          into Terminal:
+
+          ```sh
+          xattr -dr com.apple.quarantine "/Applications/SpaceStation.app"
+          ```
+
+          Then open SpaceStation normally. (No admin rights? Drag it to `~/Applications` instead and
+          use that path in the command.)
+
+          <details>
+          <summary>Prefer not to use Terminal?</summary>
+
+          Double-click the app, and when macOS blocks it go to **System Settings → Privacy &
+          Security**, scroll to the message about SpaceStation, and click **Open Anyway**. Then open
+          the app again and choose **Open**.
+
+          </details>
+
+          **Windows** — double-click `SpaceStation-win-x64.msi`. If SmartScreen shows *"Windows
+          protected your PC"*, click **More info → Run anyway**.
+
+          **Linux** — mark the AppImage executable and run it:
+
+          ```sh
+          chmod +x SpaceStation-linux-x64.AppImage
+          ./SpaceStation-linux-x64.AppImage
+          ```
+
+          ### Prefer the terminal?
+
+          ```julia
+          import Pkg; Pkg.Apps.add(url="https://github.com/GroupTherapyOrg/SpaceStation.jl")
+          ```
+
+          That installs the `spacestation` CLI on its own. The desktop app registers the same CLI
+          for you and puts it on your `PATH`, so new terminals pick it up either way.
           EOF
-          # strip the heredoc indentation
-          sed -i 's/^          //' notes.md
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md

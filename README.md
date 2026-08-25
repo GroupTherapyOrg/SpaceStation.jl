@@ -55,13 +55,24 @@ Download from the [latest release](https://github.com/GroupTherapyOrg/SpaceStati
 | Windows               | `SpaceStation-win-x64.msi`         |
 | Linux                 | `SpaceStation-linux-x64.AppImage`  |
 
-The builds aren't code-signed yet, so the **first** launch needs one extra step:
+The builds aren't code-signed yet, so each OS asks once before it will run a new app.
 
-- **macOS** — drag the app to Applications, then in Terminal:
-  `xattr -dr com.apple.quarantine "/Applications/SpaceStation.app"`
-  (or right-click → Open, then **System Settings → Privacy & Security → Open Anyway**).
-- **Windows** — at the SmartScreen prompt choose **More info → Run anyway**.
-- **Linux** — `chmod +x SpaceStation-linux-x64.AppImage`, then run it.
+**macOS** — drag **SpaceStation** into **Applications**, then paste this into Terminal:
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/SpaceStation.app"
+```
+
+(Or right-click the app → **Open**, then **System Settings → Privacy & Security → Open Anyway**.)
+
+**Windows** — double-click the `.msi`; if SmartScreen appears, choose **More info → Run anyway**.
+
+**Linux** — mark the AppImage executable and run it:
+
+```sh
+chmod +x SpaceStation-linux-x64.AppImage
+./SpaceStation-linux-x64.AppImage
+```
 
 Installing the desktop app also registers the `spacestation` CLI above **and puts it on your
 PATH** (new terminals pick it up). The reverse is deliberately one-way: `Pkg.Apps.add` installs
