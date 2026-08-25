@@ -79,7 +79,7 @@ const apply = (scheme) => {
         const walker = document.createTreeWalker(root === document ? document.documentElement : root, NodeFilter.SHOW_ELEMENT)
         let node
         while ((node = walker.nextNode())) {
-            if (node.shadowRoot != null) walk_root(node.shadowRoot)
+            if (node instanceof Element && node.shadowRoot != null) walk_root(node.shadowRoot)
         }
     }
     walk_root(document)
