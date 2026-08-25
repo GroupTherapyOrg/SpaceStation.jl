@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.2](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.4.1...v0.4.2) (2026-08-25)
+
+
+### Bug Fixes
+
+* make the Julia update badge show what it will do ([#41](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/41)) ([6a920e4](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/6a920e4ea4e44429418aecc74f96c408b8e9e1c6))
+
 ## [0.4.1](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.4.0...v0.4.1) (2026-08-25)
 
 
