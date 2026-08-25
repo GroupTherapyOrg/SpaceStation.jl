@@ -60,16 +60,26 @@ ${base_css}
         const launch_btn = document.getElementById("launch")
         let selection = null // { channel } | { add_channel } | { bootstrap: true }
 
+        // One place decides what is selected, so the row highlight, the update badge's on/off
+        // state and the button's own label can never disagree. The label is the real feedback:
+        // an update or an install is a different (slower) action than a plain launch, and the
+        // button should say so BEFORE it is pressed.
+        const select = (value, row, badge_el) => {
+            selection = value
+            for (const p of content.querySelectorAll(".pill")) p.classList.remove("selected")
+            for (const b of content.querySelectorAll(".update-badge")) b.classList.remove("active")
+            for (const i of content.querySelectorAll("input.anyver")) i.classList.remove("selected")
+            row?.classList.add("selected")
+            badge_el?.classList.add("active")
+            launch_btn.textContent = value?.update ? "Update & Launch" : value?.add_channel || value?.bootstrap ? "Install & Launch" : "Launch"
+            launch_btn.disabled = false
+        }
+
         const pill = (label, mono, badge, sel_value) => {
             const el = document.createElement("button")
             el.className = "pill"
             el.innerHTML = \`<span>\${label}</span>\` + (mono ? \`<span class="mono">\${mono}</span>\` : "") + (badge ? \`<span class="badge">\${badge}</span>\` : "")
-            el.onclick = () => {
-                selection = sel_value
-                for (const p of content.querySelectorAll(".pill")) p.classList.remove("selected")
-                el.classList.add("selected")
-                launch_btn.disabled = false
-            }
+            el.onclick = () => select(sel_value, el)
             return el
         }
 
@@ -93,15 +103,16 @@ ${base_css}
                     const latest = catalog.updates[ch.name]
                     const el = pill(\`Julia \${ch.name}\`, latest ? \`\${ch.version} → \${latest}\` : ch.version, is_default ? "default" : "", { channel: ch.name })
                     if (latest) {
-                        // updating is its own choice: the row alone launches the version you have
+                        // Updating is its own choice — the row alone launches the version you
+                        // already have; the badge runs a juliaup update first. Clicking it picks
+                        // the row too, so the two can't disagree.
                         const up = document.createElement("button")
                         up.className = "update-badge"
                         up.textContent = \`update to \${latest}\`
+                        up.title = \`Run juliaup update \${ch.name} (fetches \${latest}), then launch on it\`
                         up.onclick = (e) => {
                             e.stopPropagation()
-                            el.click()
-                            selection = { channel: ch.name, update: true }
-                            up.classList.add("active")
+                            select({ channel: ch.name, update: true }, el, up)
                         }
                         el.appendChild(up)
                     }
@@ -126,11 +137,10 @@ ${base_css}
                         dl.appendChild(o)
                     }
                     const pick_typed = () => {
-                        if (any.value.trim() === "") return
-                        selection = have(any.value.trim()) ? { channel: any.value.trim() } : { add_channel: any.value.trim() }
-                        for (const p of content.querySelectorAll(".pill")) p.classList.remove("selected")
+                        const v = any.value.trim()
+                        if (v === "") return
+                        select(have(v) ? { channel: v } : { add_channel: v }, null, null)
                         any.classList.add("selected")
-                        launch_btn.disabled = false
                     }
                     any.addEventListener("input", pick_typed)
                     any.addEventListener("focus", pick_typed)
