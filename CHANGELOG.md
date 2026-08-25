@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.3.1...v0.4.0) (2026-08-25)
+
+
+### Features
+
+* SpaceStation desktop app — native shell, Launch Station, release installers ([#34](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/34)) ([2256740](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/225674040d0ab27966391440c546c196bee1992c))
+
 ## [0.3.1](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.3.0...v0.3.1) (2026-08-24)
 
 
