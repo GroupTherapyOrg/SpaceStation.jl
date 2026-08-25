@@ -7,6 +7,15 @@ management, a boot splash, and packaging.
 
 ## How it works
 
+0. **The Launch Station**: unless a saved preference skips it, the window opens on a Julia
+   picker (styled as the SpaceStation launcher): every installed juliaup channel with the default
+   preselected, one-click installs for curated channels (`juliaup add`, progress on the splash),
+   and — on a machine with no Julia at all — a single "Install Julia" button that bootstraps
+   juliaup via the official installer. The "Always use this version — don't ask at launch"
+   checkbox is the VS Code-style opt-out (saved in the app-data `settings.json`); the
+   **SpaceStation → Julia Version…** menu item reopens the picker (switching restarts the
+   server). Channel selection runs through juliaup's `julia +channel`; juliaup state is read from
+   its own `juliaup.json` metadata, never parsed from CLI output.
 1. The shell serves a splash page via `Deno.serve` — the desktop runtime points the startup
    window at it automatically. The splash polls `/status` and streams the Julia boot log.
 2. It finds `julia` (juliaup first — `SPACESTATION_JULIA` overrides), picks a free port, and runs

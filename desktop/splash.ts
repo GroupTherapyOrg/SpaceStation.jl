@@ -1,9 +1,11 @@
-// The boot screen the window shows while Julia starts (or fails). Served by Deno.serve — the
-// desktop runtime points the startup window at it automatically; main.ts navigates away to the
-// real SpaceStation URL once the server is ready.
+// The shell's UI server: the boot splash (with live Julia log), the Launch Station picker, and
+// the deck — all served from Deno.serve, which the desktop runtime wires to the startup window.
+// Styling is shared with the SpaceStation launcher (theme.ts) so every screen reads as one product.
 
-import type { BootState } from "./boot.ts"
+import type { BootOptions, BootState } from "./boot.ts"
 import { deck_html } from "./deck.ts"
+import { launch_html } from "./launch.ts"
+import { base_css, logo_svg } from "./theme.ts"
 
 export const splash_html = /* html */ `<!doctype html>
 <html>
@@ -11,31 +13,34 @@ export const splash_html = /* html */ `<!doctype html>
 <meta charset="utf-8" />
 <title>SpaceStation</title>
 <style>
-    :root { color-scheme: dark; }
-    body {
-        margin: 0; height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center;
-        background: #16141f; color: #ddd; font-family: system-ui, -apple-system, sans-serif; gap: 1.2rem;
+${base_css}
+    .card { text-align: center; }
+    .spinner {
+        width: 22px; height: 22px; margin: 1.1rem auto 0; border: 3px solid var(--rule-color);
+        border-top-color: var(--accent); border-radius: 50%; animation: spin 0.9s linear infinite;
     }
-    .mark { font-size: 2.6rem; letter-spacing: 0.3rem; }
-    h1 { font-size: 1.3rem; font-weight: 600; margin: 0; }
-    #phase { font-size: 0.95rem; color: #9a93b8; max-width: 34rem; text-align: center; line-height: 1.5; }
-    #phase.error { color: #ff8a8a; }
-    .spinner { width: 22px; height: 22px; border: 3px solid #3a3455; border-top-color: #9a86ff; border-radius: 50%; animation: spin 0.9s linear infinite; }
     .spinner.hidden { display: none; }
     @keyframes spin { to { transform: rotate(360deg); } }
+    #phase { font-size: 0.95rem; opacity: 0.75; margin-top: 0.9rem; line-height: 1.5; }
+    #phase.error { color: #ff8a8a; opacity: 1; }
     #log {
-        width: min(44rem, 86vw); max-height: 32vh; overflow-y: auto; padding: 0.7rem 0.9rem; box-sizing: border-box;
-        background: #0f0d16; border-radius: 0.5rem; font-family: ui-monospace, Menlo, Consolas, monospace;
-        font-size: 0.72rem; line-height: 1.45; color: #7d7796; white-space: pre-wrap; word-break: break-word;
+        text-align: left; max-height: 32vh; overflow-y: auto; margin-top: 1.1rem; padding: 0.7rem 0.9rem;
+        background-color: var(--main-bg-color); border-radius: 0.5rem;
+        font-family: JuliaMono, ui-monospace, Menlo, Consolas, monospace;
+        font-size: 0.72rem; line-height: 1.45; opacity: 0.75; white-space: pre-wrap; word-break: break-word;
     }
+    #pick { display: none; margin-top: 0.9rem; font-size: 0.85rem; color: inherit; opacity: 0.65; }
 </style>
 </head>
 <body>
-    <div class="mark">🟢🟣🔴</div>
-    <h1>SpaceStation</h1>
-    <div class="spinner" id="spinner"></div>
-    <div id="phase">starting…</div>
-    <pre id="log"></pre>
+    <div class="bubble card">
+        ${logo_svg}
+        <h1>Space<span class="land-accent">Station</span></h1>
+        <div class="spinner" id="spinner"></div>
+        <div id="phase">starting…</div>
+        <pre id="log"></pre>
+        <a id="pick" href="/launch?change=1">choose a different Julia version…</a>
+    </div>
     <script>
         const tick = async () => {
             try {
@@ -43,6 +48,7 @@ export const splash_html = /* html */ `<!doctype html>
                 document.getElementById("phase").textContent = s.detail || s.phase
                 document.getElementById("phase").className = s.phase === "error" ? "error" : ""
                 document.getElementById("spinner").className = s.phase === "error" ? "spinner hidden" : "spinner"
+                document.getElementById("pick").style.display = s.phase === "error" ? "inline-block" : "none"
                 const log = document.getElementById("log")
                 const at_bottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 4
                 log.textContent = s.log.join("\\n")
@@ -55,19 +61,33 @@ export const splash_html = /* html */ `<!doctype html>
 </body>
 </html>`
 
-/** Serve the shell UI: the splash (+ /status it polls) while booting, and /deck — the tabbed
- *  chrome main.ts navigates to once the server is ready. Deno.serve with no options binds to
- *  DENO_SERVE_ADDRESS, which is how the desktop runtime knows where to point the window. */
-export const serve_splash = (state: () => BootState) =>
-    Deno.serve((req) => {
+export interface UiHandlers {
+    state: () => BootState
+    julia_info: () => Promise<unknown>
+    on_launch: (opts: BootOptions & { remember?: boolean }) => Promise<void>
+}
+
+export const serve_ui = ({ state, julia_info, on_launch }: UiHandlers) =>
+    Deno.serve(async (req) => {
         const path = new URL(req.url).pathname
-        if (path === "/status") {
-            return new Response(JSON.stringify(state()), { headers: { "content-type": "application/json" } })
+        const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } })
+        const page = (html: string) => new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } })
+        if (path === "/status") return json(state())
+        if (path === "/api/julia") return json(await julia_info())
+        if (path === "/api/julia/launch" && req.method === "POST") {
+            try {
+                await on_launch(await req.json())
+                return json({ ok: true })
+            } catch (e) {
+                return new Response(String(e), { status: 500 })
+            }
         }
+        if (path === "/launch") return page(launch_html)
         if (path === "/deck") {
             const url = state().url
             if (url == null) return new Response(null, { status: 302, headers: { location: "/" } })
-            return new Response(deck_html(url), { headers: { "content-type": "text/html; charset=utf-8" } })
+            return page(deck_html(url))
         }
-        return new Response(splash_html, { headers: { "content-type": "text/html; charset=utf-8" } })
+        // "/": the Launch Station until a boot begins; the live splash while one is under way
+        return page(state().phase === "idle" ? launch_html : splash_html)
     })

@@ -1,21 +1,18 @@
 // SpaceStation as a desktop app: a Deno Desktop (`deno desktop`) shell that boots the Julia
-// server and shows it in a native window. The window starts on a local splash page (served by
-// Deno.serve, auto-wired to the startup window by the desktop runtime) and navigates to the
-// SpaceStation URL — secret included — once the server answers /ping.
+// server and shows it in a native window. The startup window lands on the shell's own pages
+// (served by Deno.serve): the Launch Station (pick a Julia — or install one) unless a saved
+// preference skips it, then the boot splash, then the deck (tab chrome) framing SpaceStation.
 //
 //   deno task dev        run from this checkout (HMR)
 //   deno task build      package a redistributable app (see deno.json tasks for all platforms)
 //
-// The Julia side sees SPACESTATION_DESKTOP=1 and serves `desktop: true` from /api/v1/config,
-// which makes the hub open workspaces in-place (one window, no browser tabs) while keeping the
-// SSH sections visible — see land.js.
+// The Julia side sees SPACESTATION_DESKTOP=1 and serves `desktop: true` from /api/v1/config; the
+// hub pages also detect the deck structurally (framed) — see land.js.
 
-import { SpaceStationServer } from "./boot.ts"
-import { serve_splash } from "./splash.ts"
+import { SpaceStationServer, type BootOptions } from "./boot.ts"
+import { serve_ui } from "./splash.ts"
 import { extend_under_titlebar } from "./macos_titlebar.ts"
-
-const server = new SpaceStationServer()
-serve_splash(() => server.state)
+import { CURATED_CHANNELS, has_plain_julia, juliaup_info, load_settings, save_settings } from "./julia.ts"
 
 // Deno.BrowserWindow only exists inside the desktop runtime host. Fail with a hint, not a crash,
 // when someone runs this with plain `deno run` (use smoke.ts for that).
@@ -25,25 +22,27 @@ if (BrowserWindow == null) {
     Deno.exit(1)
 }
 
-// The first construction adopts the implicit startup window (already showing the splash).
-// On macOS the FFI tweak below then extends the content under the title bar, so the deck's tab
-// strip shares the traffic lights' row — the Warp look. (+28px height compensates the window
-// re-normalizing when the style bit lands.)
+// The first construction adopts the implicit startup window. On macOS the FFI tweak then extends
+// the content under the title bar, so the deck's tab strip shares the traffic lights' row.
 const win = new BrowserWindow({ title: "", width: 1280, height: 878, transparentTitlebar: true })
 const under_titlebar = extend_under_titlebar()
 
-// The shell's own pages (splash and deck) live on the Deno.serve address the runtime wired the
-// window to. Once the Julia server is ready we navigate to the deck, whose Launcher tab frames it.
 const shell_port = Deno.env.get("DENO_SERVE_ADDRESS")?.split(":").pop()
 const shell_url = (path: string) => `http://127.0.0.1:${shell_port}${path}`
 
 // OS-standard menu roles ONLY — no app-specific shortcuts (that design is deliberately deferred;
 // anything Pluto ships itself works inside the webview untouched). The Edit roles are required
-// plumbing, not additions: macOS routes Cmd+C/V through the menu, so without them clipboard
-// shortcuts never reach the webview — parity with what the browser gives Pluto for free.
+// plumbing: macOS routes Cmd+C/V through the menu, so without them clipboard shortcuts never
+// reach the webview. "Julia Version…" is a plain menu item (no accelerator): it reopens the
+// Launch Station to switch versions (which restarts the server).
 try {
     win.setApplicationMenu([
-        { submenu: { label: "SpaceStation", items: [{ role: { role: "quit" } }] } },
+        {
+            submenu: {
+                label: "SpaceStation",
+                items: [{ item: { label: "Julia Version…", id: "julia-version", enabled: true } }, "separator", { role: { role: "quit" } }],
+            },
+        },
         {
             submenu: {
                 label: "Edit",
@@ -63,6 +62,49 @@ try {
 } catch (e) {
     console.warn("could not install the application menu:", e)
 }
+win.addEventListener("menuclick", (e: any) => {
+    if (e.detail?.id === "julia-version") win.navigate(shell_url("/launch?change=1"))
+})
+
+// The server object is replaced when the user switches Julia versions; everything reaches it
+// through these closures so the swap is invisible to the UI server and the window.
+let server = new SpaceStationServer()
+const wire = () => {
+    server.onchange = () => {
+        if (server.state.phase === "ready" && server.state.url != null) {
+            win.navigate(shell_url(under_titlebar ? "/deck?inset=1" : "/deck"))
+        }
+        // On a post-ready crash the splash shows the error and log tail instead of a dead page.
+        if (server.state.phase === "error" && server.state.url != null) {
+            win.navigate(shell_url("/"))
+            server.state.url = null
+        }
+    }
+}
+wire()
+
+serve_ui({
+    state: () => server.state,
+    julia_info: async () => ({
+        juliaup: juliaup_info(),
+        plain_julia: await has_plain_julia(),
+        settings: load_settings().julia ?? { channel: null, ask: true },
+        curated: CURATED_CHANNELS,
+    }),
+    on_launch: async (opts: BootOptions & { remember?: boolean }) => {
+        // Remember the pick either way (it preselects next time); `remember` is the VS Code-style
+        // "don't ask again" — with it set, future launches boot straight into this channel.
+        save_settings({ julia: { channel: opts.channel ?? opts.add_channel ?? null, ask: !opts.remember } })
+        if (server.state.phase !== "idle") {
+            await server.stop()
+            server = new SpaceStationServer()
+            wire()
+        }
+        // Fire and return: start() leaves "idle" synchronously, so the page's redirect to "/"
+        // lands on the live splash; progress (installs included) streams there.
+        void server.start({ channel: opts.channel, add_channel: opts.add_channel, bootstrap: opts.bootstrap })
+    },
+})
 
 let closing = false
 const shutdown = async () => {
@@ -80,17 +122,9 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     }
 }
 
-server.onchange = () => {
-    if (server.state.phase === "ready" && server.state.url != null) {
-        // ?inset=1 → the deck lays its tab strip out ON the traffic-light row (content extends
-        // under the title bar); without it the strip sits just below the native bar.
-        win.navigate(shell_url(under_titlebar ? "/deck?inset=1" : "/deck"))
-    }
-    // On a post-ready crash the splash server is still running — bring the window back to it so
-    // the error and log tail are visible instead of a dead page.
-    if (server.state.phase === "error" && server.state.url != null) {
-        win.navigate(shell_url("/"))
-        server.state.url = null
-    }
+// A saved "don't ask" preference boots straight in; otherwise the window stays on the Launch
+// Station (the runtime navigates it to "/" once the UI server is listening).
+const pref = load_settings().julia
+if (pref != null && pref.ask === false) {
+    await server.start({ channel: pref.channel })
 }
-await server.start()

@@ -2,8 +2,9 @@
 // this to a Deno.BrowserWindow, smoke.ts drives it from a plain `deno run` for headless testing.
 
 import * as buildinfo from "./buildinfo.ts"
+import { data_dir, home_dir, juliaup_bin } from "./julia.ts"
 
-export type Phase = "finding-julia" | "installing" | "starting" | "ready" | "error"
+export type Phase = "idle" | "installing-julia" | "finding-julia" | "installing" | "starting" | "ready" | "error"
 
 export interface BootState {
     phase: Phase
@@ -13,10 +14,17 @@ export interface BootState {
     port: number | null
 }
 
+/** What to boot with, decided on the launch page (or by a saved preference). */
+export interface BootOptions {
+    channel?: string | null // juliaup channel to run (`julia +channel`)
+    add_channel?: string | null // install this channel first (juliaup add), then run it
+    bootstrap?: boolean // no Julia at all: install juliaup itself first
+}
+
 const LOG_LINES = 200
 
 export class SpaceStationServer {
-    state: BootState = { phase: "finding-julia", detail: "", log: [], url: null, port: null }
+    state: BootState = { phase: "idle", detail: "", log: [], url: null, port: null }
     private child: Deno.ChildProcess | null = null
     private stopping = false
     onchange: (() => void) | null = null
@@ -91,14 +99,20 @@ export class SpaceStationServer {
         } catch {
             // not running from a source checkout — fall through to the managed environment
         }
-        const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE") ?? "."
-        const data_dir =
-            Deno.build.os === "darwin"
-                ? `${home}/Library/Application Support/SpaceStation`
-                : Deno.build.os === "windows"
-                  ? `${Deno.env.get("APPDATA") ?? home}/SpaceStation`
-                  : `${Deno.env.get("XDG_DATA_HOME") ?? `${home}/.local/share`}/spacestation`
-        return { project: `${data_dir}/julia-env`, managed: true }
+        return { project: `${data_dir()}/julia-env`, managed: true }
+    }
+
+    /** Run a command with stdout+stderr streaming into the boot log; true on exit 0. */
+    private async run_logged(cmd: string, args: string[]): Promise<boolean> {
+        try {
+            const child = new Deno.Command(cmd, { args, stdout: "piped", stderr: "piped" }).spawn()
+            this.pipe(child.stdout)
+            this.pipe(child.stderr)
+            return (await child.status).success
+        } catch (e) {
+            this.log_line(`${cmd} failed: ${e}`)
+            return false
+        }
     }
 
     /** Ask the OS for a free port. (Tiny race between close and Julia binding it — acceptable.) */
@@ -126,7 +140,36 @@ export class SpaceStationServer {
         return null
     }
 
-    async start(): Promise<void> {
+    async start(opts: BootOptions = {}): Promise<void> {
+        this.set("finding-julia", "") // leave "idle" synchronously: the launch page hands off to the splash
+
+        // A machine with no Julia at all: install juliaup first (the official installer script),
+        // point-and-click. Windows is a TODO (winget needs an interactive store agreement).
+        if (opts.bootstrap) {
+            if (Deno.build.os === "windows") {
+                this.set("error", "Automatic Julia install isn't wired up on Windows yet — install it from https://julialang.org/downloads and relaunch.")
+                return
+            }
+            this.set("installing-julia", "installing Julia via juliaup — a few minutes, once")
+            const ok = await this.run_logged("sh", ["-c", "curl -fsSL https://install.julialang.org | sh -s -- --yes"])
+            if (!ok) {
+                this.set("error", "the Julia installer failed — see the log above, or install from https://julialang.org/downloads")
+                return
+            }
+        }
+
+        // Install a specific channel the user picked but doesn't have yet.
+        if (opts.add_channel) {
+            this.set("installing-julia", `installing Julia ${opts.add_channel} (juliaup add)`)
+            const juliaup = juliaup_bin() ?? `${home_dir()}/.juliaup/bin/juliaup`
+            const ok = await this.run_logged(juliaup, ["add", opts.add_channel])
+            if (!ok) {
+                this.set("error", `could not install Julia channel "${opts.add_channel}" — see the log above`)
+                return
+            }
+        }
+        const channel = opts.channel ?? opts.add_channel ?? null
+
         const julia = await this.find_julia()
         if (julia == null) {
             this.set(
@@ -138,7 +181,11 @@ export class SpaceStationServer {
         const { project, managed } = this.resolve_project()
         const port = this.pick_port()
         this.state.port = port
-        this.set("starting", managed ? `starting SpaceStation (managed environment)` : `starting SpaceStation from ${project}`)
+        // `julia +channel` is juliaup's version selector — it only means something to the shim.
+        const use_channel = channel != null && juliaup_bin() != null && !Deno.env.get("SPACESTATION_JULIA")
+        if (use_channel) this.log_line(`using Julia channel ${channel}`)
+        const via = use_channel ? ` (Julia ${channel})` : ""
+        this.set("starting", managed ? `starting SpaceStation${via} (managed environment)` : `starting SpaceStation${via} from ${project}`)
 
         // One -e script per mode. A managed env installs SpaceStation on first run — pinned to the
         // git rev the app was built from when buildinfo carries one (so a branch build runs that
@@ -158,6 +205,7 @@ export class SpaceStationServer {
                import SpaceStation; SpaceStation.run(port=${port}, launch_browser=false)`
             : `import SpaceStation; SpaceStation.run(port=${port}, launch_browser=false)`
         const args = managed ? ["--startup-file=no", "-e", boot] : [`--project=${project}`, "--startup-file=no", "-e", boot]
+        if (use_channel) args.unshift(`+${channel}`)
         if (managed) Deno.mkdirSync(project, { recursive: true })
 
         const child = new Deno.Command(julia, {
