@@ -179,24 +179,22 @@ jobs:
           These builds are **not code-signed yet**, so each OS asks once before it will run a new
           app. Nothing here is permanent; it is the same step you take for any unsigned download.
 
-          **macOS** — open the `.dmg`, drag **SpaceStation** into **Applications**, then paste this
-          into Terminal:
+          **macOS** — open the `.dmg` and drag **SpaceStation** into **Applications** (do not run it
+          from the disk image). Then paste both lines into Terminal:
 
           ```sh
           xattr -dr com.apple.quarantine "/Applications/SpaceStation.app"
+          codesign --force --deep --sign - "/Applications/SpaceStation.app"
           ```
 
-          Then open SpaceStation normally. (No admin rights? Drag it to `~/Applications` instead and
-          use that path in the command.)
+          Then open SpaceStation normally. The first line clears the download quarantine; the second
+          re-signs the app locally, which is what clears *"SpaceStation is damaged and can't be
+          opened"* — macOS shows that wording for any app that isn't signed with a paid Developer ID,
+          and on Apple Silicon clearing quarantine alone is often not enough. Nothing is actually
+          damaged. (No admin rights? Drag it to `~/Applications` instead and use that path in both
+          commands.)
 
-          <details>
-          <summary>Prefer not to use Terminal?</summary>
-
-          Double-click the app, and when macOS blocks it go to **System Settings → Privacy &
-          Security**, scroll to the message about SpaceStation, and click **Open Anyway**. Then open
-          the app again and choose **Open**.
-
-          </details>
+          Both steps disappear once the project has an Apple Developer ID and releases are notarized.
 
           **Windows** — double-click `SpaceStation-win-x64.msi`. If SmartScreen shows *"Windows
           protected your PC"*, click **More info → Run anyway**.
