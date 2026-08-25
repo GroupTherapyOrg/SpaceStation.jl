@@ -11,7 +11,7 @@
 
 import { SpaceStationServer, type BootOptions } from "./boot.ts"
 import { serve_ui } from "./splash.ts"
-import { extend_under_titlebar } from "./macos_titlebar.ts"
+import { extend_under_titlebar, set_app_appearance } from "./macos_titlebar.ts"
 import { has_plain_julia, julia_catalog, juliaup_info, load_settings, save_settings } from "./julia.ts"
 
 // Deno.BrowserWindow only exists inside the desktop runtime host. Fail with a hint, not a crash,
@@ -26,6 +26,11 @@ if (BrowserWindow == null) {
 // the content under the title bar, so the deck's tab strip shares the traffic lights' row.
 const win = new BrowserWindow({ title: "", width: 1280, height: 878, transparentTitlebar: true })
 const under_titlebar = extend_under_titlebar()
+
+// The launcher's theme choice pins the native window appearance (macOS — a no-op elsewhere), so
+// WKWebView's prefers-color-scheme and its own chrome follow it like a real OS dark-mode switch.
+const saved_scheme = load_settings().color_scheme
+if (saved_scheme === "light" || saved_scheme === "dark") set_app_appearance(saved_scheme)
 
 const shell_port = Deno.env.get("DENO_SERVE_ADDRESS")?.split(":").pop()
 const shell_url = (path: string) => `http://127.0.0.1:${shell_port}${path}`
@@ -103,6 +108,10 @@ serve_ui({
         // Fire and return: start() leaves "idle" synchronously, so the page's redirect to "/"
         // lands on the live splash; progress (installs included) streams there.
         void server.start({ channel: opts.channel, add_channel: opts.add_channel, update: opts.update, bootstrap: opts.bootstrap })
+    },
+    on_appearance: (scheme) => {
+        save_settings({ color_scheme: scheme })
+        set_app_appearance(scheme)
     },
 })
 

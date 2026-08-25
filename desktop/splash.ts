@@ -65,15 +65,26 @@ export interface UiHandlers {
     state: () => BootState
     julia_info: () => Promise<unknown>
     on_launch: (opts: BootOptions & { remember?: boolean }) => Promise<void>
+    on_appearance?: (scheme: "light" | "dark" | "system") => void
 }
 
-export const serve_ui = ({ state, julia_info, on_launch }: UiHandlers) =>
+export const serve_ui = ({ state, julia_info, on_launch, on_appearance }: UiHandlers) =>
     Deno.serve(async (req) => {
         const path = new URL(req.url).pathname
         const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } })
         const page = (html: string) => new Response(html, { headers: { "content-type": "text/html; charset=utf-8" } })
         if (path === "/status") return json(state())
         if (path === "/api/julia") return json(await julia_info())
+        if (path === "/api/appearance" && req.method === "POST") {
+            try {
+                const { scheme } = await req.json()
+                if (scheme !== "light" && scheme !== "dark" && scheme !== "system") return new Response("bad scheme", { status: 400 })
+                on_appearance?.(scheme)
+                return json({ ok: true })
+            } catch (e) {
+                return new Response(String(e), { status: 500 })
+            }
+        }
         if (path === "/api/julia/launch" && req.method === "POST") {
             try {
                 await on_launch(await req.json())

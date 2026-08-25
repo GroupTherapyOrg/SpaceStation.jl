@@ -1,7 +1,8 @@
 // App-wide light/dark override. Pluto's themes are `@media (prefers-color-scheme: …)` blocks
 // (themes/light.css + themes/dark.css, plus scattered blocks in other sheets), which JS cannot
-// toggle with a class — but CSSOM lets us rewrite each rule's media condition: forcing dark turns
-// the dark blocks into `all` and the light blocks into `not all` (and back). One stored choice —
+// toggle with a class — but CSSOM lets us rewrite each rule's media condition: the color-scheme
+// CLAUSE (and only that clause) becomes always-true or never-true, so a compound condition like
+// `(max-width: 700px) and (prefers-color-scheme: dark)` keeps its other clauses. One stored choice —
 // "system" | "light" | "dark" — applies to every same-origin page: the hub, the editor iframes
 // inside it, and standalone editor tabs, kept live via `storage` events. (The integrated
 // terminal's own scheme toggle is deliberately separate — a light UI with a dark terminal is a
@@ -38,37 +39,54 @@ export const prefers_dark = () => {
     return window.matchMedia("(prefers-color-scheme: dark)").matches
 }
 
-// A rule's original identity (dark-block or light-block) is unrecoverable once its condition has
-// been rewritten to all/not all — remember it the first time we see the rule.
-const identity = new WeakMap()
+// A rewritten condition no longer contains prefers-color-scheme, so remember each rule's
+// ORIGINAL condition the first time we see it; every later pass rewrites from that string.
+const original_condition = new WeakMap()
+
+// Substituted for the color-scheme clause ONLY — never the whole condition. A compound query
+// like (max-width: 700px) and (prefers-color-scheme: dark) must keep its width clause, or
+// forcing dark turns mobile-only rules on at desktop width.
+const ALWAYS = "(min-width: 0px)"
+const NEVER = "(min-width: 999999px)"
+
+const rewrite = (rule, scheme) => {
+    let orig = original_condition.get(rule)
+    if (orig == null) {
+        if (!/prefers-color-scheme/i.test(rule.media.mediaText)) return
+        orig = rule.media.mediaText
+        original_condition.set(rule, orig)
+    }
+    const next =
+        scheme === "system"
+            ? orig
+            : orig.replace(/\(\s*prefers-color-scheme\s*:\s*(light|dark)\s*\)/gi, (_, want) => (want.toLowerCase() === scheme ? ALWAYS : NEVER))
+    if (rule.media.mediaText !== next) rule.media.mediaText = next
+}
 
 const apply = (scheme) => {
     // The media rewrite below only governs AUTHOR styles — the UA still colors its own defaults
     // (default text, form controls, scrollbars) from the page's declared color-scheme and the OS.
     // With a dark OS and a forced-light page that meant white UA text on light backgrounds
     // (invisible buttons, washed-out logs). The color-scheme PROPERTY on :root overrides the
-    // meta and pins the UA side too.
+    // meta and pins the UA side too. (The desktop shell additionally flips the native window
+    // appearance to match, so WKWebView's own chrome — scrollbars included — follows along.)
     document.documentElement.style.colorScheme = scheme === "system" ? "" : scheme
-    const walk = (sheet) => {
-        let rules
-        try {
-            rules = sheet.cssRules
-        } catch (e) {
-            return // cross-origin sheet: not ours, not our themes
-        }
+    const walk_rules = (rules) => {
         for (const rule of rules) {
             if (rule.styleSheet != null) {
                 walk(rule.styleSheet) // @import
                 continue
             }
-            if (rule.media == null) continue
-            let kind = identity.get(rule)
-            if (kind == null && /prefers-color-scheme/.test(rule.media.mediaText)) {
-                kind = rule.media.mediaText.includes("dark") ? "dark" : "light"
-                identity.set(rule, kind)
-            }
-            if (kind == null) continue
-            rule.media.mediaText = scheme === "system" ? `(prefers-color-scheme: ${kind})` : scheme === kind ? "all" : "not all"
+            if (rule.media != null) rewrite(rule, scheme)
+            // grouping rules (@media, @supports, @layer) can nest more media rules
+            if (rule.cssRules != null && rule.cssRules.length > 0) walk_rules(rule.cssRules)
+        }
+    }
+    const walk = (sheet) => {
+        try {
+            walk_rules(sheet.cssRules)
+        } catch (e) {
+            return // cross-origin sheet: not ours, not our themes
         }
     }
     // Shadow roots keep their own stylesheets (some components render in shadow DOM) — walk them

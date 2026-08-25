@@ -15,7 +15,7 @@ export type JuliaSettings = { channel: string | null; ask: boolean }
 
 const settings_path = () => `${data_dir()}/settings.json`
 
-export const load_settings = (): { julia?: JuliaSettings } => {
+export const load_settings = (): { julia?: JuliaSettings; color_scheme?: "light" | "dark" | "system" } => {
     try {
         return JSON.parse(Deno.readTextFileSync(settings_path()))
     } catch {
