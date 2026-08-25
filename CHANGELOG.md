@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.5](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.4.4...v0.4.5) (2026-08-25)
+
+
+### Bug Fixes
+
+* window dragging via a native bridge, and recreate stale WKWebView scrollers ([#49](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/49)) ([19ba976](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/19ba9765075db7e721de3e543cbb1e9916e09db7))
+
 ## [0.4.4](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.4.3...v0.4.4) (2026-08-25)
 
 
