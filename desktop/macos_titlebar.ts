@@ -106,6 +106,25 @@ export const set_app_appearance = (scheme: "light" | "dark" | "system"): boolean
     }
 }
 
+/** The main display's size in points (CoreGraphics reports the scaled mode's logical size), or
+ *  null off-macOS / on failure. Used to clamp the initial window so it cannot open larger than
+ *  the screen — the fixed default overflowed smaller displays, cutting off the bottom of every
+ *  shell page. Plain C calls, no structs, no AppKit dependency. */
+export const main_screen_size = (): { width: number; height: number } | null => {
+    if (Deno.build.os !== "darwin") return null
+    try {
+        const cg = Deno.dlopen("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics", {
+            CGMainDisplayID: { parameters: [], result: "u32" },
+            CGDisplayPixelsWide: { parameters: ["u32"], result: "usize" },
+            CGDisplayPixelsHigh: { parameters: ["u32"], result: "usize" },
+        } as const).symbols
+        const id = cg.CGMainDisplayID()
+        return { width: Number(cg.CGDisplayPixelsWide(id)), height: Number(cg.CGDisplayPixelsHigh(id)) }
+    } catch {
+        return null
+    }
+}
+
 // NOTE: fullscreen-overlay tracking (auto-hiding the deck strip in sync with the native
 // fullscreen chrome) was implemented here and deliberately removed: between notch geometry, the
 // overlay stealing the mouse, and unrelated helper windows fooling the detection, it broke more

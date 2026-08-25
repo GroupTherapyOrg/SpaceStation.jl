@@ -11,7 +11,7 @@
 
 import { SpaceStationServer, type BootOptions } from "./boot.ts"
 import { serve_ui } from "./splash.ts"
-import { extend_under_titlebar, set_app_appearance } from "./macos_titlebar.ts"
+import { extend_under_titlebar, main_screen_size, set_app_appearance } from "./macos_titlebar.ts"
 import { has_plain_julia, julia_catalog, juliaup_info, load_settings, save_settings } from "./julia.ts"
 
 // Deno.BrowserWindow only exists inside the desktop runtime host. Fail with a hint, not a crash,
@@ -24,7 +24,16 @@ if (BrowserWindow == null) {
 
 // The first construction adopts the implicit startup window. On macOS the FFI tweak then extends
 // the content under the title bar, so the deck's tab strip shares the traffic lights' row.
-const win = new BrowserWindow({ title: "", width: 1280, height: 878, transparentTitlebar: true })
+// Never open larger than the screen: on smaller or scaled-down displays the fixed default
+// overflowed the visible area, cutting off the bottom of every page. (Margins leave room for
+// the menu bar and a bit of breathing space; off-macOS the defaults stand.)
+const screen = main_screen_size()
+const win = new BrowserWindow({
+    title: "",
+    width: screen ? Math.min(1280, screen.width - 32) : 1280,
+    height: screen ? Math.min(878, screen.height - 80) : 878,
+    transparentTitlebar: true,
+})
 const under_titlebar = extend_under_titlebar()
 
 // The launcher's theme choice pins the native window appearance (macOS — a no-op elsewhere), so

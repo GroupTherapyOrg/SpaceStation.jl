@@ -32,6 +32,11 @@ export const base_css = /* css */ `
         background-color: var(--main-bg-color); color: var(--pluto-output-color);
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
     }
+    /* The window content extends under the (transparent, title-less) native title bar. The deck
+       has its tab strip as the grab area, but these shell pages had NOTHING draggable — the
+       window could not be moved at all, including to another display. This invisible strip is
+       that grab area. */
+    .dragbar { position: fixed; top: 0; left: 0; right: 0; height: 28px; -webkit-app-region: drag; }
     .bubble {
         background-color: var(--code-background); border-radius: 0.8rem;
         box-shadow: 0 0 0 1px var(--rule-color), -2px 5px 14px 0px #00000022;
