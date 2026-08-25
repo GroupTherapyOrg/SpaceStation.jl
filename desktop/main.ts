@@ -12,7 +12,7 @@
 import { SpaceStationServer, type BootOptions } from "./boot.ts"
 import { serve_ui } from "./splash.ts"
 import { extend_under_titlebar } from "./macos_titlebar.ts"
-import { CURATED_CHANNELS, has_plain_julia, juliaup_info, load_settings, save_settings } from "./julia.ts"
+import { has_plain_julia, julia_catalog, juliaup_info, load_settings, save_settings } from "./julia.ts"
 
 // Deno.BrowserWindow only exists inside the desktop runtime host. Fail with a hint, not a crash,
 // when someone runs this with plain `deno run` (use smoke.ts for that).
@@ -89,7 +89,7 @@ serve_ui({
         juliaup: juliaup_info(),
         plain_julia: await has_plain_julia(),
         settings: load_settings().julia ?? { channel: null, ask: true },
-        curated: CURATED_CHANNELS,
+        catalog: await julia_catalog(),
     }),
     on_launch: async (opts: BootOptions & { remember?: boolean }) => {
         // Remember the pick either way (it preselects next time); `remember` is the VS Code-style
@@ -102,7 +102,7 @@ serve_ui({
         }
         // Fire and return: start() leaves "idle" synchronously, so the page's redirect to "/"
         // lands on the live splash; progress (installs included) streams there.
-        void server.start({ channel: opts.channel, add_channel: opts.add_channel, bootstrap: opts.bootstrap })
+        void server.start({ channel: opts.channel, add_channel: opts.add_channel, update: opts.update, bootstrap: opts.bootstrap })
     },
 })
 

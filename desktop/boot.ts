@@ -18,6 +18,7 @@ export interface BootState {
 export interface BootOptions {
     channel?: string | null // juliaup channel to run (`julia +channel`)
     add_channel?: string | null // install this channel first (juliaup add), then run it
+    update?: boolean // bring `channel` to its latest version first (juliaup update)
     bootstrap?: boolean // no Julia at all: install juliaup itself first
 }
 
@@ -154,6 +155,17 @@ export class SpaceStationServer {
             const ok = await this.run_logged("sh", ["-c", "curl -fsSL https://install.julialang.org | sh -s -- --yes"])
             if (!ok) {
                 this.set("error", "the Julia installer failed — see the log above, or install from https://julialang.org/downloads")
+                return
+            }
+        }
+
+        // Bring an installed channel up to date before launching on it.
+        if (opts.update && opts.channel) {
+            this.set("installing-julia", `updating Julia ${opts.channel} (juliaup update)`)
+            const juliaup = juliaup_bin() ?? `${home_dir()}/.juliaup/bin/juliaup`
+            const ok = await this.run_logged(juliaup, ["update", opts.channel])
+            if (!ok) {
+                this.set("error", `could not update Julia channel "${opts.channel}" — see the log above`)
                 return
             }
         }

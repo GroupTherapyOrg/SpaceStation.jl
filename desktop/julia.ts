@@ -61,8 +61,76 @@ export const juliaup_info = (): JuliaupInfo | null => {
     }
 }
 
-/** Channels worth offering as one-click installs on the picker. */
-export const CURATED_CHANNELS = ["release", "lts", "1.12", "1.11", "1.10"]
+// (the curated shortlist was replaced by the real catalog — julia_catalog below)
+
+/** Version-ish compare: "1.12.7" > "1.12.6", release > its prereleases ("1.13.0" > "1.13.0-rc1"). */
+export const cmp_ver = (a: string, b: string): number => {
+    const parse = (v: string) => {
+        const [base, ...pre] = v.split("-")
+        return { nums: base.split(".").map((n) => parseInt(n, 10) || 0), pre: pre.join("-") }
+    }
+    const pa = parse(a)
+    const pb = parse(b)
+    for (let i = 0; i < Math.max(pa.nums.length, pb.nums.length); i++) {
+        const d = (pa.nums[i] ?? 0) - (pb.nums[i] ?? 0)
+        if (d !== 0) return d
+    }
+    if (pa.pre === pb.pre) return 0
+    if (pa.pre === "") return 1 // release beats prerelease
+    if (pb.pre === "") return -1
+    return pa.pre < pb.pre ? -1 : 1
+}
+
+/** The full juliaup catalog (`juliaup list` — the one juliaup datum with no metadata file; a
+ *  stable two-column table, parsed tolerantly and cached). Null when juliaup is absent. */
+let list_cache: { at: number; rows: Array<{ name: string; version: string }> } | null = null
+export const juliaup_list = async (): Promise<Array<{ name: string; version: string }> | null> => {
+    if (list_cache != null && Date.now() - list_cache.at < 5 * 60_000) return list_cache.rows
+    const bin = juliaup_bin()
+    if (bin == null) return null
+    try {
+        const out = await new Deno.Command(bin, { args: ["list"], stdout: "piped", stderr: "null" }).output()
+        if (!out.success) return null
+        const rows: Array<{ name: string; version: string }> = []
+        for (const line of new TextDecoder().decode(out.stdout).split("\n")) {
+            const m = line.match(/^\s*(\S+)\s+(\S+)\s*$/)
+            if (m == null || m[1] === "Channel" || m[1].startsWith("-")) continue
+            if (m[1].includes("~")) continue // arch-pinned variants: noise in a picker
+            rows.push({ name: m[1], version: m[2].split("+")[0] })
+        }
+        list_cache = { at: Date.now(), rows }
+        return rows
+    } catch {
+        return null
+    }
+}
+
+/** Everything the Launch Station's "get another version" UI needs, from the real catalog:
+ *  aliases (release/lts/…), recent minor channels, every concrete version for the free-text
+ *  picker, and per-installed-channel updates (installed 1.12.6, catalog says 1.12 → 1.12.7). */
+export const julia_catalog = async (): Promise<{
+    aliases: Array<{ name: string; version: string }>
+    minors: Array<{ name: string; version: string }>
+    versions: string[]
+    updates: Record<string, string>
+} | null> => {
+    const rows = await juliaup_list()
+    if (rows == null) return null
+    const by = new Map(rows.map((r) => [r.name, r.version]))
+    const aliases = ["release", "lts", "beta", "rc", "nightly"].filter((n) => by.has(n)).map((n) => ({ name: n, version: by.get(n)! }))
+    const modern = (v: string) => cmp_ver(v, "1.6") >= 0
+    const minors = rows.filter((r) => /^\d+\.\d+$/.test(r.name) && modern(r.version)).sort((a, b) => cmp_ver(b.name + ".0", a.name + ".0"))
+    const versions = rows
+        .filter((r) => /^\d+\.\d+\.\d+/.test(r.name) && modern(r.version))
+        .map((r) => r.name)
+        .sort((a, b) => cmp_ver(b, a))
+    const updates: Record<string, string> = {}
+    for (const ch of juliaup_info()?.channels ?? []) {
+        const latest = by.get(ch.name)
+        if (latest != null && ch.version !== "" && cmp_ver(latest, ch.version) > 0) updates[ch.name] = latest
+    }
+    return { aliases, minors, versions, updates }
+}
 
 /** Is a bare `julia` runnable (no juliaup)? Used for the picker's system-julia row. */
 export const has_plain_julia = async (): Promise<string | null> => {
