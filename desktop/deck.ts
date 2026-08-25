@@ -64,22 +64,21 @@ export const deck_html = (launcher_url: string) => /* html */ `<!doctype html>
 
         // Fullscreen detection: exact screen size works on plain displays, but a notched MacBook's
         // fullscreen is screen height MINUS the notch band — so also ask the shell, which reads
-        // the NSWindow fullscreen style bit over FFI (/fullscreen).
+        // the NSWindow fullscreen style bit over FFI (/fullscreen). POLLED, not event-driven: the
+        // webview's resize timing around the fullscreen transition proved unreliable, and a local
+        // GET every 1.5s is free.
         const hoverzone = document.getElementById("hoverzone")
-        let fs_timer
-        const update_fullscreen = () => {
-            clearTimeout(fs_timer)
-            fs_timer = setTimeout(async () => {
-                let fs = innerWidth === screen.width && innerHeight === screen.height
-                if (!fs) {
-                    try {
-                        fs = !!(await (await fetch("/fullscreen")).json()).fullscreen
-                    } catch {}
-                }
-                document.body.classList.toggle("fullscreen", fs)
-                if (!fs) strip.classList.remove("revealed")
-            }, 150)
+        const update_fullscreen = async () => {
+            let fs = innerWidth === screen.width && innerHeight === screen.height
+            if (!fs) {
+                try {
+                    fs = !!(await (await fetch("/fullscreen")).json()).fullscreen
+                } catch {}
+            }
+            document.body.classList.toggle("fullscreen", fs)
+            if (!fs) strip.classList.remove("revealed")
         }
+        setInterval(update_fullscreen, 1500)
         addEventListener("resize", update_fullscreen)
         update_fullscreen()
         hoverzone.addEventListener("mouseenter", () => strip.classList.add("revealed"))
