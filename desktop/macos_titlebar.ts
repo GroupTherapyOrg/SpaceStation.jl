@@ -25,6 +25,8 @@ const objc = (): any | null => {
         cached = Deno.dlopen("/usr/lib/libobjc.A.dylib", {
             objc_getClass: { parameters: ["buffer"], result: "pointer" },
             sel_registerName: { parameters: ["buffer"], result: "pointer" },
+            object_getClassName: { parameters: ["pointer"], result: "pointer" },
+            msg_f64: { name: "objc_msgSend", parameters: ["pointer", "pointer"], result: "f64" },
             msg_ptr: { name: "objc_msgSend", parameters: ["pointer", "pointer"], result: "pointer" },
             msg_ptr_buf: { name: "objc_msgSend", parameters: ["pointer", "pointer", "buffer"], result: "pointer" },
             msg_ptr_u64arg: { name: "objc_msgSend", parameters: ["pointer", "pointer", "u64"], result: "pointer" },
@@ -112,17 +114,21 @@ export const fullscreen_state = (): { fullscreen: boolean; overlay_px: number } 
             break
         }
         if (main == null || !fullscreen) return { fullscreen, overlay_px: 0 }
-        const [, my, mw, mh] = frame_of(S, main)
+        const [, my, , mh] = frame_of(S, main)
         const win_top = my + mh
         let overlay_px = 0
         for (let i = 0n; i < count; i++) {
             const w = S.msg_ptr_u64arg(windows, sel("objectAtIndex:"), i)
             if (w === main) continue
-            const mask = S.msg_u64(w, sel("styleMask"))
-            if ((mask & 1n) !== 0n) continue // overlay is borderless
+            // ONLY the system's fullscreen toolbar overlay counts — identified by CLASS
+            // (NSToolbarFullScreenWindow family; the window only exists while the overlay is out).
+            // A loose geometry match once latched onto an unrelated helper window and pinned the
+            // strip mid-content; when nothing matches we fall back to hover-only reveal.
+            const cn = Deno.UnsafePointerView.getCString(S.object_getClassName(w)!)
+            if (!cn.includes("FullScreen")) continue
             if ((S.msg_u64(w, sel("isVisible")) & 1n) === 0n) continue
-            const [, y, w_w] = frame_of(S, w)
-            if (w_w < mw - 1) continue // overlay spans the full width
+            if (S.msg_f64(w, sel("alphaValue")) < 0.1) continue
+            const [, y] = frame_of(S, w)
             const covered = win_top - y // how far its bottom edge reaches into our window
             if (covered > 0 && covered < 300) overlay_px = Math.max(overlay_px, Math.round(covered))
         }
