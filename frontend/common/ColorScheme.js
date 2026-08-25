@@ -43,6 +43,12 @@ export const prefers_dark = () => {
 const identity = new WeakMap()
 
 const apply = (scheme) => {
+    // The media rewrite below only governs AUTHOR styles — the UA still colors its own defaults
+    // (default text, form controls, scrollbars) from the page's declared color-scheme and the OS.
+    // With a dark OS and a forced-light page that meant white UA text on light backgrounds
+    // (invisible buttons, washed-out logs). The color-scheme PROPERTY on :root overrides the
+    // meta and pins the UA side too.
+    document.documentElement.style.colorScheme = scheme === "system" ? "" : scheme
     const walk = (sheet) => {
         let rules
         try {
@@ -65,7 +71,18 @@ const apply = (scheme) => {
             rule.media.mediaText = scheme === "system" ? `(prefers-color-scheme: ${kind})` : scheme === kind ? "all" : "not all"
         }
     }
-    for (const sheet of document.styleSheets) walk(sheet)
+    // Shadow roots keep their own stylesheets (some components render in shadow DOM) — walk them
+    // too, along with any adopted (constructed) stylesheets.
+    const walk_root = (root) => {
+        for (const sheet of root.styleSheets ?? []) walk(sheet)
+        for (const sheet of root.adoptedStyleSheets ?? []) walk(sheet)
+        const walker = document.createTreeWalker(root === document ? document.documentElement : root, NodeFilter.SHOW_ELEMENT)
+        let node
+        while ((node = walker.nextNode())) {
+            if (node.shadowRoot != null) walk_root(node.shadowRoot)
+        }
+    }
+    walk_root(document)
 }
 
 export const set_color_scheme = (scheme) => {
@@ -100,8 +117,8 @@ const schedule_reapply = () => {
 new MutationObserver((mutations) => {
     for (const m of mutations) {
         for (const node of m.addedNodes) {
-            if (node.nodeType !== 1) continue
-            if (node.tagName === "STYLE" || node.tagName === "LINK" || node.querySelector?.("style, link[rel=stylesheet]") != null) {
+            if (!(node instanceof Element)) continue
+            if (node.tagName === "STYLE" || node.tagName === "LINK" || node.querySelector("style, link[rel=stylesheet]") != null) {
                 // a <link>'s rules exist only after it loads — re-apply then, too
                 if (node.tagName === "LINK") node.addEventListener("load", schedule_reapply, { once: true })
                 schedule_reapply()
