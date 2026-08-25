@@ -106,6 +106,37 @@ export const set_app_appearance = (scheme: "light" | "dark" | "system"): boolean
     }
 }
 
+/** Start a native window drag. WKWebView swallows every mouse event, so CSS app-region does
+ *  nothing in this shell (it is a Chromium feature) and the window had NO way to be moved.
+ *  The standard WKWebView-shell workaround: on mousedown in a page's drag area, the page calls
+ *  the shell, and the shell hands the in-flight mouse event to performWindowDragWithEvent: —
+ *  AppKit then runs the whole native drag session (tracking, spaces, displays) by itself.
+ *  currentEvent is read off-main (the JS thread), so the event is retained immediately and
+ *  deliberately never released — one leaked NSEvent per drag START is noise, and it removes
+ *  any chance of handing AppKit a freed pointer. */
+export const begin_window_drag = (): boolean => {
+    try {
+        const S = objc()
+        if (S == null) return false
+        const cls = (n: string) => S.objc_getClass(cstr(n))
+        const sel = (n: string) => S.sel_registerName(cstr(n))
+        const app = S.msg_ptr(cls("NSApplication"), sel("sharedApplication"))
+        if (app === null) return false
+        const ev = S.msg_ptr(app, sel("currentEvent"))
+        if (ev === null) return false
+        S.msg_ptr(ev, sel("retain"))
+        let started = false
+        each_titled_window((S2, w) => {
+            S2.msg_void_ppi8(w, sel("performSelectorOnMainThread:withObject:waitUntilDone:"), sel("performWindowDragWithEvent:"), ev, 0)
+            started = true
+        })
+        return started
+    } catch (e) {
+        console.warn("could not start a window drag:", e)
+        return false
+    }
+}
+
 /** The main display's size in points (CoreGraphics reports the scaled mode's logical size), or
  *  null off-macOS / on failure. Used to clamp the initial window so it cannot open larger than
  *  the screen — the fixed default overflowed smaller displays, cutting off the bottom of every
