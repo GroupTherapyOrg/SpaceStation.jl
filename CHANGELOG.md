@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.1](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.4.0...v0.4.1) (2026-08-25)
+
+
+### Bug Fixes
+
+* give release installer builds their own concurrency lane ([#38](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/38)) ([07c59bd](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/07c59bd191c210ede8ce2e1f5075cfe6d761958d))
+* installers must contain SpaceStation, not the platform-suffixed name ([#37](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/37)) ([888752d](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/888752dc201d685d9b4d03ca6ecd82a2543c687e))
+
 ## [0.4.0](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.3.1...v0.4.0) (2026-08-25)
 
 
