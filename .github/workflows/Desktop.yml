@@ -34,7 +34,10 @@ permissions:
   contents: write # attach installers + edit notes on releases; read-only for everything else we do
 
 concurrency:
-  group: desktop-${{ github.ref }}
+  # Release builds get their OWN lane: they are dispatched from ReleasePlease at the same moment
+  # the release commit lands on main, and sharing a group with the ordinary push build meant one
+  # cancelled the other (v0.4.0's installer backfill died exactly this way).
+  group: desktop-${{ github.ref }}-${{ inputs.release_tag || 'ci' }}
   cancel-in-progress: true
 
 jobs:
