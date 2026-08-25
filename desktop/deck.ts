@@ -173,6 +173,14 @@ export const deck_html = (launcher_url: string) => /* html */ `<!doctype html>
                     sessionStorage.setItem("spacestation deck scheme", scheme)
                 } catch {}
                 for (const f of stage.querySelectorAll("iframe")) send_scheme(f)
+                // The shell flips the native window appearance to match (macOS): WKWebView's own
+                // chrome (scrollbars, form controls) follows the window, not the page's CSS, and
+                // repaints reliably only through this native path. Also persists the choice.
+                fetch("./api/appearance", {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ scheme }),
+                }).catch(() => {})
             }
         })
         render()

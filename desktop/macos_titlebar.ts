@@ -21,6 +21,7 @@ const objc = (): any | null => {
             sel_registerName: { parameters: ["buffer"], result: "pointer" },
             msg_ptr: { name: "objc_msgSend", parameters: ["pointer", "pointer"], result: "pointer" },
             msg_ptr_buf: { name: "objc_msgSend", parameters: ["pointer", "pointer", "buffer"], result: "pointer" },
+            msg_ptr_parg: { name: "objc_msgSend", parameters: ["pointer", "pointer", "pointer"], result: "pointer" },
             msg_ptr_u64arg: { name: "objc_msgSend", parameters: ["pointer", "pointer", "u64"], result: "pointer" },
             msg_ptr_i64arg: { name: "objc_msgSend", parameters: ["pointer", "pointer", "i64"], result: "pointer" },
             msg_u64: { name: "objc_msgSend", parameters: ["pointer", "pointer"], result: "u64" },
@@ -69,6 +70,38 @@ export const extend_under_titlebar = (): boolean => {
         return ok && applied
     } catch (e) {
         console.warn("could not extend content under the title bar:", e)
+        return false
+    }
+}
+
+/** Pin the whole app to light/dark (or back to following the OS). WKWebView resolves
+ *  prefers-color-scheme from the hosting window's effective appearance, so this flips the web
+ *  content's theme the same way a real OS dark-mode switch does — a path WebKit repaints
+ *  correctly, native scrollbars included. (Rewriting color-scheme purely from CSS inside the
+ *  webview left WKWebView with stale scrollbar/compositor state; see the v0.4.2 theme-toggle
+ *  regressions.) Set on NSApplication so every current and future window follows. KVC maps
+ *  NSNull back to nil, which restores "follow the system". */
+export const set_app_appearance = (scheme: "light" | "dark" | "system"): boolean => {
+    try {
+        const S = objc()
+        if (S == null) return false
+        const cls = (n: string) => S.objc_getClass(cstr(n))
+        const sel = (n: string) => S.sel_registerName(cstr(n))
+        const nsstr = (s: string) => S.msg_ptr_buf(cls("NSString"), sel("stringWithUTF8String:"), cstr(s))
+        const app = S.msg_ptr(cls("NSApplication"), sel("sharedApplication"))
+        const value =
+            scheme === "system"
+                ? S.msg_ptr(cls("NSNull"), sel("null"))
+                : S.msg_ptr_parg(cls("NSAppearance"), sel("appearanceNamed:"), nsstr(scheme === "dark" ? "NSAppearanceNameDarkAqua" : "NSAppearanceNameAqua"))
+        // A nil here (AppKit missing, unknown appearance name) must NOT reach setObject:forKey: —
+        // that throws an ObjC exception straight through the FFI, killing the process.
+        if (app === null || value === null) return false
+        const dict = S.msg_ptr(cls("NSMutableDictionary"), sel("dictionary"))
+        S.msg_void_pp(dict, sel("setObject:forKey:"), value, nsstr("appearance"))
+        S.msg_void_ppi8(app, sel("performSelectorOnMainThread:withObject:waitUntilDone:"), sel("setValuesForKeysWithDictionary:"), dict, 1)
+        return true
+    } catch (e) {
+        console.warn("could not set the app appearance:", e)
         return false
     }
 }
