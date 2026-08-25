@@ -216,15 +216,23 @@ export class SpaceStationServer {
         // branch, not the last registry release), the registry otherwise. A marker file records
         // what's installed, so a rebuilt app upgrades a stale env instead of trusting `import`.
         const want = buildinfo.source ? `${buildinfo.source.url}#${buildinfo.source.rev}` : "registry"
-        const add = buildinfo.source
-            ? `Pkg.add(url=${JSON.stringify(buildinfo.source.url)}, rev=${JSON.stringify(buildinfo.source.rev)})`
-            : `Pkg.add("SpaceStation")`
+        const spec = buildinfo.source ? `url=${JSON.stringify(buildinfo.source.url)}, rev=${JSON.stringify(buildinfo.source.rev)}` : `"SpaceStation"`
         const boot = managed
             ? `import Pkg; env = ENV["SPACESTATION_DESKTOP_ENV"]; Pkg.activate(env);
                marker = joinpath(env, ".spacestation-source"); want = ${JSON.stringify(want)};
                if !isfile(marker) || read(marker, String) != want
                    println("Installing SpaceStation ($(want))..."); flush(stdout);
-                   ${add}; write(marker, want)
+                   Pkg.add(${spec});
+                   # the desktop also registers the CLI (Project.toml [apps]): a real
+                   # \`spacestation\` on ~/.julia/bin, usable from any terminal. Best-effort —
+                   # the app itself never depends on it.
+                   try
+                       Pkg.Apps.add(${spec})
+                       println("installed the spacestation CLI (add ~/.julia/bin to PATH to use it anywhere)")
+                   catch e
+                       println("CLI install skipped: ", sprint(showerror, e))
+                   end;
+                   write(marker, want)
                end;
                import SpaceStation; SpaceStation.run(port=${port}, launch_browser=false)`
             : `import SpaceStation; SpaceStation.run(port=${port}, launch_browser=false)`

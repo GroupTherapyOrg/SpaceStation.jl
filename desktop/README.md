@@ -45,7 +45,10 @@ Which Julia project runs, in priority order:
 3. A **managed environment** (compiled app): `~/Library/Application Support/SpaceStation/julia-env`
    (macOS) / `%APPDATA%\SpaceStation\julia-env` (Windows) / `~/.local/share/spacestation/julia-env`
    (Linux), bootstrapped from the General registry on first run. First run installs and
-   precompiles — minutes, once; the splash shows progress.
+   precompiles — minutes, once; the splash shows progress. The managed install ALSO registers the
+   `spacestation` CLI via Pkg Apps (best-effort), so desktop users get the terminal command for
+   free — the reverse is deliberately not true: `Pkg.Apps.add` installs only the CLI, never the
+   desktop shell.
 
 ## Commands (from this folder)
 
