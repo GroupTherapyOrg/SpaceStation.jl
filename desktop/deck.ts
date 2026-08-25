@@ -74,6 +74,19 @@ export const deck_html = (launcher_url: string) => /* html */ `<!doctype html>
             } catch {}
         }
 
+        // the launcher's appearance choice, rebroadcast to every workspace tab (other origins —
+        // their own ports — so localStorage can't reach them)
+        let scheme = null
+        try {
+            scheme = sessionStorage.getItem("spacestation deck scheme")
+        } catch {}
+        const send_scheme = (f) => {
+            if (scheme == null) return
+            try {
+                f.contentWindow.postMessage({ type: "spacestation:color-scheme", scheme }, "*")
+            } catch {}
+        }
+
         const frame_for = (tab) => {
             let f = document.getElementById("frame-" + tab.id)
             if (f == null) {
@@ -82,6 +95,7 @@ export const deck_html = (launcher_url: string) => /* html */ `<!doctype html>
                 f.src = tab.url
                 // clipboard inside the frames: the terminal and notebook copy/paste need this
                 f.allow = "clipboard-read; clipboard-write; fullscreen"
+                f.addEventListener("load", () => send_scheme(f))
                 stage.appendChild(f)
             }
             return f
@@ -153,6 +167,13 @@ export const deck_html = (launcher_url: string) => /* html */ `<!doctype html>
             if (d == null || typeof d !== "object") return
             if (d.type === "spacestation:open-workspace" && typeof d.url === "string") open_tab(d.url, d.title)
             if (d.type === "spacestation:focus-launcher") activate("launcher")
+            if (d.type === "spacestation:color-scheme" && typeof d.scheme === "string") {
+                scheme = d.scheme
+                try {
+                    sessionStorage.setItem("spacestation deck scheme", scheme)
+                } catch {}
+                for (const f of stage.querySelectorAll("iframe")) send_scheme(f)
+            }
         })
         render()
     </script>

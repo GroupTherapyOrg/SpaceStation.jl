@@ -91,16 +91,22 @@ const in_desktop_frame = (() => {
 })()
 const desktop_boot_hint = in_desktop_frame || new URLSearchParams(window.location.search).has("desktop")
 
-// App-wide light/dark/auto — one choice themes the hub AND every notebook editor (they share the
-// origin, so ColorScheme.js keeps them in sync live). The integrated terminal keeps its OWN
-// toggle: a light UI with a dark terminal is a legitimate preference.
+// App-wide light/dark/auto — LAUNCHER-ONLY control (so the terminal's own scheme toggle stays
+// unambiguous), applied to every workspace immediately: same-origin pages follow via storage
+// events, and workspaces on other ports get it via the deck broadcast + a ?scheme= seed on
+// workspace links (ColorScheme.js handles both ends).
 const AppSchemeToggle = ({ classname }) => {
     const [scheme, set_scheme] = useState(get_color_scheme())
     return html`<button
         class="app-scheme-toggle ${classname ?? ""}"
         title=${scheme === "system" ? "Appearance: follow the system — switch to light" : scheme === "light" ? "Appearance: light — switch to dark" : "Appearance: dark — follow the system"}
         aria-label="Toggle light/dark appearance"
-        onClick=${() => set_scheme(cycle_color_scheme())}
+        onClick=${() => {
+            const next = cycle_color_scheme()
+            set_scheme(next)
+            // the deck rebroadcasts to every workspace tab (they live on other ports/origins)
+            post_to_deck({ type: "spacestation:color-scheme", scheme: next })
+        }}
     >
         ${scheme === "system" ? "◐" : scheme === "light" ? "☀" : "☾"}
     </button>`
@@ -262,7 +268,13 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
     // window navigates in place. Both carry the homebase fragment — the workspace's way back — and
     // desktop destinations also carry ?desktop=1 so the workspace knows its mode synchronously.
     const desktop_url = (url) => (desktop_ref.current ? `${url}${url.includes("?") ? "&" : "?"}desktop=1` : url)
-    const open_href = (url) => with_homebase(desktop_url(url))
+    // Stamp the launcher's appearance choice on workspace links: workspaces are other origins
+    // (their own ports), so localStorage can't carry it — the ?scheme= seed does.
+    const scheme_url = (url) => {
+        const s = get_color_scheme()
+        return s === "system" ? url : `${url}${url.includes("?") ? "&" : "?"}scheme=${s}`
+    }
+    const open_href = (url) => with_homebase(desktop_url(scheme_url(url)))
     const open_target = desktop ? "_self" : "_blank"
     // Desktop: workspaces open as DECK TABS — the deck dedupes by server, so reopening focuses.
     const post_open_tab = (url, title) => post_to_deck({ type: "spacestation:open-workspace", url: desktop_url(url), title })
@@ -1891,7 +1903,6 @@ const Land = () => {
                                       ${terminal_dock === "bottom" ? "◨" : terminal_dock === "right" ? "▭" : "⬓"}
                                   </button>`
                                 : null}
-                            <${AppSchemeToggle} />
                         </nav>
                         <div id="frames">
                             ${tabs.map((t) =>

@@ -11,6 +11,16 @@
 
 const KEY = "spacestation color scheme"
 
+// Workspaces run on their own ports — separate localStorage origins — so the launcher's choice
+// reaches them two ways: a ?scheme= seed stamped on workspace links (browser tabs), and
+// "spacestation:color-scheme" postMessages rebroadcast by the desktop deck (live switching).
+const seed = new URLSearchParams(window.location.search).get("scheme")
+if (seed === "light" || seed === "dark" || seed === "system") {
+    try {
+        localStorage.setItem(KEY, seed)
+    } catch (e) {}
+}
+
 export const get_color_scheme = () => {
     try {
         const s = localStorage.getItem(KEY)
@@ -79,4 +89,10 @@ if (document.readyState === "complete") init()
 else window.addEventListener("load", init)
 window.addEventListener("storage", (e) => {
     if (e.key === KEY) apply(get_color_scheme())
+})
+window.addEventListener("message", (e) => {
+    const d = e.data
+    if (d != null && d.type === "spacestation:color-scheme" && (d.scheme === "light" || d.scheme === "dark" || d.scheme === "system")) {
+        set_color_scheme(d.scheme)
+    }
 })
