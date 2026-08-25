@@ -12,10 +12,10 @@
 
 import { SpaceStationServer } from "./boot.ts"
 import { serve_splash } from "./splash.ts"
-import { extend_under_titlebar, fullscreen_state } from "./macos_titlebar.ts"
+import { extend_under_titlebar } from "./macos_titlebar.ts"
 
 const server = new SpaceStationServer()
-serve_splash(() => server.state, fullscreen_state)
+serve_splash(() => server.state)
 
 // Deno.BrowserWindow only exists inside the desktop runtime host. Fail with a hint, not a crash,
 // when someone runs this with plain `deno run` (use smoke.ts for that).

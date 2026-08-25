@@ -58,17 +58,11 @@ export const splash_html = /* html */ `<!doctype html>
 /** Serve the shell UI: the splash (+ /status it polls) while booting, and /deck — the tabbed
  *  chrome main.ts navigates to once the server is ready. Deno.serve with no options binds to
  *  DENO_SERVE_ADDRESS, which is how the desktop runtime knows where to point the window. */
-export const serve_splash = (state: () => BootState, fullscreen_state: () => { fullscreen: boolean; overlay_px: number } = () => ({ fullscreen: false, overlay_px: 0 })) =>
+export const serve_splash = (state: () => BootState) =>
     Deno.serve((req) => {
         const path = new URL(req.url).pathname
         if (path === "/status") {
             return new Response(JSON.stringify(state()), { headers: { "content-type": "application/json" } })
-        }
-        if (path === "/fullscreen") {
-            // Polled by the deck: size heuristics can't tell notched-Mac fullscreen from a zoomed
-            // window (the NSWindow style bit can), and overlay_px lets the tab strip ride WITH the
-            // native fullscreen overlay instead of fighting it.
-            return new Response(JSON.stringify(fullscreen_state()), { headers: { "content-type": "application/json" } })
         }
         if (path === "/deck") {
             const url = state().url

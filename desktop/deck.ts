@@ -40,63 +40,20 @@ export const deck_html = (launcher_url: string) => /* html */ `<!doctype html>
     #stage { flex: 1; position: relative; background: #16141f; }
     #stage iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: none; }
     #stage iframe.active { display: block; }
-    /* Fullscreen: hide the strip with the native chrome and slide it down when the cursor hits
-       the top — same gesture as the macOS menu bar. The hover zone is a thin overlay because
-       mouse moves inside the iframes never reach this document. */
-    #hoverzone { display: none; }
-    body.fullscreen #hoverzone { display: block; position: fixed; top: 0; left: 0; right: 0; height: 6px; z-index: 9; }
-    body.fullscreen #strip {
-        position: fixed; top: 0; left: 0; right: 0; z-index: 10;
-        transform: translateY(-100%); transition: transform 0.12s ease-out, top 0.15s ease-out;
-    }
-    body.fullscreen #strip.revealed { transform: translateY(0); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.55); }
 </style>
 </head>
 <body>
     <div id="strip"></div>
-    <div id="hoverzone"></div>
     <div id="stage"></div>
     <script>
         const LAUNCHER_URL = ${JSON.stringify(launcher_url)}
         const strip = document.getElementById("strip")
         const stage = document.getElementById("stage")
         document.body.classList.toggle("inset", new URLSearchParams(location.search).has("inset"))
-
-        // Fullscreen handling, polled from the shell (/fullscreen): the NSWindow style bit says
-        // whether we're fullscreen (size heuristics fail on notched Macs), and overlay_px says how
-        // far the NATIVE overlay (menu bar + title-bar band, on hover at the screen top) currently
-        // covers our window. The strip reveals WITH that overlay — sitting right below it — and
-        // retracts with it, so the two read as one piece of chrome; the in-window hover zone is
-        // the secondary trigger, since the native overlay only drops at the true screen top.
-        const hoverzone = document.getElementById("hoverzone")
-        let hover = false
-        let last = { fullscreen: false, overlay_px: 0 }
-        const render_strip = () => {
-            document.body.classList.toggle("fullscreen", last.fullscreen)
-            strip.style.top = last.fullscreen && last.overlay_px > 0 ? last.overlay_px + "px" : ""
-            strip.classList.toggle("revealed", last.fullscreen && (hover || last.overlay_px > 0))
-        }
-        const update_fullscreen = async () => {
-            const size_fs = innerWidth === screen.width && innerHeight === screen.height
-            let next = { fullscreen: size_fs, overlay_px: 0 }
-            try {
-                const r = await (await fetch("/fullscreen")).json()
-                next = { fullscreen: size_fs || !!r.fullscreen, overlay_px: r.overlay_px || 0 }
-            } catch {}
-            last = next
-            render_strip()
-            // follow the native overlay closely while fullscreen; idle cheaply otherwise
-            setTimeout(update_fullscreen, last.fullscreen ? 250 : 1500)
-        }
-        update_fullscreen()
-        hoverzone.addEventListener("mouseenter", () => {
-            hover = true
-            render_strip()
-        })
-        strip.addEventListener("mouseleave", () => {
-            hover = false
-            render_strip()
-        })
+        // NOTE: no fullscreen special-casing, deliberately. Auto-hiding the strip in sync with the
+        // native fullscreen overlay was tried and looked broken more ways than it looked native
+        // (notch geometry, the overlay stealing the mouse, unrelated helper windows). The strip is
+        // simply always there, windowed or fullscreen — fixed, predictable chrome.
 
         /** @type {Array<{id: string, title: string, url: string}>} */
         let tabs = [{ id: "launcher", title: "Launcher", url: LAUNCHER_URL }]
