@@ -57,13 +57,18 @@ Download from the [latest release](https://github.com/GroupTherapyOrg/SpaceStati
 
 The builds aren't code-signed yet, so each OS asks once before it will run a new app.
 
-**macOS** — drag **SpaceStation** into **Applications**, then paste this into Terminal:
+**macOS** — drag **SpaceStation** into **Applications** (don't run it from the disk image), then
+paste both lines into Terminal:
 
 ```sh
 xattr -dr com.apple.quarantine "/Applications/SpaceStation.app"
+codesign --force --deep --sign - "/Applications/SpaceStation.app"
 ```
 
-(Or right-click the app → **Open**, then **System Settings → Privacy & Security → Open Anyway**.)
+The first line clears the download quarantine; the second re-signs the app locally, which is what
+clears *"SpaceStation is damaged and can't be opened"* — macOS uses that wording for any app not
+signed with a paid Developer ID, and on Apple Silicon clearing quarantine alone is often not
+enough. Nothing is actually damaged. Both steps go away once releases are notarized.
 
 **Windows** — double-click the `.msi`; if SmartScreen appears, choose **More info → Run anyway**.
 
