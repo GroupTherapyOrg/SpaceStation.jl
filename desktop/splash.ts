@@ -33,6 +33,7 @@ ${base_css}
 </style>
 </head>
 <body>
+    <div class="dragbar"></div>
     <div class="bubble card">
         ${logo_svg}
         <h1>Space<span class="land-accent">Station</span></h1>

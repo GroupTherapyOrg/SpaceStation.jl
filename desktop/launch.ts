@@ -23,13 +23,18 @@ export const launch_html = /* html */ `<!doctype html>
 ${base_css}
     .rows { display: flex; flex-direction: column; gap: 0.45rem; }
     h2 .hint { font-weight: normal; text-transform: none; letter-spacing: normal; font-size: 0.78rem; opacity: 0.55; margin-left: 0.6rem; }
+    /* The footer bar owns the card's bottom edge: the card gives up its bottom padding and the
+       full-bleed sticky bar supplies it, so the scrolling list disappears cleanly under the bar
+       instead of peeking out through the padding gap beneath it. */
+    .card { padding-bottom: 0; }
     .footer {
-        display: flex; align-items: center; gap: 1rem; margin-top: 1.6rem;
-        position: sticky; bottom: 0; padding: 0.8rem 0 0.2rem; background: var(--card-bg-color, inherit);
+        display: flex; align-items: center; gap: 1rem;
+        position: sticky; bottom: 0; margin: 1.6rem -2rem 0; padding: 0.8rem 2rem 1.4rem;
+        background: var(--code-background); border-top: 1px solid var(--rule-color);
     }
     .remember { display: flex; align-items: center; gap: 0.45rem; font-size: 0.85rem; opacity: 0.8; cursor: pointer; user-select: none; }
     .remember input { accent-color: var(--accent); }
-    .note { font-size: 0.78rem; opacity: 0.55; margin-top: 0.9rem; }
+    .note { font-size: 0.78rem; opacity: 0.55; margin: 0.9rem 0 1.4rem; }
     .cancel { margin-left: auto; font-size: 0.85rem; opacity: 0.6; color: inherit; }
     #error { color: #ff8a8a; font-size: 0.85rem; margin-top: 0.8rem; }
     .pill.busy { box-shadow: inset 0 0 0 2px var(--accent); opacity: 1; }
@@ -50,6 +55,7 @@ ${base_css}
 </style>
 </head>
 <body>
+    <div class="dragbar"></div>
     <div class="bubble card">
         <header>
             ${logo_svg}
