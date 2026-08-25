@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+<rect x="100" y="100" width="824" height="824" rx="185" fill="#16141f"/>
+
+<!-- SpaceStation "Planets" mark (in-page logo): three Julia-family spheres — radial gradient,
+     highlight top-left, shadowed rim — with a blue twinkle. Same three-dot layout the Julia
+     ecosystem shares, but lit as celestial bodies rather than flat fills, so it's distinctly
+     ours (and no longer Pluto's exact tinted circles). Kept in sync with favicon.svg. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="12 5 82 82" x="232" y="232" width="560" height="560">
+  <defs>
+    <radialGradient id="st-g" cx="0.36" cy="0.30" r="0.82"><stop offset="0" stop-color="#8fe07d"/><stop offset="0.52" stop-color="#389826"/><stop offset="1" stop-color="#1a5312"/></radialGradient>
+    <radialGradient id="st-p" cx="0.36" cy="0.30" r="0.82"><stop offset="0" stop-color="#d3a6e8"/><stop offset="0.52" stop-color="#9558B2"/><stop offset="1" stop-color="#4f2668"/></radialGradient>
+    <radialGradient id="st-r" cx="0.36" cy="0.30" r="0.82"><stop offset="0" stop-color="#f79287"/><stop offset="0.52" stop-color="#CB3C33"/><stop offset="1" stop-color="#761a14"/></radialGradient>
+    <radialGradient id="st-s" cx="0.5" cy="0.5" r="0.5"><stop offset="0" stop-color="#a9c4ff"/><stop offset="1" stop-color="#3f6dff"/></radialGradient>
+  </defs>
+  <circle cx="36" cy="64" r="20" fill="url(#st-p)" stroke="#4f2668" stroke-width="1.5"/>
+  <circle cx="64" cy="64" r="20" fill="url(#st-r)" stroke="#761a14" stroke-width="1.5"/>
+  <circle cx="50" cy="42" r="20" fill="url(#st-g)" stroke="#1a5312" stroke-width="1.5"/>
+  <path d="M82 17.1 L83.7 24.1 L91 26 L83.7 27.9 L82 34.9 L80.3 27.9 L73 26 L80.3 24.1 Z" fill="url(#st-s)"/>
+  <path d="M69 10.8 L69.8 13.9 L73 14.7 L69.8 15.5 L69 18.6 L68.2 15.5 L65 14.7 L68.2 13.9 Z" fill="#8fb4ff"/>
+</svg>
+</svg>

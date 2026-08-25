@@ -1,0 +1,160 @@
+# The desktop shell, tested and packaged across macOS / Windows / Linux.
+#
+# test: the headless smoke test (desktop/smoke.ts) boots the REAL stack on every OS — finds
+#   Julia, starts the SpaceStation server, waits for /ping, reads the connection-file secret,
+#   fetches the authenticated hub, checks desktop mode, shuts down cleanly. Trust comes from
+#   booting the whole thing, not from unit stubs.
+# build: packages the per-OS installers (.dmg for both Mac architectures, .msi, .AppImage) with
+#   juliaup's portable build vendored inside (no Julia required on the target machine); uploads
+#   them as CI artifacts, and on a published release attaches them to the release and appends the
+#   install guide (incl. the unsigned-build workarounds) to the release notes.
+#   macOS signing + notarization activate when the repo has the signing secrets (see
+#   desktop/README.md); bundles ship ad-hoc-signed otherwise.
+
+name: Desktop
+
+on:
+  push:
+    branches: [main, feat/deno-desktop]
+    paths: ["desktop/**", ".github/workflows/Desktop.yml", "src/**", "frontend/**", "Project.toml"]
+  pull_request:
+    paths: ["desktop/**", ".github/workflows/Desktop.yml"]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write # attach installers + edit notes on releases; read-only for everything else we do
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: smoke · ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1"
+      - uses: julia-actions/cache@v2
+      - name: Instantiate the Julia project
+        run: julia --project=. -e 'import Pkg; Pkg.instantiate()'
+      - name: Typecheck the shell
+        working-directory: desktop
+        run: deno check main.ts boot.ts splash.ts deck.ts launch.ts julia.ts theme.ts macos_titlebar.ts smoke.ts
+      - name: Headless smoke test (boots the full stack)
+        working-directory: desktop
+        env:
+          # setup-julia installs plain julia (no juliaup); the smoke finds it on PATH
+          SPACESTATION_PROJECT: ${{ github.workspace }}
+        run: deno task smoke
+
+  build:
+    name: bundle · ${{ matrix.name }}
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: mac-arm64, os: macos-14, task: "build:dmg", file: SpaceStation-mac-arm64.dmg }
+          - { name: mac-x64, os: macos-15-intel, task: "build:dmg-intel", file: SpaceStation-mac-x64.dmg }
+          - { name: windows-x64, os: windows-latest, task: "build:msi", file: SpaceStation-win-x64.msi }
+          - { name: linux-x64, os: ubuntu-latest, task: "build:linux", file: SpaceStation-linux-x64.AppImage }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      # secrets are not readable in `if:` conditions directly — surface them as env first;
+      # absent secrets leave these empty and the signing steps skip (ad-hoc-signed bundles)
+      MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+      MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Import macOS signing certificate
+        if: runner.os == 'macOS' && env.MACOS_CERTIFICATE_P12 != ''
+        env:
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN=build.keychain
+          security create-keychain -p ci $KEYCHAIN
+          security default-keychain -s $KEYCHAIN
+          security unlock-keychain -p ci $KEYCHAIN
+          echo "$MACOS_CERTIFICATE_P12" | base64 --decode > cert.p12
+          security import cert.p12 -k $KEYCHAIN -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci $KEYCHAIN
+          rm cert.p12
+      - name: Build installer
+        working-directory: desktop
+        run: deno task ${{ matrix.task }}
+      - name: Sign + notarize (macOS, when credentials exist)
+        # NOTE: signing a finished .dmg requires the .app INSIDE to be signed at build time —
+        # once enrolled, set desktop.macos.codesignIdentity in deno.json so `deno desktop` signs
+        # during the build, then this step notarizes + staples the .dmg itself.
+        if: runner.os == 'macOS' && env.MACOS_SIGN_IDENTITY != ''
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        working-directory: desktop
+        run: |
+          codesign --force --options runtime --timestamp -s "$MACOS_SIGN_IDENTITY" "dist/${{ matrix.file }}"
+          xcrun notarytool submit "dist/${{ matrix.file }}" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple "dist/${{ matrix.file }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.file }}
+          path: desktop/dist/${{ matrix.file }}
+          if-no-files-found: error
+      - name: Attach to release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: desktop
+        run: gh release upload "${{ github.event.release.tag_name }}" "dist/${{ matrix.file }}" --clobber
+
+  # Release notes get the install guide appended (once): download table + the one-time
+  # unsigned-build workarounds, until signing credentials exist.
+  release-notes:
+    name: release install guide
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Append install guide to release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body > notes.md
+          if grep -q "## Install the desktop app" notes.md; then exit 0; fi
+          cat >> notes.md <<'EOF'
+
+          ## Install the desktop app
+
+          No Julia needed — the app installs one for you (bundled juliaup), or uses the ones you have.
+
+          | Platform | Download | First launch (builds are not code-signed yet — one-time step) |
+          |----------|----------|------------------------------------------------|
+          | macOS (Apple Silicon) | `SpaceStation-mac-arm64.dmg` | drag to Applications, then run `xattr -dr com.apple.quarantine "/Applications/SpaceStation.app"` in Terminal — or right-click → Open, then **System Settings → Privacy & Security → Open Anyway** |
+          | macOS (Intel) | `SpaceStation-mac-x64.dmg` | same as above |
+          | Windows | `SpaceStation-win-x64.msi` | double-click; at the SmartScreen prompt choose **More info → Run anyway** |
+          | Linux | `SpaceStation-linux-x64.AppImage` | `chmod +x SpaceStation-linux-x64.AppImage` and run it |
+
+          Prefer the terminal? `julia> import Pkg; Pkg.Apps.add(url="https://github.com/GroupTherapyOrg/SpaceStation.jl")` installs the `spacestation` CLI — and the desktop app registers that same CLI for you AND puts it on your PATH (new terminals pick it up).
+          EOF
+          # strip the heredoc indentation
+          sed -i 's/^          //' notes.md
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md

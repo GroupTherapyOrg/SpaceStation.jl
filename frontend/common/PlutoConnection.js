@@ -103,6 +103,10 @@ const try_close_socket_connection = (/** @type {WebSocket} */ socket) => {
 const create_ws_connection = (address, { on_message, on_socket_close }, timeout_s = 30) => {
     return new Promise((resolve, reject) => {
         const socket = new WebSocket(address)
+        // Receive binary frames as ArrayBuffer instead of Blob: reading a Blob goes through file-backed
+        // storage, which WKWebView (the desktop app's webview) can fail with "NotReadableError: The I/O
+        // read operation failed". ArrayBuffer delivery skips that entirely — and skips a copy everywhere.
+        socket.binaryType = "arraybuffer"
 
         let has_been_open = false
 
@@ -127,7 +131,7 @@ const create_ws_connection = (address, { on_message, on_socket_close }, timeout_
             // the solution is a task queue, where each task includes the deserialization and the update handler
             last_task = last_task.then(async () => {
                 try {
-                    const buffer = await event.data.arrayBuffer()
+                    const buffer = event.data instanceof ArrayBuffer ? event.data : await event.data.arrayBuffer()
                     const message = unpack(new Uint8Array(buffer))
 
                     try {

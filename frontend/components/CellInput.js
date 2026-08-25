@@ -1,3 +1,4 @@
+import { prefers_dark } from "../common/ColorScheme.js"
 import { html, useState, useEffect, useLayoutEffect, useRef, useContext, useMemo } from "../imports/Preact.js"
 import _ from "../imports/lodash-es.js"
 
@@ -582,7 +583,7 @@ export const CellInput = ({
             }
         })
 
-        const usesDarkTheme = window.matchMedia("(prefers-color-scheme: dark)").matches
+        const usesDarkTheme = prefers_dark()
         const newcm = (newcm_ref.current = new EditorView({
             state: EditorState.create({
                 doc: local_code,

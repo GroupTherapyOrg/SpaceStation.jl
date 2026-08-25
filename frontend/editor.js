@@ -1,5 +1,6 @@
 import { html, render, useEffect, useRef, useState } from "./imports/Preact.js"
 import "./common/NodejsCompatibilityPolyfill.js"
+import "./common/ColorScheme.js" // applies the app-wide light/dark override + follows hub toggles live
 
 import { Editor, default_path } from "./components/Editor.js"
 import { FetchProgress, read_Uint8Array_with_progress } from "./components/FetchProgress.js"
