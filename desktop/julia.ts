@@ -32,17 +32,49 @@ export const save_settings = (patch: Record<string, unknown>) => {
     }
 }
 
+const deno_target = () => {
+    const arch = Deno.build.arch === "aarch64" ? "aarch64" : "x86_64"
+    return Deno.build.os === "darwin" ? `${arch}-apple-darwin` : Deno.build.os === "windows" ? `${arch}-pc-windows-msvc` : `${arch}-unknown-linux-gnu`
+}
+
+/** The bundle ships juliaup's PORTABLE build (vendor_juliaup.ts): a static `juliaup` + a `julia`
+ *  launcher, so a machine with NO Julia needs no installer script — on Windows too. Executables
+ *  can't run from the compiled VFS, so materialize them into the app-data dir once. */
+export const vendored_bin_dir = (): string | null => {
+    const exe = Deno.build.os === "windows" ? ".exe" : ""
+    const out = `${data_dir()}/juliaup-portable`
+    const names = [`juliaup${exe}`, `julia${exe}`]
+    try {
+        for (const n of names) Deno.statSync(`${out}/${n}`)
+        return out
+    } catch {
+        // not materialized yet
+    }
+    try {
+        const src = new URL(`./vendor/${deno_target()}/`, import.meta.url)
+        Deno.mkdirSync(out, { recursive: true })
+        for (const n of names) {
+            Deno.writeFileSync(`${out}/${n}`, Deno.readFileSync(new URL(n, src)))
+            if (exe === "") Deno.chmodSync(`${out}/${n}`, 0o755)
+        }
+        return out
+    } catch {
+        return null // built without vendored binaries — install paths fall back to the script
+    }
+}
+
 export const juliaup_bin = (): string | null => {
     const exe = Deno.build.os === "windows" ? "juliaup.exe" : "juliaup"
-    for (const candidate of [`${home_dir()}/.juliaup/bin/${exe}`, exe]) {
+    for (const candidate of [`${home_dir()}/.juliaup/bin/${exe}`, `/opt/homebrew/bin/${exe}`, `/usr/local/bin/${exe}`]) {
         try {
-            if (candidate.includes("/") || candidate.includes("\\")) Deno.statSync(candidate)
+            Deno.statSync(candidate)
             return candidate
         } catch {
-            // not at the well-known path; bare name is tried via PATH at spawn time
+            // keep looking
         }
     }
-    return null
+    const vendored = vendored_bin_dir()
+    return vendored == null ? null : `${vendored}/${exe}`
 }
 
 export type JuliaupInfo = { default: string | null; channels: Array<{ name: string; version: string }> }

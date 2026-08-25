@@ -2,7 +2,7 @@
 // this to a Deno.BrowserWindow, smoke.ts drives it from a plain `deno run` for headless testing.
 
 import * as buildinfo from "./buildinfo.ts"
-import { data_dir, home_dir, juliaup_bin } from "./julia.ts"
+import { data_dir, home_dir, juliaup_bin, vendored_bin_dir } from "./julia.ts"
 
 export type Phase = "idle" | "installing-julia" | "finding-julia" | "installing" | "starting" | "ready" | "error"
 
@@ -53,9 +53,13 @@ export class SpaceStationServer {
     async find_julia(): Promise<string | null> {
         const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE") ?? ""
         const exe = Deno.build.os === "windows" ? "julia.exe" : "julia"
+        const vendored = vendored_bin_dir()
         const candidates = [
             Deno.env.get("SPACESTATION_JULIA"),
             `${home}/.juliaup/bin/${exe}`,
+            // the bundle's portable julialauncher: resolves +channels against ~/.julia/juliaup
+            // (only answers --version once a channel is installed, so it self-skips when empty)
+            vendored == null ? null : `${vendored}/${exe}`,
             "julia", // PATH, when launched from a terminal
             "/opt/homebrew/bin/julia",
             "/usr/local/bin/julia",
@@ -92,11 +96,8 @@ export class SpaceStationServer {
             return { project: buildinfo.project, managed: false }
         }
         try {
-            const here = new URL(".", import.meta.url)
-            if (here.protocol === "file:") {
-                const repo = new URL("..", here).pathname
-                if (is_spacestation_repo(repo)) return { project: repo, managed: false }
-            }
+            const here = import.meta.dirname // OS-native; URL .pathname breaks on Windows drive letters
+            if (here != null && is_spacestation_repo(`${here}/..`)) return { project: `${here}/..`, managed: false }
         } catch {
             // not running from a source checkout — fall through to the managed environment
         }
@@ -144,18 +145,28 @@ export class SpaceStationServer {
     async start(opts: BootOptions = {}): Promise<void> {
         this.set("finding-julia", "") // leave "idle" synchronously: the launch page hands off to the splash
 
-        // A machine with no Julia at all: install juliaup first (the official installer script),
-        // point-and-click. Windows is a TODO (winget needs an interactive store agreement).
+        // A machine with no Julia at all: the bundle ships juliaup's portable build (static Rust,
+        // no installer needed — Windows included), so this is just `juliaup add release`. The
+        // official installer script remains the fallback for bundles built without vendor/.
         if (opts.bootstrap) {
-            if (Deno.build.os === "windows") {
-                this.set("error", "Automatic Julia install isn't wired up on Windows yet — install it from https://julialang.org/downloads and relaunch.")
+            const juliaup = juliaup_bin()
+            if (juliaup != null) {
+                this.set("installing-julia", "installing Julia (release channel) — a few minutes, once")
+                const ok = await this.run_logged(juliaup, ["add", "release"])
+                if (!ok) {
+                    this.set("error", "could not install Julia — see the log above, or install from https://julialang.org/downloads")
+                    return
+                }
+            } else if (Deno.build.os === "windows") {
+                this.set("error", "This build has no bundled installer — install Julia from https://julialang.org/downloads and relaunch.")
                 return
-            }
-            this.set("installing-julia", "installing Julia via juliaup — a few minutes, once")
-            const ok = await this.run_logged("sh", ["-c", "curl -fsSL https://install.julialang.org | sh -s -- --yes"])
-            if (!ok) {
-                this.set("error", "the Julia installer failed — see the log above, or install from https://julialang.org/downloads")
-                return
+            } else {
+                this.set("installing-julia", "installing Julia via juliaup — a few minutes, once")
+                const ok = await this.run_logged("sh", ["-c", "curl -fsSL https://install.julialang.org | sh -s -- --yes"])
+                if (!ok) {
+                    this.set("error", "the Julia installer failed — see the log above, or install from https://julialang.org/downloads")
+                    return
+                }
             }
         }
 
@@ -193,8 +204,9 @@ export class SpaceStationServer {
         const { project, managed } = this.resolve_project()
         const port = this.pick_port()
         this.state.port = port
-        // `julia +channel` is juliaup's version selector — it only means something to the shim.
-        const use_channel = channel != null && juliaup_bin() != null && !Deno.env.get("SPACESTATION_JULIA")
+        // `julia +channel` is juliaup's version selector — it only means something to the shim
+        // (the user's ~/.juliaup launcher, or our vendored portable one).
+        const use_channel = channel != null && (julia.includes(".juliaup") || julia.includes("juliaup-portable"))
         if (use_channel) this.log_line(`using Julia channel ${channel}`)
         const via = use_channel ? ` (Julia ${channel})` : ""
         this.set("starting", managed ? `starting SpaceStation${via} (managed environment)` : `starting SpaceStation${via} from ${project}`)
