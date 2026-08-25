@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.4](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.4.3...v0.4.4) (2026-08-25)
+
+
+### Bug Fixes
+
+* fit the window to the screen and make shell pages draggable ([#47](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/47)) ([b7bdc28](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/b7bdc28fcab63382ceb58dce325c4fee03acf3f7))
+
 ## [0.4.3](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.4.2...v0.4.3) (2026-08-25)
 
 
