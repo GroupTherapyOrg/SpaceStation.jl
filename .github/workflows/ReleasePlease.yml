@@ -41,6 +41,22 @@ jobs:
                   config-file: release-please-config.json
                   manifest-file: .release-please-manifest.json
 
+    # Releases created here use GITHUB_TOKEN (no PAT configured), and such events cannot trigger
+    # other workflows — so the Desktop installer build is DISPATCHED explicitly (an explicit
+    # workflow_dispatch API call from GITHUB_TOKEN is allowed). It builds the .dmg/.msi/.AppImage
+    # set, attaches them to the release, and appends the install guide to its notes.
+    desktop-installers:
+        name: Build desktop installers for the release
+        needs: release-please
+        if: ${{ needs.release-please.outputs.release_created == 'true' }}
+        runs-on: ubuntu-latest
+        permissions:
+            actions: write
+        steps:
+            - env:
+                  GH_TOKEN: ${{ github.token }}
+              run: gh workflow run Desktop.yml --repo "$GITHUB_REPOSITORY" -f release_tag="${{ needs.release-please.outputs.tag_name }}"
+
     register:
         name: Register in JuliaRegistries/General
         needs: release-please

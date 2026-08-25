@@ -22,6 +22,13 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Attach installers + install guide to this existing release (e.g. v0.4.0). The ReleasePlease workflow dispatches this automatically — releases it creates with GITHUB_TOKEN cannot trigger the `release` event."
+        required: false
+        type: string
+        default: ""
+
 
 permissions:
   contents: write # attach installers + edit notes on releases; read-only for everything else we do
@@ -119,17 +126,17 @@ jobs:
           path: desktop/dist/${{ matrix.file }}
           if-no-files-found: error
       - name: Attach to release
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || inputs.release_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
         working-directory: desktop
-        run: gh release upload "${{ github.event.release.tag_name }}" "dist/${{ matrix.file }}" --clobber
+        run: gh release upload "${{ github.event.release.tag_name || inputs.release_tag }}" "dist/${{ matrix.file }}" --clobber
 
   # Release notes get the install guide appended (once): download table + the one-time
   # unsigned-build workarounds, until signing credentials exist.
   release-notes:
     name: release install guide
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || inputs.release_tag != ''
     needs: build
     runs-on: ubuntu-latest
     steps:
@@ -137,7 +144,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="${{ github.event.release.tag_name }}"
+          TAG="${{ github.event.release.tag_name || inputs.release_tag }}"
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body > notes.md
           if grep -q "## Install the desktop app" notes.md; then exit 0; fi
           cat >> notes.md <<'EOF'
