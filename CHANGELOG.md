@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.3](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.4.2...v0.4.3) (2026-08-25)
+
+
+### Bug Fixes
+
+* every Launch Station control is now the one-click action it names ([#45](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/45)) ([413cf5e](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/413cf5ebbe6c23fdb8d6077eb9d9426fab62b439))
+* theme toggle must not blank views or lose scrollbars in the desktop app ([#44](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/44)) ([535d88a](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/535d88ac3144c4b84e10cb33953ffa247a9f3552))
+
 ## [0.4.2](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.4.1...v0.4.2) (2026-08-25)
 
 
