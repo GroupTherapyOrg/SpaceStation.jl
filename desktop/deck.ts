@@ -62,13 +62,23 @@ export const deck_html = (launcher_url: string) => /* html */ `<!doctype html>
         const stage = document.getElementById("stage")
         document.body.classList.toggle("inset", new URLSearchParams(location.search).has("inset"))
 
-        // macOS fullscreen = the window covers the screen exactly (the menu bar is hidden, and
-        // our content extends under the title bar, so the webview IS the full screen).
+        // Fullscreen detection: exact screen size works on plain displays, but a notched MacBook's
+        // fullscreen is screen height MINUS the notch band — so also ask the shell, which reads
+        // the NSWindow fullscreen style bit over FFI (/fullscreen).
         const hoverzone = document.getElementById("hoverzone")
+        let fs_timer
         const update_fullscreen = () => {
-            const fs = innerWidth === screen.width && innerHeight === screen.height
-            document.body.classList.toggle("fullscreen", fs)
-            if (!fs) strip.classList.remove("revealed")
+            clearTimeout(fs_timer)
+            fs_timer = setTimeout(async () => {
+                let fs = innerWidth === screen.width && innerHeight === screen.height
+                if (!fs) {
+                    try {
+                        fs = !!(await (await fetch("/fullscreen")).json()).fullscreen
+                    } catch {}
+                }
+                document.body.classList.toggle("fullscreen", fs)
+                if (!fs) strip.classList.remove("revealed")
+            }, 150)
         }
         addEventListener("resize", update_fullscreen)
         update_fullscreen()
