@@ -63,8 +63,9 @@ The builds aren't code-signed yet, so the **first** launch needs one extra step:
 - **Windows** — at the SmartScreen prompt choose **More info → Run anyway**.
 - **Linux** — `chmod +x SpaceStation-linux-x64.AppImage`, then run it.
 
-Installing the desktop app also registers the `spacestation` CLI above for free. The reverse is
-deliberately one-way: `Pkg.Apps.add` installs only the CLI, never the desktop app.
+Installing the desktop app also registers the `spacestation` CLI above **and puts it on your
+PATH** (new terminals pick it up). The reverse is deliberately one-way: `Pkg.Apps.add` installs
+only the CLI, never the desktop app.
 
 ---
 

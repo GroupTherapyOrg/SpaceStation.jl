@@ -87,6 +87,29 @@ export const cycle_color_scheme = () => {
 const init = () => apply(get_color_scheme())
 if (document.readyState === "complete") init()
 else window.addEventListener("load", init)
+
+// Stylesheets keep ARRIVING after load: notebook cell outputs inject their own <style> tags with
+// their own prefers-color-scheme blocks (PlutoUI's TableOfContents is the canonical case), and
+// they'd otherwise follow the OS instead of the override. Re-apply (idempotent — the WeakMap
+// remembers rules already seen) whenever style/link nodes enter the document.
+let reapply_timer = null
+const schedule_reapply = () => {
+    clearTimeout(reapply_timer)
+    reapply_timer = setTimeout(() => apply(get_color_scheme()), 100)
+}
+new MutationObserver((mutations) => {
+    for (const m of mutations) {
+        for (const node of m.addedNodes) {
+            if (node.nodeType !== 1) continue
+            if (node.tagName === "STYLE" || node.tagName === "LINK" || node.querySelector?.("style, link[rel=stylesheet]") != null) {
+                // a <link>'s rules exist only after it loads — re-apply then, too
+                if (node.tagName === "LINK") node.addEventListener("load", schedule_reapply, { once: true })
+                schedule_reapply()
+                return
+            }
+        }
+    }
+}).observe(document.documentElement, { childList: true, subtree: true })
 window.addEventListener("storage", (e) => {
     if (e.key === KEY) apply(get_color_scheme())
 })

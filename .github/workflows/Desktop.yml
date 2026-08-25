@@ -153,7 +153,7 @@ jobs:
           | Windows | `SpaceStation-win-x64.msi` | double-click; at the SmartScreen prompt choose **More info → Run anyway** |
           | Linux | `SpaceStation-linux-x64.AppImage` | `chmod +x SpaceStation-linux-x64.AppImage` and run it |
 
-          Prefer the terminal? `julia> import Pkg; Pkg.Apps.add(url="https://github.com/GroupTherapyOrg/SpaceStation.jl")` installs the `spacestation` CLI — and the desktop app registers that same CLI for you.
+          Prefer the terminal? `julia> import Pkg; Pkg.Apps.add(url="https://github.com/GroupTherapyOrg/SpaceStation.jl")` installs the `spacestation` CLI — and the desktop app registers that same CLI for you AND puts it on your PATH (new terminals pick it up).
           EOF
           # strip the heredoc indentation
           sed -i 's/^          //' notes.md

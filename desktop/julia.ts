@@ -164,6 +164,54 @@ export const julia_catalog = async (): Promise<{
     return { aliases, minors, versions, updates }
 }
 
+/** Pkg.Apps puts the `spacestation` shim in ~/.julia/bin — but nothing puts that directory on
+ *  PATH (Pkg just prints a hint). The desktop finishes the job, idempotently and best-effort:
+ *  a guarded export line in the shell rc files (macOS/Linux — skipped when anything already
+ *  references .julia/bin), or the User PATH registry value on Windows (via [Environment]::…,
+ *  never `setx`, which truncates and flattens). New terminals pick it up. */
+export const ensure_cli_on_path = async (log: (line: string) => void): Promise<void> => {
+    const bin_dir = `${home_dir()}/.julia/bin`
+    try {
+        const has_shim = [...Deno.readDirSync(bin_dir)].some((e) => e.name === "spacestation" || e.name.startsWith("spacestation."))
+        if (!has_shim) return
+    } catch {
+        return // no shims installed — nothing to expose
+    }
+    if (Deno.build.os === "windows") {
+        try {
+            const script =
+                "$bin = Join-Path $env:USERPROFILE '.julia\\bin'; " +
+                "$cur = [Environment]::GetEnvironmentVariable('Path','User'); if ($null -eq $cur) { $cur = '' }; " +
+                "if (-not (($cur -split ';') -contains $bin)) { [Environment]::SetEnvironmentVariable('Path', ($cur.TrimEnd(';') + ';' + $bin), 'User'); Write-Output 'added' }"
+            const out = await new Deno.Command("powershell", { args: ["-NoProfile", "-Command", script], stdout: "piped", stderr: "null" }).output()
+            if (new TextDecoder().decode(out.stdout).includes("added")) {
+                log("added ~/.julia/bin to your PATH — open a new terminal to use the `spacestation` command")
+            }
+        } catch {
+            // best-effort: the CLI still works via its full path
+        }
+        return
+    }
+    const line = 'export PATH="$HOME/.julia/bin:$PATH" # SpaceStation: the `spacestation` CLI lives here'
+    let added = false
+    for (const rc of [`${home_dir()}/.zshrc`, `${home_dir()}/.bashrc`, `${home_dir()}/.profile`]) {
+        try {
+            let current = ""
+            try {
+                current = Deno.readTextFileSync(rc)
+            } catch {
+                // no such rc yet — create it with just our line
+            }
+            if (current.includes(".julia/bin")) continue // the user (or we) already handled this shell
+            Deno.writeTextFileSync(rc, `${current}${current === "" || current.endsWith("\n") ? "" : "\n"}\n${line}\n`)
+            added = true
+        } catch {
+            // best-effort per file
+        }
+    }
+    if (added) log("added ~/.julia/bin to your shell PATH — open a new terminal to use the `spacestation` command")
+}
+
 /** Is a bare `julia` runnable (no juliaup)? Used for the picker's system-julia row. */
 export const has_plain_julia = async (): Promise<string | null> => {
     for (const candidate of [Deno.env.get("SPACESTATION_JULIA"), "julia", "/opt/homebrew/bin/julia", "/usr/local/bin/julia"].filter((c): c is string => !!c)) {

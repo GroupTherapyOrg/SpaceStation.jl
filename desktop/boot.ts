@@ -2,7 +2,7 @@
 // this to a Deno.BrowserWindow, smoke.ts drives it from a plain `deno run` for headless testing.
 
 import * as buildinfo from "./buildinfo.ts"
-import { data_dir, home_dir, juliaup_bin, vendored_bin_dir } from "./julia.ts"
+import { data_dir, ensure_cli_on_path, home_dir, juliaup_bin, vendored_bin_dir } from "./julia.ts"
 
 export type Phase = "idle" | "installing-julia" | "finding-julia" | "installing" | "starting" | "ready" | "error"
 
@@ -272,6 +272,9 @@ export class SpaceStationServer {
                     // (the server env flag arrives too, but only after an async config fetch)
                     this.state.url = `http://127.0.0.1:${port}/?${secret ? `secret=${secret}&` : ""}desktop=1`
                     this.set("ready", "")
+                    // downloaded-app installs registered the `spacestation` CLI — make sure the
+                    // user's shells can actually find it (idempotent, best-effort)
+                    if (managed) void ensure_cli_on_path((line) => this.log_line(line))
                     return
                 }
             } catch {
