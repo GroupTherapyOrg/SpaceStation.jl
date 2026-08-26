@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.7](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.4.6...v0.4.7) (2026-08-26)
+
+
+### Bug Fixes
+
+* shift the deck tabs into the traffic lights' gap in fullscreen, and show a pointer on tabs ([#53](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/53)) ([ef76598](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/ef765988fba63f62ee3f16e38ade01e67e06b83d))
+
 ## [0.4.6](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.4.5...v0.4.6) (2026-08-26)
 
 
