@@ -228,7 +228,7 @@ export class SpaceStationServer {
                    # the app itself never depends on it.
                    try
                        Pkg.Apps.add(${spec})
-                       println("installed the spacestation CLI (add ~/.julia/bin to PATH to use it anywhere)")
+                       println("installed the spacestation CLI")
                    catch e
                        println("CLI install skipped: ", sprint(showerror, e))
                    end;
@@ -246,6 +246,11 @@ export class SpaceStationServer {
                 // the hub reads this via /api/v1/config: one webview window, so open workspaces
                 // in-place instead of spawning browser tabs
                 SPACESTATION_DESKTOP: "1",
+                // GUI-launched processes get the minimal system PATH, not the user's shell PATH
+                // (where ensure_cli_on_path put ~/.julia/bin) — so Pkg.Apps warned "not available
+                // in PATH" on every bootstrap even though the CLI was fully set up. Give the
+                // child the entry; notebooks that shell out see the CLI too.
+                PATH: `${home_dir()}/.julia/bin${Deno.build.os === "windows" ? ";" : ":"}${Deno.env.get("PATH") ?? ""}`,
                 ...(managed ? { SPACESTATION_DESKTOP_ENV: project } : {}),
             },
             stdout: "piped",
