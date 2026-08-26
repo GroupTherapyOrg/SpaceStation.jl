@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.6](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.4.5...v0.4.6) (2026-08-26)
+
+
+### Bug Fixes
+
+* stop Pkg.Apps warning about PATH on every bootstrap ([#51](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/51)) ([ef9998a](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/ef9998a89d14c5959ef73c9cb9ea2cef48ed274d))
+
 ## [0.4.5](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.4.4...v0.4.5) (2026-08-25)
 
 
