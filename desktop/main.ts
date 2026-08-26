@@ -11,7 +11,7 @@
 
 import { SpaceStationServer, type BootOptions } from "./boot.ts"
 import { serve_ui } from "./splash.ts"
-import { begin_window_drag, extend_under_titlebar, main_screen_size, set_app_appearance } from "./macos_titlebar.ts"
+import { begin_window_drag, extend_under_titlebar, is_fullscreen, main_screen_size, set_app_appearance } from "./macos_titlebar.ts"
 import { has_plain_julia, julia_catalog, juliaup_info, load_settings, save_settings } from "./julia.ts"
 
 // Deno.BrowserWindow only exists inside the desktop runtime host. Fail with a hint, not a crash,
@@ -123,6 +123,7 @@ serve_ui({
         set_app_appearance(scheme)
     },
     on_drag: () => void begin_window_drag(),
+    window_state: () => ({ fullscreen: is_fullscreen() }),
 })
 
 let closing = false

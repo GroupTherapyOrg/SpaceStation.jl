@@ -22,11 +22,14 @@ export const deck_html = (launcher_url: string) => /* html */ `<!doctype html>
         padding: 0 8px 0 10px; background: #0f0d16; -webkit-app-region: drag; user-select: none;
     }
     /* 28px = the native title bar height, so the tab pills center on the traffic lights' row */
-    body.inset #strip { height: 28px; padding: 3px 8px 3px 84px; }
+    body.inset #strip { height: 28px; padding: 3px 8px 3px 84px; transition: padding-left 0.12s ease-out; }
+    /* fullscreen hides the traffic lights, so the gap reserved for them would just be dead
+       space — reclaim it and let the tabs sit where every other row starts */
+    body.inset.fullscreen #strip { padding-left: 10px; }
     body.inset .tab { border-radius: 6px; }
     .tab {
         -webkit-app-region: no-drag; display: flex; align-items: center; gap: 0.45rem; max-width: 15rem;
-        padding: 0 0.65rem; border-radius: 7px 7px 0 0; color: #9a93b8; font-size: 12.5px; cursor: default;
+        padding: 0 0.65rem; border-radius: 7px 7px 0 0; color: #9a93b8; font-size: 12.5px; cursor: pointer;
         white-space: nowrap; overflow: hidden;
     }
     .tab .title { overflow: hidden; text-overflow: ellipsis; }
@@ -56,6 +59,24 @@ export const deck_html = (launcher_url: string) => /* html */ `<!doctype html>
         strip.addEventListener("mousedown", (e) => {
             if (e.button === 0 && e.target.closest(".tab") == null) fetch("./api/drag", { method: "POST" }).catch(() => {})
         })
+
+        // Entering/leaving fullscreen always resizes the window, so ask the shell then (rather
+        // than polling): it reads the window's own NSWindowStyleMaskFullScreen bit. Geometry
+        // heuristics were tried for this and lost to notch/menu-bar edge cases. Non-macOS shells
+        // answer false and the inset layout never applies there anyway.
+        const sync_fullscreen = async () => {
+            try {
+                const s = await (await fetch("./api/window")).json()
+                document.body.classList.toggle("fullscreen", s.fullscreen === true)
+            } catch {}
+        }
+        let fs_timer = null
+        addEventListener("resize", () => {
+            clearTimeout(fs_timer)
+            // after the transition animation settles, so we read the final state once
+            fs_timer = setTimeout(sync_fullscreen, 150)
+        })
+        sync_fullscreen()
         // NOTE: no fullscreen special-casing, deliberately. Auto-hiding the strip in sync with the
         // native fullscreen overlay was tried and looked broken more ways than it looked native
         // (notch geometry, the overlay stealing the mouse, unrelated helper windows). The strip is
