@@ -106,6 +106,25 @@ export const set_app_appearance = (scheme: "light" | "dark" | "system"): boolean
     }
 }
 
+/** Is the app's window in native fullscreen? (NSWindowStyleMaskFullScreen, 1 << 14.) The deck
+ *  asks so it can drop the gap it reserves for the traffic lights, which macOS hides in
+ *  fullscreen. False off-macOS — no other platform insets the strip in the first place.
+ *
+ *  NOTE: this reads the WINDOW'S OWN style bit, which is exactly what it claims to be. The
+ *  fullscreen tracking removed earlier tried to detect the auto-hiding titlebar OVERLAY by
+ *  geometry, which is what proved unreliable; nothing here depends on the overlay. */
+export const is_fullscreen = (): boolean => {
+    try {
+        let full = false
+        each_titled_window((_S, _w, mask) => {
+            if ((mask & 0x4000n) !== 0n) full = true
+        })
+        return full
+    } catch {
+        return false
+    }
+}
+
 /** Start a native window drag. WKWebView swallows every mouse event, so CSS app-region does
  *  nothing in this shell (it is a Chromium feature) and the window had NO way to be moved.
  *  The standard WKWebView-shell workaround: on mousedown in a page's drag area, the page calls

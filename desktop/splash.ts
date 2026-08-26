@@ -74,9 +74,10 @@ export interface UiHandlers {
     on_launch: (opts: BootOptions & { remember?: boolean }) => Promise<void>
     on_appearance?: (scheme: "light" | "dark" | "system") => void
     on_drag?: () => void
+    window_state?: () => { fullscreen: boolean }
 }
 
-export const serve_ui = ({ state, julia_info, on_launch, on_appearance, on_drag }: UiHandlers) =>
+export const serve_ui = ({ state, julia_info, on_launch, on_appearance, on_drag, window_state }: UiHandlers) =>
     Deno.serve(async (req) => {
         const path = new URL(req.url).pathname
         const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } })
@@ -88,6 +89,9 @@ export const serve_ui = ({ state, julia_info, on_launch, on_appearance, on_drag 
             on_drag?.()
             return json({ ok: true })
         }
+        // the deck asks after every resize: fullscreen hides the traffic lights, so the strip
+        // drops the gap it reserves for them
+        if (path === "/api/window") return json(window_state?.() ?? { fullscreen: false })
         if (path === "/api/appearance" && req.method === "POST") {
             try {
                 const { scheme } = await req.json()
