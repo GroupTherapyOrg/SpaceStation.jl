@@ -83,10 +83,16 @@ jobs:
         if: runner.os == 'macOS'
         working-directory: desktop
         run: |
-          deno desktop -o dist/WindowSmoke.app --allow-net --allow-env --allow-read --allow-write window_smoke.ts
+          set -euo pipefail
+          rm -rf dist/WindowSmoke*
+          deno desktop -o dist/WindowSmoke --allow-net --allow-env --allow-read --allow-write window_smoke.ts
+          # Locate the bundle rather than assuming its name: deno appends `.app` itself, so naming
+          # the output `WindowSmoke.app` yields `WindowSmoke.app.app` on some versions.
+          app=$(find dist -maxdepth 1 -name "*.app" | head -1)
+          [ -n "$app" ] || { echo "no .app produced"; ls -la dist; exit 1; }
           # `deno desktop <script>` builds a GUI bundle and does not stream its output, so run the
           # built binary directly — that inherits stdout and, more importantly, the exit code.
-          ./dist/WindowSmoke.app/Contents/MacOS/laufey_webview
+          "$app/Contents/MacOS/laufey_webview"
 
       - name: Headed window smoke · Windows
         if: runner.os == 'Windows'
@@ -99,9 +105,13 @@ jobs:
           # --icon is required, and not cosmetically: deno decodes desktop.app.icons.macos (.icns)
           # even when the target is Windows and fails the build outright. Overriding with the .ico
           # sidesteps that. (deno 2.9.5 embeds neither, but it still insists on decoding them.)
+          Remove-Item -Recurse -Force dist\WindowSmoke* -ErrorAction SilentlyContinue
           deno desktop --icon icons/spacestation.ico -o dist/WindowSmoke.exe --allow-net --allow-env --allow-read --allow-write window_smoke.ts
-          $exe = "dist\WindowSmoke\WindowSmoke.exe"
-          if (-not (Test-Path $exe)) { throw "the smoke build produced no executable at $exe" }
+          # Locate the exe rather than assuming the layout: a native build drops dist\WindowSmoke.exe
+          # while a cross-compiled one nests it in dist\WindowSmoke\.
+          $exe = (Get-ChildItem -Path dist -Recurse -Filter "WindowSmoke*.exe" | Select-Object -First 1).FullName
+          if (-not $exe) { Get-ChildItem -Recurse dist | Select-Object FullName; throw "the smoke build produced no executable under dist" }
+          Write-Host "running $exe"
           # A GUI-subsystem binary writes nothing to this console, hence SPACESTATION_SMOKE_LOG.
           $p = Start-Process $exe -PassThru -Wait
           if (Test-Path $log) { Get-Content $log }
