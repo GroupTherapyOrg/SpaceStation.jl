@@ -39,16 +39,19 @@ $installer = New-Object -ComObject WindowsInstaller.Installer
 # 1 = transact mode: changes are written when we call Commit, and dropped otherwise.
 $db = $installer.GetType().InvokeMember("OpenDatabase", "InvokeMethod", $null, $installer, @((Resolve-Path $Msi).Path, 1))
 
+# NOTE: View.Execute takes one (optional) Record parameter, so the argument array must be @($null)
+# — passing a bare $null means "no arguments at all" and COM rejects it with
+# `Exception calling "InvokeMember" with "5" argument(s): "Execute,Params"`.
 function Invoke-Msi([string] $sql) {
     $view = $db.GetType().InvokeMember("OpenView", "InvokeMethod", $null, $db, @($sql))
-    $view.GetType().InvokeMember("Execute", "InvokeMethod", $null, $view, $null)
+    $view.GetType().InvokeMember("Execute", "InvokeMethod", $null, $view, @($null))
     $view.GetType().InvokeMember("Close", "InvokeMethod", $null, $view, $null)
     [System.Runtime.InteropServices.Marshal]::ReleaseComObject($view) | Out-Null
 }
 
 function Get-MsiProperty([string] $name) {
     $view = $db.GetType().InvokeMember("OpenView", "InvokeMethod", $null, $db, @("SELECT ``Value`` FROM ``Property`` WHERE ``Property``='$name'"))
-    $view.GetType().InvokeMember("Execute", "InvokeMethod", $null, $view, $null)
+    $view.GetType().InvokeMember("Execute", "InvokeMethod", $null, $view, @($null))
     $rec = $view.GetType().InvokeMember("Fetch", "InvokeMethod", $null, $view, $null)
     $value = if ($null -eq $rec) { $null } else { $rec.GetType().InvokeMember("StringData", "GetProperty", $null, $rec, @(1)) }
     $view.GetType().InvokeMember("Close", "InvokeMethod", $null, $view, $null)
