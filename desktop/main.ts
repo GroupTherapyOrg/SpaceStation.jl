@@ -26,6 +26,41 @@ if (BrowserWindow == null) {
     Deno.exit(1)
 }
 
+// One app, one instance. Every click on the icon used to start an independent copy with its own
+// Julia server and its own port — harmless-looking until the window fails to appear, at which point
+// #55's reporter had five invisible SpaceStation.exe processes stacked up. Holding a loopback port
+// IS the lock: the OS releases it when the process dies, so there is no stale lockfile to reap.
+// This runs BEFORE the window is constructed, so a duplicate never flashes one up.
+const INSTANCE_PORT = 47823
+const INSTANCE_MARKER = "spacestation-desktop-instance"
+
+let instance_lock: Deno.Listener | null = null
+try {
+    instance_lock = Deno.listen({ hostname: "127.0.0.1", port: INSTANCE_PORT })
+} catch (e) {
+    if (e instanceof Deno.errors.AddrInUse) {
+        // Something holds the port. Stand down only if it answers as another SpaceStation — an
+        // unrelated program squatting on this port must never stop the app from starting, so every
+        // uncertain outcome (no answer, wrong answer, slow answer) falls through and launches.
+        let ours = false
+        try {
+            const conn = await Deno.connect({ hostname: "127.0.0.1", port: INSTANCE_PORT })
+            const buf = new Uint8Array(64)
+            const read = conn.read(buf)
+            const n = await Promise.race([read, new Promise<null>((r) => setTimeout(() => r(null), 1500))])
+            if (n != null) ours = new TextDecoder().decode(buf.subarray(0, n)).startsWith(INSTANCE_MARKER)
+            conn.close()
+        } catch {
+            // nothing listening any more, or it refused to talk — treat as not ours
+        }
+        if (ours) {
+            console.error("SpaceStation is already running — raising that window instead of starting a second copy.")
+            Deno.exit(0)
+        }
+    }
+    // Any other listen failure: run without the lock rather than refuse to start.
+}
+
 // The first construction adopts the implicit startup window. On macOS the FFI tweak then extends
 // the content under the title bar, so the deck's tab strip shares the traffic lights' row.
 // Never open larger than the screen: on smaller or scaled-down displays the fixed default
@@ -44,6 +79,32 @@ const under_titlebar = extend_under_titlebar()
 // WKWebView's prefers-color-scheme and its own chrome follow it like a real OS dark-mode switch.
 const saved_scheme = load_settings().color_scheme
 if (saved_scheme === "light" || saved_scheme === "dark") set_app_appearance(saved_scheme)
+
+// Now that there IS a window, answer later launches: identify ourselves so they exit, and bring
+// this window forward so the click the user just made does something visible.
+if (instance_lock != null) {
+    const lock = instance_lock
+    void (async () => {
+        for await (const conn of lock) {
+            try {
+                win.show()
+                win.focus()
+            } catch {
+                // window already gone — still answer, so the newcomer doesn't start a duplicate
+            }
+            try {
+                await conn.write(new TextEncoder().encode(INSTANCE_MARKER))
+            } catch {
+                // the other copy gave up waiting
+            }
+            try {
+                conn.close()
+            } catch {
+                // already closed
+            }
+        }
+    })()
+}
 
 const shell_port = Deno.env.get("DENO_SERVE_ADDRESS")?.split(":").pop()
 const shell_url = (path: string) => `http://127.0.0.1:${shell_port}${path}`

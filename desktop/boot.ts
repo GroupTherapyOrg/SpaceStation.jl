@@ -307,24 +307,48 @@ export class SpaceStationServer {
         if (buffer.trim() !== "") this.log_line(buffer)
     }
 
-    /** Graceful shutdown: SIGTERM lets the server reap terminals, tunnels, and child workspace
-     *  servers (its on_shutdown handler); escalate only if it lingers. */
+    /** Graceful shutdown, in three escalating steps.
+     *
+     *  Ask the server to stop ITSELF first, over the secret-gated /api/v1/shutdown route it already
+     *  exposes (CollabLocal.jl:163-171 shuts child workspaces down exactly this way). Only that path
+     *  runs the server's on_shutdown handler, which reaps terminals, tunnels and child workspace
+     *  servers. A signal cannot stand in for it on Windows: Deno maps SIGTERM to TerminateProcess,
+     *  so the server dies where it stands and every process it spawned is orphaned — they outlive
+     *  the app and hold their ports. Signals remain the fallback for a server too wedged to answer. */
     async stop(): Promise<void> {
         const child = this.child
         if (child == null) return
         this.stopping = true
+
+        const exited = (ms: number) => Promise.race([child.status.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), ms))])
+
+        const port = this.state.port
+        if (port != null) {
+            const secret = this.read_secret(port)
+            try {
+                const res = await fetch(`http://127.0.0.1:${port}/api/v1/shutdown${secret == null ? "" : `?secret=${encodeURIComponent(secret)}`}`, {
+                    method: "POST",
+                    signal: AbortSignal.timeout(3000),
+                })
+                await res.body?.cancel()
+            } catch {
+                // not listening, already going down, or no secret to present — escalate below
+            }
+            // Give it room to actually unwind: reaping workers is not instant.
+            if (await exited(8000)) return
+        }
+
         try {
             child.kill("SIGTERM")
         } catch {
-            return
+            // already gone, or the signal is unsupported on this platform — escalate anyway, rather
+            // than returning and leaving a live process behind (which is what used to happen)
         }
-        const killed = await Promise.race([child.status.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), 5000))])
-        if (!killed) {
-            try {
-                child.kill("SIGKILL")
-            } catch {
-                // already gone
-            }
+        if (await exited(5000)) return
+        try {
+            child.kill("SIGKILL")
+        } catch {
+            // already gone
         }
     }
 }
