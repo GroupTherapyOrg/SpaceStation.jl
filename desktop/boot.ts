@@ -3,6 +3,7 @@
 
 import * as buildinfo from "./buildinfo.ts"
 import { data_dir, ensure_cli_on_path, home_dir, juliaup_bin, load_settings, save_settings, vendored_bin_dir } from "./julia.ts"
+import { run_captured, spawn_logged, type Running } from "./spawn.ts"
 
 export type Phase = "idle" | "installing-julia" | "finding-julia" | "installing" | "starting" | "ready" | "error"
 
@@ -30,7 +31,7 @@ const DESKTOP_PORT_BASE = 1250
 
 export class SpaceStationServer {
     state: BootState = { phase: "idle", detail: "", log: [], url: null, port: null }
-    private child: Deno.ChildProcess | null = null
+    private child: Running | null = null
     private stopping = false
     onchange: (() => void) | null = null
 
@@ -70,9 +71,9 @@ export class SpaceStationServer {
         ].filter((c): c is string => !!c)
         for (const candidate of candidates) {
             try {
-                const out = await new Deno.Command(candidate, { args: ["--version"], stdout: "piped", stderr: "null" }).output()
+                const out = await run_captured(candidate, ["--version"])
                 if (out.success) {
-                    this.log_line(`found ${new TextDecoder().decode(out.stdout).trim()} at ${candidate}`)
+                    this.log_line(`found ${out.stdout.trim()} at ${candidate}`)
                     return candidate
                 }
             } catch {
@@ -111,9 +112,7 @@ export class SpaceStationServer {
     /** Run a command with stdout+stderr streaming into the boot log; true on exit 0. */
     private async run_logged(cmd: string, args: string[]): Promise<boolean> {
         try {
-            const child = new Deno.Command(cmd, { args, stdout: "piped", stderr: "piped" }).spawn()
-            this.pipe(child.stdout)
-            this.pipe(child.stderr)
+            const child = spawn_logged(cmd, args, undefined, (line) => this.log_line(line))
             return (await child.status).success
         } catch (e) {
             this.log_line(`${cmd} failed: ${e}`)
@@ -277,9 +276,10 @@ export class SpaceStationServer {
         if (use_channel) args.unshift(`+${channel}`)
         if (managed) Deno.mkdirSync(project, { recursive: true })
 
-        const child = new Deno.Command(julia, {
+        const child = spawn_logged(
+            julia,
             args,
-            env: {
+            {
                 // the hub reads this via /api/v1/config: one webview window, so open workspaces
                 // in-place instead of spawning browser tabs
                 SPACESTATION_DESKTOP: "1",
@@ -290,12 +290,9 @@ export class SpaceStationServer {
                 PATH: `${home_dir()}/.julia/bin${Deno.build.os === "windows" ? ";" : ":"}${Deno.env.get("PATH") ?? ""}`,
                 ...(managed ? { SPACESTATION_DESKTOP_ENV: project } : {}),
             },
-            stdout: "piped",
-            stderr: "piped",
-        }).spawn()
+            (line) => this.log_line(line)
+        )
         this.child = child
-        this.pipe(child.stdout)
-        this.pipe(child.stderr)
         child.status.then((status) => {
             this.child = null
             if (!this.stopping) this.set("error", `the SpaceStation server exited unexpectedly (code ${status.code})`)
@@ -326,22 +323,6 @@ export class SpaceStationServer {
         }
         this.set("error", "timed out waiting for the SpaceStation server to start")
         this.stop()
-    }
-
-    private async pipe(stream: ReadableStream<Uint8Array>) {
-        const decoder = new TextDecoder()
-        let buffer = ""
-        try {
-            for await (const chunk of stream) {
-                buffer += decoder.decode(chunk, { stream: true })
-                const lines = buffer.split("\n")
-                buffer = lines.pop() ?? ""
-                for (const line of lines) this.log_line(line)
-            }
-        } catch {
-            // stream closed with the process
-        }
-        if (buffer.trim() !== "") this.log_line(buffer)
     }
 
     /** Graceful shutdown, in three escalating steps.
