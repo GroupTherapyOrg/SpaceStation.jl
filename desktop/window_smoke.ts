@@ -101,16 +101,9 @@ if (Deno.build.os === "windows") {
     }
     if (actual.toLowerCase() !== expected.toLowerCase()) fail(`WEBVIEW2_USER_DATA_FOLDER is ${actual}, expected ${expected}`)
 
-    // The profile is only materialized once the environment is REALLY created there.
-    try {
-        Deno.statSync(`${actual}\\EBWebView`)
-        say(`[window-smoke] WebView2 profile materialized at ${actual}\\EBWebView`)
-    } catch {
-        fail(`WebView2 reported success but left nothing at ${actual}\\EBWebView`)
-    }
-
-    // …and nothing may have been written beside the executable, which on a real install is
-    // %ProgramFiles%\SpaceStation and read-only for a standard user.
+    // THE assertion. Nothing may be written beside the executable: on a real install that is
+    // %ProgramFiles%\SpaceStation, read-only for a standard user, and its appearance is the #55
+    // signature exactly. This holds even here, where the runner could write there if it tried.
     const exe = Deno.execPath()
     try {
         Deno.statSync(`${exe}.WebView2`)
@@ -118,6 +111,24 @@ if (Deno.build.os === "windows") {
     } catch {
         say(`[window-smoke] nothing written beside the executable — good`)
     }
+
+    // And the profile should land in our folder. WebView2 writes it lazily and we beacon the moment
+    // the page loads, so poll rather than demanding it be there already — and look for ANY entry,
+    // not specifically EBWebView: that subfolder belongs to the DEFAULT <exe>.WebView2\EBWebView
+    // layout, and an explicitly named user-data folder is not obliged to reproduce it.
+    const deadline = Date.now() + 20_000
+    let entries: string[] = []
+    while (Date.now() < deadline) {
+        try {
+            entries = [...Deno.readDirSync(actual)].map((e) => e.name)
+        } catch {
+            entries = []
+        }
+        if (entries.length > 0) break
+        await new Promise((r) => setTimeout(r, 500))
+    }
+    if (entries.length === 0) fail(`WebView2 reported success but wrote nothing into ${actual} within 20s`)
+    say(`[window-smoke] WebView2 profile materialized in ${actual} — ${entries.slice(0, 8).join(", ")}`)
 }
 
 say("[window-smoke] PASS")
