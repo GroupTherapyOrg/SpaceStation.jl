@@ -101,34 +101,42 @@ if (Deno.build.os === "windows") {
     }
     if (actual.toLowerCase() !== expected.toLowerCase()) fail(`WEBVIEW2_USER_DATA_FOLDER is ${actual}, expected ${expected}`)
 
-    // THE assertion. Nothing may be written beside the executable: on a real install that is
-    // %ProgramFiles%\SpaceStation, read-only for a standard user, and its appearance is the #55
-    // signature exactly. This holds even here, where the runner could write there if it tried.
+    // Report BOTH candidate folders before judging either. Existence alone is not evidence: WebView2
+    // may create an empty stub beside the binary while keeping the real profile where we asked, and
+    // an assertion that cannot tell those apart is how this test has been wrong twice already.
     const exe = Deno.execPath()
-    try {
-        Deno.statSync(`${exe}.WebView2`)
-        fail(`WebView2 fell back to ${exe}.WebView2 — beside the binary. On an installed copy that path is not writable; this is exactly issue #55.`)
-    } catch {
-        say(`[window-smoke] nothing written beside the executable — good`)
+    const listing = (dir: string): string[] => {
+        try {
+            return [...Deno.readDirSync(dir)].map((e) => e.name)
+        } catch {
+            return []
+        }
     }
 
-    // And the profile should land in our folder. WebView2 writes it lazily and we beacon the moment
-    // the page loads, so poll rather than demanding it be there already — and look for ANY entry,
-    // not specifically EBWebView: that subfolder belongs to the DEFAULT <exe>.WebView2\EBWebView
-    // layout, and an explicitly named user-data folder is not obliged to reproduce it.
+    // Poll: WebView2 writes the profile lazily, and we beacon the instant the page loads.
     const deadline = Date.now() + 20_000
-    let entries: string[] = []
+    let ours: string[] = []
+    let beside: string[] = []
     while (Date.now() < deadline) {
-        try {
-            entries = [...Deno.readDirSync(actual)].map((e) => e.name)
-        } catch {
-            entries = []
-        }
-        if (entries.length > 0) break
+        ours = listing(actual)
+        beside = listing(`${exe}.WebView2`)
+        if (ours.length > 0 || beside.length > 0) break
         await new Promise((r) => setTimeout(r, 500))
     }
-    if (entries.length === 0) fail(`WebView2 reported success but wrote nothing into ${actual} within 20s`)
-    say(`[window-smoke] WebView2 profile materialized in ${actual} — ${entries.slice(0, 8).join(", ")}`)
+    say(`[window-smoke] ours     ${JSON.stringify(actual)} -> ${ours.length} entr(ies): ${ours.slice(0, 10).join(", ") || "(none)"}`)
+    say(`[window-smoke] beside   ${JSON.stringify(`${exe}.WebView2`)} -> ${beside.length} entr(ies): ${beside.slice(0, 10).join(", ") || "(none)"}`)
+
+    // The real invariant: the profile lives where we asked. A stub beside the binary is tolerable —
+    // an empty directory needs no write permission to matter — but a profile there means WebView2
+    // ignored the override, which on a Program Files install is issue #55 exactly.
+    if (beside.length > ours.length) {
+        fail(
+            `WebView2 put its profile beside the binary (${beside.length} entries) rather than in ${actual} (${ours.length}). ` +
+                `The WEBVIEW2_USER_DATA_FOLDER override was not honoured — this is issue #55.`
+        )
+    }
+    if (ours.length === 0) fail(`WebView2 wrote nothing into ${actual} within 20s — the override does not appear to be taking effect.`)
+    say(`[window-smoke] the profile is in our folder, not beside the binary — the override holds`)
 }
 
 say("[window-smoke] PASS")
