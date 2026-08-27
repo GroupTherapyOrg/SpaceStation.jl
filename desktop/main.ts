@@ -67,11 +67,18 @@ try {
 // overflowed the visible area, cutting off the bottom of every page. (Margins leave room for
 // the menu bar and a bit of breathing space; off-macOS the defaults stand.)
 const screen = main_screen_size()
+// An empty title is a macOS choice: the deck draws its own chrome under the traffic lights, so the
+// system caption should stay blank. Windows has no such arrangement — there the title IS the taskbar
+// button's label, the Alt+Tab entry and the window caption, and leaving it empty gave the app a
+// nameless entry in all three (part of why #55's reporter reported "no icon in my dock"). Likewise
+// transparentTitlebar is a macOS affordance that Windows silently ignores, so asking for it there
+// only sets up a layout that assumes chrome it will never get.
+const mac = Deno.build.os === "darwin"
 const win = new BrowserWindow({
-    title: "",
+    title: mac ? "" : "SpaceStation",
     width: screen ? Math.min(1280, screen.width - 32) : 1280,
     height: screen ? Math.min(878, screen.height - 80) : 878,
-    transparentTitlebar: true,
+    transparentTitlebar: mac,
 })
 const under_titlebar = extend_under_titlebar()
 
@@ -114,32 +121,38 @@ const shell_url = (path: string) => `http://127.0.0.1:${shell_port}${path}`
 // plumbing: macOS routes Cmd+C/V through the menu, so without them clipboard shortcuts never
 // reach the webview. "Julia Version…" is a plain menu item (no accelerator): it reopens the
 // Launch Station to switch versions (which restarts the server).
-try {
-    win.setApplicationMenu([
-        {
-            submenu: {
-                label: "SpaceStation",
-                items: [{ item: { label: "Julia Version…", id: "julia-version", enabled: true } }, "separator", { role: { role: "quit" } }],
+// macOS only. These are macOS menu ROLES living in the system menu bar; on Windows the same call
+// renders a Win32 menu bar strip INSIDE the window, stacking a second, redundant chrome row on top
+// of the deck's own tab strip. The Edit roles exist to route Cmd+C/V into the webview, which is a
+// macOS need — Windows delivers Ctrl+C/V to the webview without any menu.
+if (mac) {
+    try {
+        win.setApplicationMenu([
+            {
+                submenu: {
+                    label: "SpaceStation",
+                    items: [{ item: { label: "Julia Version…", id: "julia-version", enabled: true } }, "separator", { role: { role: "quit" } }],
+                },
             },
-        },
-        {
-            submenu: {
-                label: "Edit",
-                items: [
-                    { role: { role: "undo" } },
-                    { role: { role: "redo" } },
-                    "separator",
-                    { role: { role: "cut" } },
-                    { role: { role: "copy" } },
-                    { role: { role: "paste" } },
-                    { role: { role: "selectAll" } },
-                ],
+            {
+                submenu: {
+                    label: "Edit",
+                    items: [
+                        { role: { role: "undo" } },
+                        { role: { role: "redo" } },
+                        "separator",
+                        { role: { role: "cut" } },
+                        { role: { role: "copy" } },
+                        { role: { role: "paste" } },
+                        { role: { role: "selectAll" } },
+                    ],
+                },
             },
-        },
-        { submenu: { label: "Window", items: [{ role: { role: "minimize" } }] } },
-    ])
-} catch (e) {
-    console.warn("could not install the application menu:", e)
+            { submenu: { label: "Window", items: [{ role: { role: "minimize" } }] } },
+        ])
+    } catch (e) {
+        console.warn("could not install the application menu:", e)
+    }
 }
 win.addEventListener("menuclick", (e: any) => {
     if (e.detail?.id === "julia-version") win.navigate(shell_url("/launch?change=1"))

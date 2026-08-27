@@ -38,9 +38,15 @@ const KEY = "WEBVIEW2_USER_DATA_FOLDER"
  *  roaming APPDATA, which corporate roaming profiles would try to sync. */
 export const webview2_user_data_dir = (): string | null => {
     if (Deno.build.os !== "windows") return null
-    const base = Deno.env.get("LOCALAPPDATA") ?? Deno.env.get("USERPROFILE") ?? Deno.env.get("HOME")
-    if (base == null || base.trim() === "") return null
-    return `${base}\\SpaceStation\\WebView2`
+    const local = Deno.env.get("LOCALAPPDATA")
+    if (local != null && local.trim() !== "") return `${local}\\SpaceStation\\WebView2`
+    // Falling back to USERPROFILE means RECONSTRUCTING the local-appdata path, not writing to the
+    // profile root — %USERPROFILE%\SpaceStation would scatter a cache directory into the user's home
+    // folder next to Documents and Desktop. HOME is deliberately not consulted: on Windows it is set
+    // only by POSIX-emulation shells and points somewhere unrelated to the real profile.
+    const profile = Deno.env.get("USERPROFILE")
+    if (profile != null && profile.trim() !== "") return `${profile}\\AppData\\Local\\SpaceStation\\WebView2`
+    return null
 }
 
 /** True when this process already has a usable folder — i.e. we are the relaunched child, or the
