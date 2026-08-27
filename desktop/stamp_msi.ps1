@@ -95,8 +95,27 @@ foreach ($table in @("InstallExecuteSequence", "InstallUISequence")) {
 Invoke-Msi "DELETE FROM ``InstallExecuteSequence`` WHERE ``Action``='RemoveExistingProducts'"
 Invoke-Msi "INSERT INTO ``InstallExecuteSequence`` (``Action``, ``Sequence``) VALUES ('RemoveExistingProducts', 1401)"
 
+# Retarget the install from per-machine Program Files to the per-user local app data folder.
+#
+# This is the actual fix for issue #55, and it is here rather than in the app because the app cannot
+# fix it. WebView2 puts its user-data folder next to the executable, laufey (the webview host deno
+# desktop ships) calls CreateCoreWebView2EnvironmentWithOptions with a NULL userDataFolder, and
+# WEBVIEW2_USER_DATA_FOLDER is an application-level convention the host must implement — not
+# something the loader applies on its own. CI proved that directly: with the variable set from
+# process start, WebView2 still wrote its profile beside the binary and left our folder empty.
+#
+# So the only lever left is WHERE the binary lives. Installed under %LOCALAPPDATA%\Programs, the
+# folder beside it is writable by the user who runs it, and the whole failure mode disappears —
+# no elevation, no UAC prompt, no write access to Program Files.
+Invoke-Msi "INSERT INTO ``Directory`` (``Directory``, ``Directory_Parent``, ``DefaultDir``) VALUES ('LocalAppDataFolder', 'TARGETDIR', '.')"
+Invoke-Msi "UPDATE ``Directory`` SET ``Directory_Parent``='LocalAppDataFolder' WHERE ``Directory``='INSTALLDIR'"
+# ALLUSERS empty = per-user install. Left at "1" the package still demands elevation and still
+# resolves INSTALLDIR against the machine context.
+Invoke-Msi "UPDATE ``Property`` SET ``Value``='' WHERE ``Property``='ALLUSERS'"
+
 $db.GetType().InvokeMember("Commit", "InvokeMethod", $null, $db, $null)
 [System.Runtime.InteropServices.Marshal]::ReleaseComObject($db) | Out-Null
 [System.Runtime.InteropServices.Marshal]::ReleaseComObject($installer) | Out-Null
 
 Write-Host "stamped: ProductVersion=$product_version ProductCode=$product_code UpgradeCode=$upgrade_code"
+Write-Host "retargeted: per-user install under %LOCALAPPDATA%\\Programs (was per-machine Program Files)"

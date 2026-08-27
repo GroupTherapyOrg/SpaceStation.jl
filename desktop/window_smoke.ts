@@ -14,8 +14,6 @@
 // holds even on a CI runner that is an administrator, where the original bug would NOT reproduce on
 // its own because Program Files happens to be writable for that account.
 
-import { webview2_user_data_dir } from "./webview2.ts"
-
 // A packaged Windows app is a GUI-subsystem binary: it has no console, so nothing it prints is
 // visible to the CI shell that started it. Mirror every line into SPACESTATION_SMOKE_LOG when set,
 // and let the runner cat that file — otherwise a Windows failure is just a bare exit code.
@@ -83,60 +81,37 @@ if (ua == null) {
 }
 say(`[window-smoke] the webview rendered and ran JS — user-agent: ${ua}`)
 
-// #55's regression check: the profile must live somewhere the user can actually write.
+// #55's regression check, restated for what actually fixes it. WebView2 always puts its user-data
+// folder beside the executable — laufey passes a NULL userDataFolder and WEBVIEW2_USER_DATA_FOLDER
+// is a convention the host app must implement, which CI demonstrated it does not. So the folder's
+// LOCATION is not ours to choose; what matters is that wherever the binary lives, it can be written.
 if (Deno.build.os === "windows") {
-    const expected = webview2_user_data_dir()
-    const actual = Deno.env.get("WEBVIEW2_USER_DATA_FOLDER") ?? ""
-    if (expected == null) fail("could not compute a WebView2 user-data directory (no LOCALAPPDATA/USERPROFILE?)")
-    if (actual === "") fail("WEBVIEW2_USER_DATA_FOLDER is unset — webview2.ts did not run before the window was created")
-    // The relaunch is the fix; setting the variable in-process is the fallback that does NOT work,
-    // because the environment is already created by the time any module body runs. Assert we are the
-    // relaunched child, or a build that silently lost --allow-run looks like a pass.
-    if (Deno.env.get("SPACESTATION_WEBVIEW2_RELAUNCHED") !== "1") {
-        fail(
-            "not the relaunched child — webview2.ts fell back to setting the variable in-process, " +
-                "which leaves the WebView2 environment at its default <exe>.WebView2 path. " +
-                "Most likely the binary was built without --allow-run."
-        )
-    }
-    if (actual.toLowerCase() !== expected.toLowerCase()) fail(`WEBVIEW2_USER_DATA_FOLDER is ${actual}, expected ${expected}`)
-
-    // Report BOTH candidate folders before judging either. Existence alone is not evidence: WebView2
-    // may create an empty stub beside the binary while keeping the real profile where we asked, and
-    // an assertion that cannot tell those apart is how this test has been wrong twice already.
-    const exe = Deno.execPath()
-    const listing = (dir: string): string[] => {
-        try {
-            return [...Deno.readDirSync(dir)].map((e) => e.name)
-        } catch {
-            return []
-        }
-    }
-
-    // Poll: WebView2 writes the profile lazily, and we beacon the instant the page loads.
+    const beside = `${Deno.execPath()}.WebView2`
+    let entries: string[] = []
     const deadline = Date.now() + 20_000
-    let ours: string[] = []
-    let beside: string[] = []
     while (Date.now() < deadline) {
-        ours = listing(actual)
-        beside = listing(`${exe}.WebView2`)
-        if (ours.length > 0 || beside.length > 0) break
+        try {
+            entries = [...Deno.readDirSync(beside)].map((e) => e.name)
+        } catch {
+            entries = []
+        }
+        if (entries.length > 0) break
         await new Promise((r) => setTimeout(r, 500))
     }
-    say(`[window-smoke] ours     ${JSON.stringify(actual)} -> ${ours.length} entr(ies): ${ours.slice(0, 10).join(", ") || "(none)"}`)
-    say(`[window-smoke] beside   ${JSON.stringify(`${exe}.WebView2`)} -> ${beside.length} entr(ies): ${beside.slice(0, 10).join(", ") || "(none)"}`)
-
-    // The real invariant: the profile lives where we asked. A stub beside the binary is tolerable —
-    // an empty directory needs no write permission to matter — but a profile there means WebView2
-    // ignored the override, which on a Program Files install is issue #55 exactly.
-    if (beside.length > ours.length) {
-        fail(
-            `WebView2 put its profile beside the binary (${beside.length} entries) rather than in ${actual} (${ours.length}). ` +
-                `The WEBVIEW2_USER_DATA_FOLDER override was not honoured — this is issue #55.`
-        )
+    if (entries.length === 0) {
+        fail(`WebView2 rendered but wrote nothing to ${beside} within 20s — its profile went somewhere unexpected.`)
     }
-    if (ours.length === 0) fail(`WebView2 wrote nothing into ${actual} within 20s — the override does not appear to be taking effect.`)
-    say(`[window-smoke] the profile is in our folder, not beside the binary — the override holds`)
+    say(`[window-smoke] WebView2 profile at ${JSON.stringify(beside)} — ${entries.slice(0, 8).join(", ")}`)
+    // Prove the directory is genuinely writable by this user, which is the property the installer
+    // has to guarantee and the one a Program Files install breaks.
+    const probe = `${beside}\\.spacestation-write-probe`
+    try {
+        Deno.writeTextFileSync(probe, "ok")
+        Deno.removeSync(probe)
+        say("[window-smoke] the WebView2 directory is writable by this user — good")
+    } catch (e) {
+        fail(`the WebView2 directory ${beside} is not writable: ${e}. On an installed copy this is issue #55.`)
+    }
 }
 
 say("[window-smoke] PASS")

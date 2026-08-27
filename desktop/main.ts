@@ -9,10 +9,6 @@
 // The Julia side sees SPACESTATION_DESKTOP=1 and serves `desktop: true` from /api/v1/config; the
 // hub pages also detect the deck structurally (framed) — see land.js.
 
-// FIRST — before anything that could construct a window. Module bodies run in import order, and on
-// Windows this one has to win the race against the first WebView2 environment. See webview2.ts.
-import "./webview2.ts"
-
 import { SpaceStationServer, type BootOptions } from "./boot.ts"
 import { serve_ui } from "./splash.ts"
 import { begin_window_drag, extend_under_titlebar, is_fullscreen, main_screen_size, set_app_appearance } from "./macos_titlebar.ts"
@@ -185,8 +181,9 @@ const watchdog = setTimeout(() => {
     console.error(
         `no window after ${WINDOW_WATCHDOG_MS / 1000}s — the webview never loaded a page.\n` +
             (Deno.build.os === "windows"
-                ? `WEBVIEW2_USER_DATA_FOLDER=${Deno.env.get("WEBVIEW2_USER_DATA_FOLDER") ?? "(unset)"}\n` +
-                  `If WebView2 could not create its profile there, that is https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/55.\n`
+                ? `If WebView2 could not create its data directory next to ${Deno.execPath()}, that is\n` +
+                  `https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/55 — the app must be installed\n` +
+                  `somewhere the current user can write, which the installer now arranges.\n`
                 : "") +
             `Exiting rather than running on with no user interface.`
     )

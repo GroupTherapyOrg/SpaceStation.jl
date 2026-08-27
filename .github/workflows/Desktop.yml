@@ -70,7 +70,7 @@ jobs:
         run: julia --project=. -e 'import Pkg; Pkg.instantiate()'
       - name: Typecheck the shell
         working-directory: desktop
-        run: deno check main.ts boot.ts splash.ts deck.ts launch.ts julia.ts theme.ts macos_titlebar.ts smoke.ts webview2.ts window_smoke.ts
+        run: deno check main.ts boot.ts splash.ts deck.ts launch.ts julia.ts theme.ts macos_titlebar.ts smoke.ts window_smoke.ts
       - name: Headless smoke test (boots the full stack)
         working-directory: desktop
         env:
@@ -203,6 +203,10 @@ jobs:
       # The regression test for issue #55: install the .msi we just built to its REAL destination and
       # launch the installed app. Before this, the MSI was built, uploaded and attached to releases
       # without anything ever running it — so a build whose window could never open shipped.
+      # The regression test for issue #55. WebView2 keeps its user-data folder next to the
+      # executable and neither laufey nor deno lets us move it, so the fix is WHERE we install:
+      # per-user under %LOCALAPPDATA%, never per-machine Program Files. This installs the real .msi
+      # and checks exactly that, then launches it.
       - name: Install the MSI and launch it (regression test for #55)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -212,61 +216,65 @@ jobs:
           $msi = (Resolve-Path "dist/${{ matrix.file }}").Path
           $log = "$env:RUNNER_TEMP\msi-install.log"
           Start-Process msiexec -ArgumentList "/i","`"$msi`"","/qn","/l*v","`"$log`"" -Wait
-          $dir = "C:\Program Files\SpaceStation"
-          $exe = Join-Path $dir "SpaceStation.exe"
-          if (-not (Test-Path $exe)) {
+
+          $peruser = Join-Path $env:LOCALAPPDATA "SpaceStation\SpaceStation.exe"
+          $permachine = "C:\Program Files\SpaceStation\SpaceStation.exe"
+          $ok = $true
+          if (Test-Path $permachine) {
+              Write-Host "::error::the .msi installed to Program Files ($permachine). WebView2 cannot write beside the binary there for a standard user — this is issue #55."
+              $ok = $false
+          }
+          $exe = $null
+          if (Test-Path $peruser) { $exe = $peruser }
+          else {
+              # be generous about the exact per-user subpath, but insist it is under LOCALAPPDATA
+              $found = Get-ChildItem -Path $env:LOCALAPPDATA -Recurse -File -Filter "SpaceStation.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($found) { $exe = $found.FullName }
+          }
+          if (-not $exe) {
               if (Test-Path $log) { Get-Content $log -Tail 60 }
-              throw "the MSI did not install $exe"
+              throw "the MSI installed no SpaceStation.exe under %LOCALAPPDATA%"
           }
           Write-Host "installed to $exe"
 
-          # GitHub's Windows runners run as administrators with UAC disabled, so Program Files is
-          # writable for THIS account — meaning #55 would not reproduce here on its own and a naive
-          # install-and-launch test would go green against the very bug it exists to catch. Revoke
-          # our own write access first, so the launch below meets what a normal user meets.
-          icacls $dir /deny "$($env:USERNAME):(OI)(CI)(W)" /T /C | Out-Null
+          # The property that actually matters: the directory holding the binary must be writable by
+          # the user running it, because that is where WebView2 will put its profile.
+          $dir = Split-Path $exe -Parent
+          try {
+              $probe = Join-Path $dir ".write-probe"
+              Set-Content -Path $probe -Value "ok" -ErrorAction Stop
+              Remove-Item $probe -Force
+              Write-Host "the install directory is writable by this user"
+          } catch {
+              Write-Host "::error::the install directory $dir is not writable by this user: $_. WebView2 will fail exactly as in #55."
+              $ok = $false
+          }
 
-          $profileRoot = Join-Path $env:LOCALAPPDATA "SpaceStation\WebView2"
-          $profileDir = Join-Path $profileRoot "EBWebView"
-          Remove-Item -Recurse -Force $profileRoot -ErrorAction SilentlyContinue
-
-          $ok = $true
-          # .NET rather than Start-Process, for the same reason as the headed smoke above:
-          # Start-Process is unreliable against a GUI-subsystem binary.
+          $profile = "$exe.WebView2"
+          Remove-Item -Recurse -Force $profile -ErrorAction SilentlyContinue
           $psi = New-Object System.Diagnostics.ProcessStartInfo
           $psi.FileName = $exe
           $psi.UseShellExecute = $false
           $p = [System.Diagnostics.Process]::Start($psi)
           $deadline = (Get-Date).AddSeconds(180)
-          while ((Get-Date) -lt $deadline -and -not (Test-Path $profileDir)) {
+          while ((Get-Date) -lt $deadline -and -not (Test-Path $profile)) {
               if ($p.HasExited) { break }
               Start-Sleep -Seconds 3
           }
-
-          # WebView2 only materializes a profile once its environment is really created there, so
-          # this directory existing is proof the webview came up — and proof of WHERE it came up.
-          if (-not (Test-Path $profileDir)) {
-              Write-Host "::error::WebView2 never initialized: nothing at $profileDir after 180s. The app is running with no window — this is issue #55."
+          if (-not (Test-Path $profile)) {
+              Write-Host "::error::WebView2 never created $profile after 180s — the app is running with no window, which is issue #55."
               $ok = $false
           } else {
-              Write-Host "WebView2 initialized at $profileDir"
-          }
-          if (Test-Path "$exe.WebView2") {
-              Write-Host "::error::WebView2 fell back to $exe.WebView2 — beside the binary, in a directory a normal user cannot write. This is issue #55."
-              $ok = $false
+              Write-Host "WebView2 initialized at $profile"
           }
           if ($p.HasExited -and $ok) {
               Write-Host "::error::the installed app exited on its own (code $($p.ExitCode)) instead of staying up."
               $ok = $false
           }
-
-          # Leave the runner as we found it whether or not the assertions passed.
           if (-not $p.HasExited) { try { $p.Kill() } catch { } }
-          icacls $dir /remove:d "$env:USERNAME" /T /C | Out-Null
           Start-Process msiexec -ArgumentList "/x","`"$msi`"","/qn" -Wait
-
           if (-not $ok) { throw "the installed Windows app failed the #55 regression test" }
-          Write-Host "the installed app opened its webview from a writable profile directory"
+          Write-Host "the installed app opened its webview from a writable per-user directory"
 
       # An installer users cannot upgrade to is a fix they never receive. Build a higher-versioned
       # copy of the same package and prove a plain `msiexec /i` REPLACES the installed one rather
