@@ -159,6 +159,20 @@ jobs:
       - name: Build installer
         working-directory: desktop
         run: deno task ${{ matrix.task }}
+      # Without this every release ships the same installer identity (ProductVersion 1.0.0, a
+      # ProductCode fixed by the app id, no Upgrade table), so Windows treats a newer .msi as the
+      # version already installed and drops into maintenance mode instead of upgrading. Users could
+      # not get the #55 fix by downloading the fixed installer. See desktop/stamp_msi.ps1.
+      - name: Stamp the installer with a real version (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: desktop
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tag = "${{ github.event.release.tag_name }}${{ inputs.release_tag }}"
+          $version = if ($tag) { $tag } else { (Select-String -Path ../Project.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value }
+          pwsh -File stamp_msi.ps1 -Msi "dist/${{ matrix.built }}" -Version $version
+
       - name: Name the release asset
         shell: bash
         working-directory: desktop
@@ -225,6 +239,43 @@ jobs:
 
           if (-not $ok) { throw "the installed Windows app failed the #55 regression test" }
           Write-Host "the installed app opened its webview from a writable profile directory"
+
+      # An installer users cannot upgrade to is a fix they never receive. Build a higher-versioned
+      # copy of the same package and prove a plain `msiexec /i` REPLACES the installed one rather
+      # than landing beside it or bouncing into maintenance mode.
+      - name: Prove the installer upgrades in place (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: desktop
+        run: |
+          $ErrorActionPreference = "Stop"
+          $old = (Resolve-Path "dist/${{ matrix.file }}").Path
+          $new = Join-Path $env:RUNNER_TEMP "SpaceStation-upgrade-test.msi"
+          Copy-Item $old $new -Force
+          pwsh -File stamp_msi.ps1 -Msi $new -Version "99.0.0"
+
+          $installed = { (Get-CimInstance Win32_Product -Filter "Name='SpaceStation'" | Measure-Object).Count }
+          Start-Process msiexec -ArgumentList "/i","`"$old`"","/qn" -Wait
+          $before = & $installed
+          Write-Host "after installing the release build: $before entry/entries"
+
+          Start-Process msiexec -ArgumentList "/i","`"$new`"","/qn","/l*v","`"$env:RUNNER_TEMP\upgrade.log`"" -Wait
+          $after = & $installed
+          $version = (Get-CimInstance Win32_Product -Filter "Name='SpaceStation'" | Select-Object -First 1).Version
+          Write-Host "after installing the newer build: $after entry/entries, version $version"
+
+          $ok = $true
+          if ($after -ne 1) {
+              Write-Host "::error::expected exactly one SpaceStation entry after the upgrade, found $after — the new build installed alongside the old one instead of replacing it."
+              $ok = $false
+          }
+          if ($version -ne "99.0.0") {
+              Write-Host "::error::the installed version is $version, not the 99.0.0 we just installed — Windows treated the newer package as already-installed and skipped it."
+              $ok = $false
+          }
+          Start-Process msiexec -ArgumentList "/x","`"$new`"","/qn" -Wait
+          if (-not $ok) { Get-Content "$env:RUNNER_TEMP\upgrade.log" -Tail 40; throw "the Windows installer cannot upgrade in place" }
+          Write-Host "a newer .msi cleanly replaces the installed one"
 
       - name: Sign + notarize (macOS, when credentials exist)
         # NOTE: signing a finished .dmg requires the .app INSIDE to be signed at build time —
@@ -309,11 +360,11 @@ jobs:
           **Windows** — double-click `SpaceStation-win-x64.msi`. If SmartScreen shows *"Windows
           protected your PC"*, click **More info → Run anyway**.
 
-          > **Upgrading from an earlier version? Uninstall it first.** Every build currently declares
-          > the same installer identity (product version `1.0.0`), so Windows treats a newer `.msi` as
-          > the version it already has and can skip the upgrade, leaving the old app in place. Remove
-          > **SpaceStation** from *Settings → Apps → Installed apps*, then run the new `.msi`. This is
-          > a limitation of the installer we generate, not of the app; it is tracked separately.
+          > **Upgrading?** Just run the new `.msi` — it replaces the installed version in place.
+          > (Builds before v0.4.8 all declared the same installer identity, so Windows saw every
+          > release as the version it already had and quietly skipped the upgrade. If you are coming
+          > from one of those and Windows offers you *Repair / Remove* instead of installing, remove
+          > **SpaceStation** from *Settings → Apps → Installed apps* once, then run the `.msi`.)
 
           **Linux** — mark the AppImage executable and run it:
 
