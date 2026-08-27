@@ -2,7 +2,7 @@
 // this to a Deno.BrowserWindow, smoke.ts drives it from a plain `deno run` for headless testing.
 
 import * as buildinfo from "./buildinfo.ts"
-import { data_dir, ensure_cli_on_path, home_dir, juliaup_bin, vendored_bin_dir } from "./julia.ts"
+import { data_dir, ensure_cli_on_path, home_dir, juliaup_bin, load_settings, save_settings, vendored_bin_dir } from "./julia.ts"
 
 export type Phase = "idle" | "installing-julia" | "finding-julia" | "installing" | "starting" | "ready" | "error"
 
@@ -23,6 +23,10 @@ export interface BootOptions {
 }
 
 const LOG_LINES = 200
+
+// Where the sticky desktop port search starts. Not 1234: a browser-run `spacestation` takes that by
+// default, and the two should not fight over one origin. See pick_port().
+const DESKTOP_PORT_BASE = 1250
 
 export class SpaceStationServer {
     state: BootState = { phase: "idle", detail: "", log: [], url: null, port: null }
@@ -117,8 +121,41 @@ export class SpaceStationServer {
         }
     }
 
-    /** Ask the OS for a free port. (Tiny race between close and Julia binding it — acceptable.) */
+    /** The port the server will bind — kept STICKY across launches, which matters far more than it
+     *  looks. The frontend keeps its preferences in localStorage (the terminal's dock, height and
+     *  width, the sidebar width, the open-terminal tabs, the recent-notebook list — land.js), and
+     *  localStorage is scoped to the ORIGIN: scheme + host + PORT. Asking the OS for a random free
+     *  port every launch therefore handed the app a brand-new, empty origin every single time, which
+     *  is why the desktop forgot every one of those settings on restart while the browser — sitting
+     *  on a stable :1234 — remembered them.
+     *
+     *  So: reuse the port we used last time, else walk a small fixed range, and only fall back to a
+     *  random port if none of that is free. The range deliberately avoids 1234, which a browser-run
+     *  `spacestation` grabs by default (and which Authentication.jl notes is already contended
+     *  across nodes via the `pluto_secret_1234` cookie name).
+     *
+     *  (Tiny race between closing the probe socket and Julia binding it — acceptable, as before.) */
     pick_port(): number {
+        const is_free = (port: number): boolean => {
+            try {
+                Deno.listen({ hostname: "127.0.0.1", port }).close()
+                return true
+            } catch {
+                return false
+            }
+        }
+        const remembered = load_settings().port
+        const preferred = [
+            ...(typeof remembered === "number" && remembered > 0 ? [remembered] : []),
+            ...Array.from({ length: 16 }, (_, i) => DESKTOP_PORT_BASE + i),
+        ]
+        for (const port of preferred) {
+            if (!is_free(port)) continue
+            if (port !== remembered) save_settings({ port })
+            return port
+        }
+        // Everything we prefer is taken. Still start — losing the saved preferences is much better
+        // than refusing to launch — but do not remember this one, so the next launch tries again.
         const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 })
         const port = (listener.addr as Deno.NetAddr).port
         listener.close()
