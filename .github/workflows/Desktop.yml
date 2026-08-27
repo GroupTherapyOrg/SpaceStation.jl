@@ -109,7 +109,13 @@ jobs:
           deno desktop --icon icons/spacestation.ico -o dist/WindowSmoke.exe --allow-net --allow-env --allow-read --allow-write window_smoke.ts
           # Locate the exe rather than assuming the layout: a native build drops dist\WindowSmoke.exe
           # while a cross-compiled one nests it in dist\WindowSmoke\.
-          $exe = (Get-ChildItem -Path dist -Recurse -Filter "WindowSmoke*.exe" | Select-Object -First 1).FullName
+          #
+          # Match on Extension, NOT -Filter "*.exe": -Filter uses the filesystem's legacy 8.3 wildcard
+          # matching, so "WindowSmoke*.exe" also matches the WindowSmoke.exe.dll the build emits
+          # alongside the binary — and starting that yields a baffling "Access is denied".
+          $exe = (Get-ChildItem -Path dist -Recurse -File |
+                  Where-Object { $_.Extension -eq '.exe' -and $_.Name -like 'WindowSmoke*' } |
+                  Select-Object -First 1).FullName
           if (-not $exe) { Get-ChildItem -Recurse dist | Select-Object FullName; throw "the smoke build produced no executable under dist" }
           Write-Host "running $exe"
           # Start via .NET rather than Start-Process: `Start-Process -Wait -PassThru` fails on a
