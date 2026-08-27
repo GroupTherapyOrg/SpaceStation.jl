@@ -62,7 +62,7 @@ const port = (server.addr as Deno.NetAddr).port
 
 say(`[window-smoke] platform: ${Deno.build.os}/${Deno.build.arch}`)
 if (Deno.build.os === "windows") {
-    say(`[window-smoke] WEBVIEW2_USER_DATA_FOLDER = ${Deno.env.get("WEBVIEW2_USER_DATA_FOLDER") ?? "(unset)"}`)
+    say(`[window-smoke] WEBVIEW2_USER_DATA_FOLDER = ${JSON.stringify(Deno.env.get("WEBVIEW2_USER_DATA_FOLDER") ?? "(unset)")}`)
 }
 
 let win: any
@@ -89,6 +89,16 @@ if (Deno.build.os === "windows") {
     const actual = Deno.env.get("WEBVIEW2_USER_DATA_FOLDER") ?? ""
     if (expected == null) fail("could not compute a WebView2 user-data directory (no LOCALAPPDATA/USERPROFILE?)")
     if (actual === "") fail("WEBVIEW2_USER_DATA_FOLDER is unset — webview2.ts did not run before the window was created")
+    // The relaunch is the fix; setting the variable in-process is the fallback that does NOT work,
+    // because the environment is already created by the time any module body runs. Assert we are the
+    // relaunched child, or a build that silently lost --allow-run looks like a pass.
+    if (Deno.env.get("SPACESTATION_WEBVIEW2_RELAUNCHED") !== "1") {
+        fail(
+            "not the relaunched child — webview2.ts fell back to setting the variable in-process, " +
+                "which leaves the WebView2 environment at its default <exe>.WebView2 path. " +
+                "Most likely the binary was built without --allow-run."
+        )
+    }
     if (actual.toLowerCase() !== expected.toLowerCase()) fail(`WEBVIEW2_USER_DATA_FOLDER is ${actual}, expected ${expected}`)
 
     // The profile is only materialized once the environment is REALLY created there.

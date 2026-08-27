@@ -85,7 +85,7 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf dist/WindowSmoke*
-          deno desktop -o dist/WindowSmoke --allow-net --allow-env --allow-read --allow-write window_smoke.ts
+          deno desktop -o dist/WindowSmoke --allow-run --allow-net --allow-env --allow-read --allow-write window_smoke.ts
           # Locate the bundle rather than assuming its name: deno appends `.app` itself, so naming
           # the output `WindowSmoke.app` yields `WindowSmoke.app.app` on some versions.
           app=$(find dist -maxdepth 1 -name "*.app" | head -1)
@@ -106,7 +106,11 @@ jobs:
           # even when the target is Windows and fails the build outright. Overriding with the .ico
           # sidesteps that. (deno 2.9.5 embeds neither, but it still insists on decoding them.)
           Remove-Item -Recurse -Force dist\WindowSmoke* -ErrorAction SilentlyContinue
-          deno desktop --icon icons/spacestation.ico -o dist/WindowSmoke.exe --allow-net --allow-env --allow-read --allow-write window_smoke.ts
+          # --allow-run is REQUIRED, not incidental: on Windows webview2.ts relaunches the process to
+          # get WEBVIEW2_USER_DATA_FOLDER into the environment block before the runtime opens its
+          # first window. A build without it falls back to setting the variable in-process, which
+          # leaves the WebView2 profile at its default <exe>.WebView2 path — i.e. the bug, untested.
+          deno desktop --icon icons/spacestation.ico -o dist/WindowSmoke --allow-run --allow-net --allow-env --allow-read --allow-write window_smoke.ts
           # Locate the exe rather than assuming the layout: a native build drops dist\WindowSmoke.exe
           # while a cross-compiled one nests it in dist\WindowSmoke\.
           #

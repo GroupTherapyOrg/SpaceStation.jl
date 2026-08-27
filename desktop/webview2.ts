@@ -33,6 +33,11 @@
 // Nothing here runs off Windows: every other platform keeps its own default.
 
 const KEY = "WEBVIEW2_USER_DATA_FOLDER"
+// Set only on the child we relaunch, never by the degraded fallback. That distinction matters: the
+// fallback also sets KEY, so KEY alone cannot tell "the relaunch worked" from "the relaunch failed
+// and we carried on with the environment already created at the default path". window_smoke.ts
+// asserts on this, because that is precisely the difference between fixed and not fixed.
+const RELAUNCHED = "SPACESTATION_WEBVIEW2_RELAUNCHED"
 
 /** Where WebView2 may keep its (large, cache-like, machine-local) profile. LOCALAPPDATA — never
  *  roaming APPDATA, which corporate roaming profiles would try to sync. */
@@ -63,7 +68,7 @@ if (Deno.build.os === "windows" && !webview2_already_pinned()) {
             // Deno.Command merges over the inherited environment, so the child gets everything this
             // process has plus the override, present from its very first instruction.
             const child = new Deno.Command(Deno.execPath(), {
-                env: { [KEY]: dir },
+                env: { [KEY]: dir, [RELAUNCHED]: "1" },
                 stdin: "inherit",
                 stdout: "inherit",
                 stderr: "inherit",
