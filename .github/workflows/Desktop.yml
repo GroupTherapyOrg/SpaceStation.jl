@@ -112,10 +112,23 @@ jobs:
           $exe = (Get-ChildItem -Path dist -Recurse -Filter "WindowSmoke*.exe" | Select-Object -First 1).FullName
           if (-not $exe) { Get-ChildItem -Recurse dist | Select-Object FullName; throw "the smoke build produced no executable under dist" }
           Write-Host "running $exe"
-          # A GUI-subsystem binary writes nothing to this console, hence SPACESTATION_SMOKE_LOG.
-          $p = Start-Process $exe -PassThru -Wait
-          if (Test-Path $log) { Get-Content $log }
-          if ($p.ExitCode -ne 0) { throw "the window smoke failed (exit code $($p.ExitCode))" }
+          # Start via .NET rather than Start-Process: `Start-Process -Wait -PassThru` fails on a
+          # GUI-subsystem binary with "the system cannot find all the information required", and
+          # redirecting the streams here captures output a GUI process would otherwise send nowhere.
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = $exe
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $proc = [System.Diagnostics.Process]::Start($psi)
+          $stdout = $proc.StandardOutput.ReadToEnd()
+          $stderr = $proc.StandardError.ReadToEnd()
+          $proc.WaitForExit()
+          if ($stdout) { Write-Host $stdout }
+          if ($stderr) { Write-Host $stderr }
+          # SPACESTATION_SMOKE_LOG is the belt-and-braces copy, in case the streams stay empty.
+          if (Test-Path $log) { Write-Host "--- smoke log ---"; Get-Content $log }
+          if ($proc.ExitCode -ne 0) { throw "the window smoke failed (exit code $($proc.ExitCode))" }
 
   build:
     name: bundle · ${{ matrix.name }}
@@ -208,7 +221,12 @@ jobs:
           Remove-Item -Recurse -Force $profileRoot -ErrorAction SilentlyContinue
 
           $ok = $true
-          $p = Start-Process $exe -PassThru
+          # .NET rather than Start-Process, for the same reason as the headed smoke above:
+          # Start-Process is unreliable against a GUI-subsystem binary.
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = $exe
+          $psi.UseShellExecute = $false
+          $p = [System.Diagnostics.Process]::Start($psi)
           $deadline = (Get-Date).AddSeconds(180)
           while ((Get-Date) -lt $deadline -and -not (Test-Path $profileDir)) {
               if ($p.HasExited) { break }
@@ -233,7 +251,7 @@ jobs:
           }
 
           # Leave the runner as we found it whether or not the assertions passed.
-          if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+          if (-not $p.HasExited) { try { $p.Kill() } catch { } }
           icacls $dir /remove:d "$env:USERNAME" /T /C | Out-Null
           Start-Process msiexec -ArgumentList "/x","`"$msi`"","/qn" -Wait
 
