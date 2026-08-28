@@ -106,9 +106,12 @@ If Err.Number <> 0 Then
 End If
 On Error GoTo 0
 RunSQL "UPDATE `Directory` SET `Directory_Parent`='LocalAppDataFolder' WHERE `Directory`='INSTALLDIR'"
-' ALLUSERS empty = per-user. Left at "1" the package still demands elevation and still resolves
-' INSTALLDIR against the machine context.
-RunSQL "UPDATE `Property` SET `Value`='' WHERE `Property`='ALLUSERS'"
+' Remove ALLUSERS rather than blanking it. Property.Value is NOT NULL and MSI treats an empty string
+' as NULL, so `SET Value=''` fails the constraint - error 2210 - and, because that was the last
+' statement, it aborted the script before Commit and silently discarded every change above it. An
+' absent ALLUSERS is what actually means per-user; left at "1" the package demands elevation and
+' resolves INSTALLDIR against the machine context.
+RunSQL "DELETE FROM `Property` WHERE `Property`='ALLUSERS'"
 
 db.Commit
 Set db = Nothing
@@ -127,7 +130,7 @@ gotParent = ReadOne(vdb, "SELECT `Directory_Parent` FROM `Directory` WHERE `Dire
 Set vdb = Nothing
 Set verifier = Nothing
 
-WScript.Echo "verify: ProductVersion=" & gotVersion & " ALLUSERS=[" & gotAllUsers & "] INSTALLDIR parent=" & gotParent
+WScript.Echo "verify: ProductVersion=" & gotVersion & " ALLUSERS=[" & gotAllUsers & "] (empty = per-user) INSTALLDIR parent=" & gotParent
 If gotVersion <> productVersion Then
     WScript.Echo "FAILED: ProductVersion did not persist (wanted " & productVersion & ", file says " & gotVersion & ")"
     WScript.Quit 1
