@@ -12,7 +12,9 @@
 '    install to LocalAppDataFolder makes that directory writable by whoever runs the app, and drops
 '    the elevation prompt as a bonus.
 '
-' 2. UPGRADE IDENTITY. Every build ships ProductVersion 1.0.0, a ProductCode fixed by the app id, and
+' 2. UPGRADE IDENTITY. Every build ships the SAME ProductVersion (deno.json's, currently 0.1.0 - an
+'    earlier local probe of a version-less package reported 1.0.0, which is where that number in the
+'    history comes from), a ProductCode fixed by the app id, and
 '    no Upgrade table, so Windows treats each new release as the version already installed and runs
 '    maintenance mode instead of upgrading. Users could not receive the #55 fix by downloading the
 '    fixed installer. Stamping the real version, a fresh ProductCode, and an Upgrade table wired to
@@ -67,12 +69,11 @@ On Error GoTo 0
 
 ' Attributes 257 = msidbUpgradeAttributesMigrateFeatures (1) OR VersionMinInclusive (256).
 '
-' Deliberately NO VersionMax, leaving the range unbounded above. The textbook choice - an upper bound
-' of the version being installed - would silently fail the one upgrade that matters most: every build
-' released before this script stamps itself ProductVersion 1.0.0, which is HIGHER than the real
-' versions (0.4.x) stamped now, so those installs would fall outside a bounded range and never be
-' superseded. Unbounded means a genuine downgrade also replaces a newer install; that is the accepted
-' trade for being able to retire the 1.0.0 legacy.
+' Deliberately NO VersionMax, leaving the range unbounded above. Released builds carry deno.json's
+' version (0.1.0), so a bound at the version being installed would in fact cover them - but the bound
+' only has to be wrong once to strand a user on a broken build with no way to upgrade, and there is no
+' upside to it here. Unbounded means a genuine downgrade also replaces a newer install; that is a
+' cheaper failure than an upgrade that silently does nothing, which is the bug being fixed.
 RunSQL "DELETE FROM `Upgrade` WHERE `UpgradeCode`='" & upgradeCode & "'"
 RunSQL "INSERT INTO `Upgrade` (`UpgradeCode`, `VersionMin`, `Attributes`, `ActionProperty`) VALUES ('" & upgradeCode & "', '0.0.0', 257, 'OLDERVERSIONBEINGUPGRADED')"
 
@@ -85,9 +86,14 @@ AddAction "InstallExecuteSequence", "RemoveExistingProducts", 1401
 
 ' Retarget from per-machine Program Files to the per-user local app data folder. This is the actual
 ' fix for #55: the app cannot choose where WebView2 puts its folder, only where the binary lives.
+' A LocalAppDataFolder row may already exist; only "already exists" is tolerable here, and it is
+' reported either way. Silently swallowing this is how the retarget failed while claiming success.
 On Error Resume Next
 RunSQL "INSERT INTO `Directory` (`Directory`, `Directory_Parent`, `DefaultDir`) VALUES ('LocalAppDataFolder', 'TARGETDIR', '.')"
-Err.Clear
+If Err.Number <> 0 Then
+    WScript.Echo "note: inserting LocalAppDataFolder said: " & Err.Description & " (continuing; a pre-existing row is fine)"
+    Err.Clear
+End If
 On Error GoTo 0
 RunSQL "UPDATE `Directory` SET `Directory_Parent`='LocalAppDataFolder' WHERE `Directory`='INSTALLDIR'"
 ' ALLUSERS empty = per-user. Left at "1" the package still demands elevation and still resolves
@@ -95,8 +101,43 @@ RunSQL "UPDATE `Directory` SET `Directory_Parent`='LocalAppDataFolder' WHERE `Di
 RunSQL "UPDATE `Property` SET `Value`='' WHERE `Property`='ALLUSERS'"
 
 db.Commit
+Set db = Nothing
+Set installer = Nothing
+
+' Commit reporting success is not evidence the writes landed - a run that claimed to stamp 0.4.7
+' shipped an .msi still declaring 0.1.0 and still installing into Program Files. So reopen the file
+' read-only and read the values back. If they did not persist, fail here, where the reason is
+' visible, rather than three steps later in an install test.
+Dim verifier, vdb, gotVersion, gotAllUsers, gotParent
+Set verifier = CreateObject("WindowsInstaller.Installer")
+Set vdb = verifier.OpenDatabase(msiPath, 0)  ' 0 = read-only
+gotVersion = ReadOne(vdb, "SELECT `Value` FROM `Property` WHERE `Property`='ProductVersion'")
+gotAllUsers = ReadOne(vdb, "SELECT `Value` FROM `Property` WHERE `Property`='ALLUSERS'")
+gotParent = ReadOne(vdb, "SELECT `Directory_Parent` FROM `Directory` WHERE `Directory`='INSTALLDIR'")
+Set vdb = Nothing
+Set verifier = Nothing
+
+WScript.Echo "verify: ProductVersion=" & gotVersion & " ALLUSERS=[" & gotAllUsers & "] INSTALLDIR parent=" & gotParent
+If gotVersion <> productVersion Then
+    WScript.Echo "FAILED: ProductVersion did not persist (wanted " & productVersion & ", file says " & gotVersion & ")"
+    WScript.Quit 1
+End If
+If gotParent <> "LocalAppDataFolder" Then
+    WScript.Echo "FAILED: INSTALLDIR still parented to " & gotParent & " - the per-user retarget did not persist"
+    WScript.Quit 1
+End If
 WScript.Echo "stamped: ProductVersion=" & productVersion & " ProductCode=" & productCode & " UpgradeCode=" & upgradeCode
 WScript.Echo "retargeted: per-user install under LocalAppDataFolder (was per-machine Program Files)"
+
+Function ReadOne(database, sql)
+    Dim view, rec
+    ReadOne = ""
+    Set view = database.OpenView(sql)
+    view.Execute
+    Set rec = view.Fetch
+    If Not rec Is Nothing Then ReadOne = rec.StringData(1)
+    view.Close
+End Function
 
 Sub RunSQL(sql)
     Dim view
