@@ -15,9 +15,12 @@
 # UpgradeCode is deliberately left alone: it is the stable identity that ties releases together, and
 # changing it would break upgrades from every build that came before.
 #
-#   pwsh -File stamp_msi.ps1 -Msi dist/SpaceStation.msi -Version 0.4.8
+#   powershell -File stamp_msi.ps1 -Msi dist/SpaceStation.msi -Version 0.4.8
 #
-# Windows-only (it drives the WindowsInstaller COM automation layer).
+# Run it with WINDOWS POWERSHELL (powershell.exe, 5.1), not pwsh 7. This drives the WindowsInstaller
+# COM automation layer, and pwsh 7 cannot bind those IDispatch methods — every call fails with
+# `Exception calling "InvokeMember" with "5" argument(s): "Execute,Params"` no matter how the
+# arguments are shaped. Under 5.1 the objects bind directly and the methods below just work.
 
 param(
     [Parameter(Mandatory = $true)][string] $Msi,
@@ -37,24 +40,20 @@ Write-Host "stamping $Msi as ProductVersion $product_version"
 
 $installer = New-Object -ComObject WindowsInstaller.Installer
 # 1 = transact mode: changes are written when we call Commit, and dropped otherwise.
-$db = $installer.GetType().InvokeMember("OpenDatabase", "InvokeMethod", $null, $installer, @((Resolve-Path $Msi).Path, 1))
+$db = $installer.OpenDatabase((Resolve-Path $Msi).Path, 1)
 
-# NOTE: View.Execute takes one (optional) Record parameter, so the argument array must be @($null)
-# — passing a bare $null means "no arguments at all" and COM rejects it with
-# `Exception calling "InvokeMember" with "5" argument(s): "Execute,Params"`.
 function Invoke-Msi([string] $sql) {
-    $view = $db.GetType().InvokeMember("OpenView", "InvokeMethod", $null, $db, @($sql))
-    $view.GetType().InvokeMember("Execute", "InvokeMethod", $null, $view, @($null))
-    $view.GetType().InvokeMember("Close", "InvokeMethod", $null, $view, $null)
-    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($view) | Out-Null
+    $view = $db.OpenView($sql)
+    $view.Execute()
+    $view.Close()
 }
 
 function Get-MsiProperty([string] $name) {
-    $view = $db.GetType().InvokeMember("OpenView", "InvokeMethod", $null, $db, @("SELECT ``Value`` FROM ``Property`` WHERE ``Property``='$name'"))
-    $view.GetType().InvokeMember("Execute", "InvokeMethod", $null, $view, @($null))
-    $rec = $view.GetType().InvokeMember("Fetch", "InvokeMethod", $null, $view, $null)
-    $value = if ($null -eq $rec) { $null } else { $rec.GetType().InvokeMember("StringData", "GetProperty", $null, $rec, @(1)) }
-    $view.GetType().InvokeMember("Close", "InvokeMethod", $null, $view, $null)
+    $view = $db.OpenView("SELECT ``Value`` FROM ``Property`` WHERE ``Property``='$name'")
+    $view.Execute()
+    $rec = $view.Fetch()
+    $value = if ($null -eq $rec) { $null } else { $rec.StringData(1) }
+    $view.Close()
     return $value
 }
 
@@ -116,9 +115,7 @@ Invoke-Msi "UPDATE ``Directory`` SET ``Directory_Parent``='LocalAppDataFolder' W
 # resolves INSTALLDIR against the machine context.
 Invoke-Msi "UPDATE ``Property`` SET ``Value``='' WHERE ``Property``='ALLUSERS'"
 
-$db.GetType().InvokeMember("Commit", "InvokeMethod", $null, $db, $null)
-[System.Runtime.InteropServices.Marshal]::ReleaseComObject($db) | Out-Null
-[System.Runtime.InteropServices.Marshal]::ReleaseComObject($installer) | Out-Null
+$db.Commit()
 
 Write-Host "stamped: ProductVersion=$product_version ProductCode=$product_code UpgradeCode=$upgrade_code"
 Write-Host "retargeted: per-user install under %LOCALAPPDATA%\\Programs (was per-machine Program Files)"

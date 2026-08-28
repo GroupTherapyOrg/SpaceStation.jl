@@ -194,7 +194,9 @@ jobs:
           $ErrorActionPreference = "Stop"
           $tag = "${{ github.event.release.tag_name }}${{ inputs.release_tag }}"
           $version = if ($tag) { $tag } else { (Select-String -Path ../Project.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value }
-          pwsh -File stamp_msi.ps1 -Msi "dist/${{ matrix.built }}" -Version $version
+          # powershell.exe (5.1), not pwsh 7: the script drives WindowsInstaller COM, which pwsh
+          # cannot bind — see the header of stamp_msi.ps1.
+          powershell -File stamp_msi.ps1 -Msi "dist/${{ matrix.built }}" -Version $version
 
       - name: Name the release asset
         shell: bash
@@ -288,7 +290,7 @@ jobs:
           $old = (Resolve-Path "dist/${{ matrix.file }}").Path
           $new = Join-Path $env:RUNNER_TEMP "SpaceStation-upgrade-test.msi"
           Copy-Item $old $new -Force
-          pwsh -File stamp_msi.ps1 -Msi $new -Version "99.0.0"
+          powershell -File stamp_msi.ps1 -Msi $new -Version "99.0.0"
 
           $installed = { (Get-CimInstance Win32_Product -Filter "Name='SpaceStation'" | Measure-Object).Count }
           Start-Process msiexec -ArgumentList "/i","`"$old`"","/qn" -Wait
