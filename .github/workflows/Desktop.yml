@@ -298,14 +298,26 @@ jobs:
           cscript //nologo stamp_msi.vbs $new "99.0.0"
           if ($LASTEXITCODE -ne 0) { throw "stamp_msi.vbs failed with exit code $LASTEXITCODE" }
 
-          $installed = { (Get-CimInstance Win32_Product -Filter "Name='SpaceStation'" | Measure-Object).Count }
+          # Read the uninstall registry, NOT Win32_Product: querying that class makes Windows
+          # Installer reconfigure every installed product on the machine, which is slow and actively
+          # harmful — the "Product: SpaceStation -- Configuration failed" noise in earlier runs came
+          # from the query itself, not from our package. A per-user install registers under HKCU;
+          # HKLM is checked too so a per-machine regression cannot hide.
+          $entries = {
+              @("HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall",
+                "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall") |
+                  ForEach-Object { Get-ChildItem $_ -ErrorAction SilentlyContinue } |
+                  ForEach-Object { Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue } |
+                  Where-Object { $_.DisplayName -eq "SpaceStation" }
+          }
           Start-Process msiexec -ArgumentList "/i","`"$old`"","/qn" -Wait
-          $before = & $installed
+          $before = @(& $entries).Count
           Write-Host "after installing the release build: $before entry/entries"
 
           Start-Process msiexec -ArgumentList "/i","`"$new`"","/qn","/l*v","`"$env:RUNNER_TEMP\upgrade.log`"" -Wait
-          $after = & $installed
-          $version = (Get-CimInstance Win32_Product -Filter "Name='SpaceStation'" | Select-Object -First 1).Version
+          $found = @(& $entries)
+          $after = $found.Count
+          $version = ($found | Select-Object -First 1).DisplayVersion
           Write-Host "after installing the newer build: $after entry/entries, version $version"
 
           $ok = $true
