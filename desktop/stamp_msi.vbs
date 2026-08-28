@@ -45,6 +45,16 @@ versionArg = WScript.Arguments(1)
 productVersion = NormalizeVersion(versionArg)
 WScript.Echo "stamping " & msiPath & " as ProductVersion " & productVersion
 
+' A read-only file opens happily in transact mode and then rejects every write, so clear the
+' attribute before touching anything.
+Dim fso, f
+Set fso = CreateObject("Scripting.FileSystemObject")
+Set f = fso.GetFile(msiPath)
+If (f.Attributes And 1) = 1 Then
+    WScript.Echo "note: clearing the read-only attribute on " & msiPath
+    f.Attributes = f.Attributes - 1
+End If
+
 Set installer = CreateObject("WindowsInstaller.Installer")
 Set db = installer.OpenDatabase(msiPath, msiOpenDatabaseModeTransact)
 
@@ -141,9 +151,29 @@ End Function
 
 Sub RunSQL(sql)
     Dim view
+    On Error Resume Next
     Set view = db.OpenView(sql)
+    CheckError "OpenView: " & sql
     view.Execute
+    CheckError "Execute: " & sql
     view.Close
+    CheckError "Close: " & sql
+    On Error GoTo 0
+End Sub
+
+' "Msi API Error: Execute,Params" is MSI's generic "the Execute(Params) call failed" - it names the
+' function and its argument, never the reason. The reason is in LastErrorRecord, so print that or the
+' next failure is as opaque as the last one. Pattern taken from Microsoft's WiRunSQL.vbs sample.
+Sub CheckError(context)
+    Dim message, errRec
+    If Err = 0 Then Exit Sub
+    message = "FAILED " & context & vbLf & "  " & Err.Source & " " & Hex(Err) & ": " & Err.Description
+    If Not installer Is Nothing Then
+        Set errRec = installer.LastErrorRecord
+        If Not errRec Is Nothing Then message = message & vbLf & "  MSI says: " & errRec.FormatText
+    End If
+    WScript.Echo message
+    WScript.Quit 1
 End Sub
 
 Sub AddAction(table, action, seq)

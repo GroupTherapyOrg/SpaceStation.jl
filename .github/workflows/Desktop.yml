@@ -198,6 +198,10 @@ jobs:
           # parameter that neither pwsh 7 nor Windows PowerShell 5.1 will bind (both fail with
           # "Execute,Params"). VBScript is the host Microsoft's own MSI samples use.
           cscript //nologo stamp_msi.vbs "dist/${{ matrix.built }}" $version
+          # PowerShell does NOT fail a step on a native command's exit code, even with
+          # ErrorActionPreference=Stop. Without this the stamp could fail and the build would sail on
+          # to ship an unstamped .msi — which is exactly what happened.
+          if ($LASTEXITCODE -ne 0) { throw "stamp_msi.vbs failed with exit code $LASTEXITCODE" }
 
       - name: Name the release asset
         shell: bash
@@ -292,6 +296,7 @@ jobs:
           $new = Join-Path $env:RUNNER_TEMP "SpaceStation-upgrade-test.msi"
           Copy-Item $old $new -Force
           cscript //nologo stamp_msi.vbs $new "99.0.0"
+          if ($LASTEXITCODE -ne 0) { throw "stamp_msi.vbs failed with exit code $LASTEXITCODE" }
 
           $installed = { (Get-CimInstance Win32_Product -Filter "Name='SpaceStation'" | Measure-Object).Count }
           Start-Process msiexec -ArgumentList "/i","`"$old`"","/qn" -Wait
