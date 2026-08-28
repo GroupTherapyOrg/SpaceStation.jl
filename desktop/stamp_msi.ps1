@@ -1,4 +1,4 @@
-# Give a deno-desktop-built .msi a real identity, so users can actually upgrade.
+﻿# Give a deno-desktop-built .msi a real identity, so users can actually upgrade.
 #
 # `deno desktop -o X.msi` writes the same installer identity into every build it ever produces:
 # ProductVersion 1.0.0, a ProductCode derived only from the app identifier, and no Upgrade table at
