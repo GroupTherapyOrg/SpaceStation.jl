@@ -185,7 +185,7 @@ jobs:
       # Without this every release ships the same installer identity (ProductVersion 1.0.0, a
       # ProductCode fixed by the app id, no Upgrade table), so Windows treats a newer .msi as the
       # version already installed and drops into maintenance mode instead of upgrading. Users could
-      # not get the #55 fix by downloading the fixed installer. See desktop/stamp_msi.ps1.
+      # not get the #55 fix by downloading the fixed installer. See desktop/stamp_msi.vbs.
       - name: Stamp the installer with a real version (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -194,9 +194,10 @@ jobs:
           $ErrorActionPreference = "Stop"
           $tag = "${{ github.event.release.tag_name }}${{ inputs.release_tag }}"
           $version = if ($tag) { $tag } else { (Select-String -Path ../Project.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value }
-          # powershell.exe (5.1), not pwsh 7: the script drives WindowsInstaller COM, which pwsh
-          # cannot bind — see the header of stamp_msi.ps1.
-          powershell -File stamp_msi.ps1 -Msi "dist/${{ matrix.built }}" -Version $version
+          # cscript, not PowerShell: WindowsInstaller's View.Execute takes an optional Record
+          # parameter that neither pwsh 7 nor Windows PowerShell 5.1 will bind (both fail with
+          # "Execute,Params"). VBScript is the host Microsoft's own MSI samples use.
+          cscript //nologo stamp_msi.vbs "dist/${{ matrix.built }}" $version
 
       - name: Name the release asset
         shell: bash
@@ -290,7 +291,7 @@ jobs:
           $old = (Resolve-Path "dist/${{ matrix.file }}").Path
           $new = Join-Path $env:RUNNER_TEMP "SpaceStation-upgrade-test.msi"
           Copy-Item $old $new -Force
-          powershell -File stamp_msi.ps1 -Msi $new -Version "99.0.0"
+          cscript //nologo stamp_msi.vbs $new "99.0.0"
 
           $installed = { (Get-CimInstance Win32_Product -Filter "Name='SpaceStation'" | Measure-Object).Count }
           Start-Process msiexec -ArgumentList "/i","`"$old`"","/qn" -Wait
