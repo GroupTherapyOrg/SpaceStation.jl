@@ -98,12 +98,36 @@ If Not TryRunSQL("INSERT INTO `Directory` (`Directory`, `Directory_Parent`, `Def
     WScript.Echo "LocalAppDataFolder row already present - reusing it"
 End If
 RunSQL "UPDATE `Directory` SET `Directory_Parent`='LocalAppDataFolder' WHERE `Directory`='INSTALLDIR'"
-' Remove ALLUSERS rather than blanking it. Property.Value is NOT NULL and MSI treats an empty string
-' as NULL, so `SET Value=''` fails the constraint - error 2210 - and, because that was the last
-' statement, it aborted the script before Commit and silently discarded every change above it. An
-' absent ALLUSERS is what actually means per-user; left at "1" the package demands elevation and
-' resolves INSTALLDIR against the machine context.
+' Declare a per-user install the modern way: ALLUSERS=2 with MSIINSTALLPERUSER=1.
+'
+' Simply removing ALLUSERS is the legacy idiom and it is not enough. It left the package half in
+' machine context: installing a newer build over an older one RECONFIGURED the old product instead of
+' upgrading it, and failed 1603 while trying to write rollback scripts under
+' HKLM\Software\Microsoft\Windows\CurrentVersion\Installer (error 1402, access denied). ALLUSERS=2
+' means "per-user if MSIINSTALLPERUSER says so", and the pair together is what actually puts the whole
+' install - directories, registration, rollback - in the user's context.
+'
+' (Property.Value is NOT NULL and MSI reads an empty string as NULL, so these go in as DELETE+INSERT
+' rather than SET Value='' - that constraint violation is what silently discarded an entire earlier
+' stamping run.)
 TryRunSQL "DELETE FROM `Property` WHERE `Property`='ALLUSERS'"
+RunSQL "INSERT INTO `Property` (`Property`, `Value`) VALUES ('ALLUSERS', '2')"
+TryRunSQL "DELETE FROM `Property` WHERE `Property`='MSIINSTALLPERUSER'"
+RunSQL "INSERT INTO `Property` (`Property`, `Value`) VALUES ('MSIINSTALLPERUSER', '1')"
+
+' Word Count bit 3 (value 8) in the summary stream declares that elevated privileges are not
+' required. Without it Windows Installer still treats the package as one that may need machine-wide
+' access, which is the other half of the HKLM rollback failure above.
+Dim sumInfo, wordCount
+Set sumInfo = db.SummaryInformation(2)
+wordCount = sumInfo.Property(15)
+If (wordCount And 8) = 0 Then
+    sumInfo.Property(15) = wordCount Or 8
+    sumInfo.Persist
+    WScript.Echo "summary: set 'elevated privileges not required' (word count " & wordCount & " -> " & (wordCount Or 8) & ")"
+Else
+    WScript.Echo "summary: 'elevated privileges not required' already set"
+End If
 
 db.Commit
 Set db = Nothing
@@ -122,7 +146,7 @@ gotParent = ReadOne(vdb, "SELECT `Directory_Parent` FROM `Directory` WHERE `Dire
 Set vdb = Nothing
 Set verifier = Nothing
 
-WScript.Echo "verify: ProductVersion=" & gotVersion & " ALLUSERS=[" & gotAllUsers & "] (empty = per-user) INSTALLDIR parent=" & gotParent
+WScript.Echo "verify: ProductVersion=" & gotVersion & " ALLUSERS=[" & gotAllUsers & "] (2 = per-user) INSTALLDIR parent=" & gotParent
 If gotVersion <> productVersion Then
     WScript.Echo "FAILED: ProductVersion did not persist (wanted " & productVersion & ", file says " & gotVersion & ")"
     WScript.Quit 1
