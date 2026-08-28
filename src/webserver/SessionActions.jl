@@ -171,12 +171,16 @@ function add(session::ServerSession, notebook::Notebook; run_async::Bool=true)
                 # notebook file deleted... let's ignore this, changing the notebook will cause it to save again. Fine for now
                 sleep(2)
             else
-                e = watch_file(notebook.path, 3)
-                if e.timedout
-                    continue
-                end
-                
-                # the above call is blocking until the file changes
+                # Blocks until the file changes, or 3s passes.
+                #
+                # The timeout is deliberately NOT skipped with a `continue`. watch_file arms its
+                # watch on the file's inode, and the atomic temp-file + rename that editors and
+                # agent tools use REPLACES that inode — the event can be missed entirely, and a bare
+                # `continue` would then re-arm the watch and never notice the edit at all. Since the
+                # check below is a content-hash comparison (it does nothing when the hash matches),
+                # running it every cycle is cheap and makes a missed event cost one 3s round trip
+                # instead of being lost. External edits are the whole point of watching in lazy mode.
+                watch_file(notebook.path, 3)
                 
                 local modified_time = mtime(notebook.path)
                 local _tries = 0

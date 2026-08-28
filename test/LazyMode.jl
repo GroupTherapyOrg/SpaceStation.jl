@@ -131,7 +131,10 @@ using SpaceStation.WorkspaceManager: poll
         write(tmp_path, replace(content, "a = 3" => "a = 4"))
         mv(tmp_path, notebook.path; force=true)
 
-        @test poll(20, 1/10) do
+        # 15s, not 2s: the watcher re-arms watch_file on a 3s cycle, so a budget shorter than its own
+        # timeout asserts a deadline the implementation never promised — and failed intermittently on
+        # CI for exactly that reason. This still fails fast when detection genuinely breaks.
+        @test poll(150, 1/10) do
             notebook.cells[1].stale
         end
         # marked stale, but did not run
@@ -148,7 +151,10 @@ using SpaceStation.WorkspaceManager: poll
         # (a time-based cooldown would swallow this; the content-hash check does not)
         content2 = read(notebook.path, String)
         write(notebook.path, replace(content2, "a = 4" => "a = 5"))
-        @test poll(20, 1/10) do
+        # 15s, not 2s: the watcher re-arms watch_file on a 3s cycle, so a budget shorter than its own
+        # timeout asserts a deadline the implementation never promised — and failed intermittently on
+        # CI for exactly that reason. This still fails fast when detection genuinely breaks.
+        @test poll(150, 1/10) do
             notebook.cells[1].stale
         end
         @test notebook.cells[1].output.body == "4"
