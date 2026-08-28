@@ -69,13 +69,9 @@ RunSQL "UPDATE `Property` SET `Value`='" & productVersion & "' WHERE `Property`=
 RunSQL "UPDATE `Property` SET `Value`='" & productCode & "' WHERE `Property`='ProductCode'"
 
 ' The Upgrade table does not exist in a deno-built package, so create it before inserting.
-On Error Resume Next
-RunSQL "CREATE TABLE `Upgrade` (`UpgradeCode` CHAR(38) NOT NULL, `VersionMin` CHAR(20), `VersionMax` CHAR(20), `Language` CHAR(255), `Attributes` LONG NOT NULL, `Remove` CHAR(255), `ActionProperty` CHAR(72) NOT NULL PRIMARY KEY `UpgradeCode`, `VersionMin`, `VersionMax`, `Language`, `Attributes`)"
-If Err.Number <> 0 Then
+If Not TryRunSQL("CREATE TABLE `Upgrade` (`UpgradeCode` CHAR(38) NOT NULL, `VersionMin` CHAR(20), `VersionMax` CHAR(20), `Language` CHAR(255), `Attributes` LONG NOT NULL, `Remove` CHAR(255), `ActionProperty` CHAR(72) NOT NULL PRIMARY KEY `UpgradeCode`, `VersionMin`, `VersionMax`, `Language`, `Attributes`)") Then
     WScript.Echo "Upgrade table already present - reusing it"
-    Err.Clear
 End If
-On Error GoTo 0
 
 ' Attributes 257 = msidbUpgradeAttributesMigrateFeatures (1) OR VersionMinInclusive (256).
 '
@@ -84,7 +80,7 @@ On Error GoTo 0
 ' only has to be wrong once to strand a user on a broken build with no way to upgrade, and there is no
 ' upside to it here. Unbounded means a genuine downgrade also replaces a newer install; that is a
 ' cheaper failure than an upgrade that silently does nothing, which is the bug being fixed.
-RunSQL "DELETE FROM `Upgrade` WHERE `UpgradeCode`='" & upgradeCode & "'"
+TryRunSQL "DELETE FROM `Upgrade` WHERE `UpgradeCode`='" & upgradeCode & "'"
 RunSQL "INSERT INTO `Upgrade` (`UpgradeCode`, `VersionMin`, `Attributes`, `ActionProperty`) VALUES ('" & upgradeCode & "', '0.0.0', 257, 'OLDERVERSIONBEINGUPGRADED')"
 
 ' An Upgrade row does nothing alone: FindRelatedProducts populates the action property, and
@@ -98,20 +94,16 @@ AddAction "InstallExecuteSequence", "RemoveExistingProducts", 1401
 ' fix for #55: the app cannot choose where WebView2 puts its folder, only where the binary lives.
 ' A LocalAppDataFolder row may already exist; only "already exists" is tolerable here, and it is
 ' reported either way. Silently swallowing this is how the retarget failed while claiming success.
-On Error Resume Next
-RunSQL "INSERT INTO `Directory` (`Directory`, `Directory_Parent`, `DefaultDir`) VALUES ('LocalAppDataFolder', 'TARGETDIR', '.')"
-If Err.Number <> 0 Then
-    WScript.Echo "note: inserting LocalAppDataFolder said: " & Err.Description & " (continuing; a pre-existing row is fine)"
-    Err.Clear
+If Not TryRunSQL("INSERT INTO `Directory` (`Directory`, `Directory_Parent`, `DefaultDir`) VALUES ('LocalAppDataFolder', 'TARGETDIR', '.')") Then
+    WScript.Echo "LocalAppDataFolder row already present - reusing it"
 End If
-On Error GoTo 0
 RunSQL "UPDATE `Directory` SET `Directory_Parent`='LocalAppDataFolder' WHERE `Directory`='INSTALLDIR'"
 ' Remove ALLUSERS rather than blanking it. Property.Value is NOT NULL and MSI treats an empty string
 ' as NULL, so `SET Value=''` fails the constraint - error 2210 - and, because that was the last
 ' statement, it aborted the script before Commit and silently discarded every change above it. An
 ' absent ALLUSERS is what actually means per-user; left at "1" the package demands elevation and
 ' resolves INSTALLDIR against the machine context.
-RunSQL "DELETE FROM `Property` WHERE `Property`='ALLUSERS'"
+TryRunSQL "DELETE FROM `Property` WHERE `Property`='ALLUSERS'"
 
 db.Commit
 Set db = Nothing
@@ -152,6 +144,26 @@ Function ReadOne(database, sql)
     view.Close
 End Function
 
+' For statements whose failure is expected and harmless: CREATE TABLE when the table is already
+' there, INSERT of a row that already exists. Returns True on success. This exists because CheckError
+' quits the script outright, which silently defeats any On Error Resume Next the caller wrapped
+' around RunSQL - re-stamping an already-stamped .msi died on "table already exists" for exactly that
+' reason.
+Function TryRunSQL(sql)
+    Dim view
+    TryRunSQL = False
+    On Error Resume Next
+    Set view = db.OpenView(sql)
+    If Err = 0 Then view.Execute
+    If Err = 0 Then
+        view.Close
+        TryRunSQL = True
+    Else
+        Err.Clear
+    End If
+    On Error GoTo 0
+End Function
+
 Sub RunSQL(sql)
     Dim view
     On Error Resume Next
@@ -180,10 +192,8 @@ Sub CheckError(context)
 End Sub
 
 Sub AddAction(table, action, seq)
-    On Error Resume Next
-    RunSQL "DELETE FROM `" & table & "` WHERE `Action`='" & action & "'"
-    Err.Clear
-    On Error GoTo 0
+    ' The row may not exist yet on a first stamp, and will on a re-stamp; either is fine.
+    TryRunSQL "DELETE FROM `" & table & "` WHERE `Action`='" & action & "'"
     RunSQL "INSERT INTO `" & table & "` (`Action`, `Sequence`) VALUES ('" & action & "', " & seq & ")"
 End Sub
 
