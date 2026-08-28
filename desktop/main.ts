@@ -22,17 +22,59 @@ if (BrowserWindow == null) {
     Deno.exit(1)
 }
 
+// One app, one instance. Every click on the icon used to start an independent copy with its own
+// Julia server and its own port — harmless-looking until the window fails to appear, at which point
+// #55's reporter had five invisible SpaceStation.exe processes stacked up. Holding a loopback port
+// IS the lock: the OS releases it when the process dies, so there is no stale lockfile to reap.
+// This runs BEFORE the window is constructed, so a duplicate never flashes one up.
+const INSTANCE_PORT = 47823
+const INSTANCE_MARKER = "spacestation-desktop-instance"
+
+let instance_lock: Deno.Listener | null = null
+try {
+    instance_lock = Deno.listen({ hostname: "127.0.0.1", port: INSTANCE_PORT })
+} catch (e) {
+    if (e instanceof Deno.errors.AddrInUse) {
+        // Something holds the port. Stand down only if it answers as another SpaceStation — an
+        // unrelated program squatting on this port must never stop the app from starting, so every
+        // uncertain outcome (no answer, wrong answer, slow answer) falls through and launches.
+        let ours = false
+        try {
+            const conn = await Deno.connect({ hostname: "127.0.0.1", port: INSTANCE_PORT })
+            const buf = new Uint8Array(64)
+            const read = conn.read(buf)
+            const n = await Promise.race([read, new Promise<null>((r) => setTimeout(() => r(null), 1500))])
+            if (n != null) ours = new TextDecoder().decode(buf.subarray(0, n)).startsWith(INSTANCE_MARKER)
+            conn.close()
+        } catch {
+            // nothing listening any more, or it refused to talk — treat as not ours
+        }
+        if (ours) {
+            console.error("SpaceStation is already running — raising that window instead of starting a second copy.")
+            Deno.exit(0)
+        }
+    }
+    // Any other listen failure: run without the lock rather than refuse to start.
+}
+
 // The first construction adopts the implicit startup window. On macOS the FFI tweak then extends
 // the content under the title bar, so the deck's tab strip shares the traffic lights' row.
 // Never open larger than the screen: on smaller or scaled-down displays the fixed default
 // overflowed the visible area, cutting off the bottom of every page. (Margins leave room for
 // the menu bar and a bit of breathing space; off-macOS the defaults stand.)
 const screen = main_screen_size()
+// An empty title is a macOS choice: the deck draws its own chrome under the traffic lights, so the
+// system caption should stay blank. Windows has no such arrangement — there the title IS the taskbar
+// button's label, the Alt+Tab entry and the window caption, and leaving it empty gave the app a
+// nameless entry in all three (part of why #55's reporter reported "no icon in my dock"). Likewise
+// transparentTitlebar is a macOS affordance that Windows silently ignores, so asking for it there
+// only sets up a layout that assumes chrome it will never get.
+const mac = Deno.build.os === "darwin"
 const win = new BrowserWindow({
-    title: "",
+    title: mac ? "" : "SpaceStation",
     width: screen ? Math.min(1280, screen.width - 32) : 1280,
     height: screen ? Math.min(878, screen.height - 80) : 878,
-    transparentTitlebar: true,
+    transparentTitlebar: mac,
 })
 const under_titlebar = extend_under_titlebar()
 
@@ -40,6 +82,32 @@ const under_titlebar = extend_under_titlebar()
 // WKWebView's prefers-color-scheme and its own chrome follow it like a real OS dark-mode switch.
 const saved_scheme = load_settings().color_scheme
 if (saved_scheme === "light" || saved_scheme === "dark") set_app_appearance(saved_scheme)
+
+// Now that there IS a window, answer later launches: identify ourselves so they exit, and bring
+// this window forward so the click the user just made does something visible.
+if (instance_lock != null) {
+    const lock = instance_lock
+    void (async () => {
+        for await (const conn of lock) {
+            try {
+                win.show()
+                win.focus()
+            } catch {
+                // window already gone — still answer, so the newcomer doesn't start a duplicate
+            }
+            try {
+                await conn.write(new TextEncoder().encode(INSTANCE_MARKER))
+            } catch {
+                // the other copy gave up waiting
+            }
+            try {
+                conn.close()
+            } catch {
+                // already closed
+            }
+        }
+    })()
+}
 
 const shell_port = Deno.env.get("DENO_SERVE_ADDRESS")?.split(":").pop()
 const shell_url = (path: string) => `http://127.0.0.1:${shell_port}${path}`
@@ -49,32 +117,38 @@ const shell_url = (path: string) => `http://127.0.0.1:${shell_port}${path}`
 // plumbing: macOS routes Cmd+C/V through the menu, so without them clipboard shortcuts never
 // reach the webview. "Julia Version…" is a plain menu item (no accelerator): it reopens the
 // Launch Station to switch versions (which restarts the server).
-try {
-    win.setApplicationMenu([
-        {
-            submenu: {
-                label: "SpaceStation",
-                items: [{ item: { label: "Julia Version…", id: "julia-version", enabled: true } }, "separator", { role: { role: "quit" } }],
+// macOS only. These are macOS menu ROLES living in the system menu bar; on Windows the same call
+// renders a Win32 menu bar strip INSIDE the window, stacking a second, redundant chrome row on top
+// of the deck's own tab strip. The Edit roles exist to route Cmd+C/V into the webview, which is a
+// macOS need — Windows delivers Ctrl+C/V to the webview without any menu.
+if (mac) {
+    try {
+        win.setApplicationMenu([
+            {
+                submenu: {
+                    label: "SpaceStation",
+                    items: [{ item: { label: "Julia Version…", id: "julia-version", enabled: true } }, "separator", { role: { role: "quit" } }],
+                },
             },
-        },
-        {
-            submenu: {
-                label: "Edit",
-                items: [
-                    { role: { role: "undo" } },
-                    { role: { role: "redo" } },
-                    "separator",
-                    { role: { role: "cut" } },
-                    { role: { role: "copy" } },
-                    { role: { role: "paste" } },
-                    { role: { role: "selectAll" } },
-                ],
+            {
+                submenu: {
+                    label: "Edit",
+                    items: [
+                        { role: { role: "undo" } },
+                        { role: { role: "redo" } },
+                        "separator",
+                        { role: { role: "cut" } },
+                        { role: { role: "copy" } },
+                        { role: { role: "paste" } },
+                        { role: { role: "selectAll" } },
+                    ],
+                },
             },
-        },
-        { submenu: { label: "Window", items: [{ role: { role: "minimize" } }] } },
-    ])
-} catch (e) {
-    console.warn("could not install the application menu:", e)
+            { submenu: { label: "Window", items: [{ role: { role: "minimize" } }] } },
+        ])
+    } catch (e) {
+        console.warn("could not install the application menu:", e)
+    }
 }
 win.addEventListener("menuclick", (e: any) => {
     if (e.detail?.id === "julia-version") win.navigate(shell_url("/launch?change=1"))
@@ -97,7 +171,27 @@ const wire = () => {
 }
 wire()
 
+// Proof of life for the window. The runtime navigates the startup window to this server as soon as
+// it is listening, so a healthy webview fetches a page within seconds. If nothing ever arrives, the
+// window never came up — and because Deno.serve pins the event loop, the process would otherwise sit
+// there forever: alive, invisible, and unkillable except through Task Manager. That is exactly what
+// issue #55 looked like, five stacked copies deep. Fail loudly instead.
+const WINDOW_WATCHDOG_MS = 60_000
+const watchdog = setTimeout(() => {
+    console.error(
+        `no window after ${WINDOW_WATCHDOG_MS / 1000}s — the webview never loaded a page.\n` +
+            (Deno.build.os === "windows"
+                ? `If WebView2 could not create its data directory next to ${Deno.execPath()}, that is\n` +
+                  `https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/55 — the app must be installed\n` +
+                  `somewhere the current user can write, which the installer now arranges.\n`
+                : "") +
+            `Exiting rather than running on with no user interface.`
+    )
+    Deno.exit(1)
+}, WINDOW_WATCHDOG_MS)
+
 serve_ui({
+    on_first_request: () => clearTimeout(watchdog),
     state: () => server.state,
     julia_info: async () => ({
         juliaup: juliaup_info(),

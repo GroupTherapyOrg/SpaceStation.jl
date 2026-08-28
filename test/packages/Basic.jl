@@ -652,6 +652,41 @@ end
         @assert isdir(compilation_dir)
         compilation_dir_testA = joinpath(compilation_dir, "PlutoPkgTestA")
         precomp_entries() = isdir(compilation_dir_testA) ? readdir(compilation_dir_testA) : String[]
+
+        # `Pkg.precompile()` runs inside the notebook's worker and its parallel child processes are
+        # what actually write the .ji files, so the directory can still be filling when the sync
+        # returns. Poll instead of sampling once: this costs nothing when the entries are already
+        # there, and removes a race that made this testset fail intermittently on CI (macOS
+        # especially) with the singularly unhelpful `String[] != String[]`.
+        function precomp_entries_settled(; timeout=30.0)
+            deadline = time() + timeout
+            while time() < deadline
+                entries = precomp_entries()
+                isempty(entries) || return entries
+                sleep(0.25)
+            end
+            precomp_entries()
+        end
+
+        # …and when it IS genuinely empty, say why. Precompilation output goes to the notebook's own
+        # package terminal, not to stdout, so a failure here used to carry no evidence at all about
+        # whether the package was even added, let alone what Pkg did.
+        function pkg_state_report(notebook)
+            io = IOBuffer()
+            println(io, "--- package manager state ---")
+            println(io, "nbpkg_ctx_instantiated = ", notebook.nbpkg_ctx_instantiated)
+            println(io, "installed_versions = ", notebook.nbpkg_installed_versions_cache)
+            try
+                println(io, "Project.toml:\n", PkgCompat.read_project_file(notebook.nbpkg_ctx))
+            catch e
+                println(io, "could not read Project.toml: ", e)
+            end
+            for (phase, output) in notebook.nbpkg_terminal_outputs
+                println(io, "--- pkg terminal [", phase, "] ---")
+                println(io, output)
+            end
+            String(take!(io))
+        end
         
         
         @testset "Match compiler options: $(match)" for match in [true, false]
@@ -696,11 +731,12 @@ end
             update_save_run!(🍭, notebook, notebook.cells)
             @test notebook.nbpkg_ctx_instantiated
             
-            after_sync = precomp_entries()
+            after_sync = precomp_entries_settled()
             
             # syncing should have called Pkg.precompile(), which should have generated new precompile caches. 
             # If `match == false`, then this is the second run, and the precompile caches should be different. 
             # These new caches use the same filename (weird...), EXCEPT when the pkgimages flag changed, then you get a new filename.
+            isempty(after_sync) && @info "No precompile caches after sync — dumping package manager state so this is diagnosable rather than just empty-vs-empty.\n" * pkg_state_report(notebook)
             @test before_sync != after_sync
             @test length(before_sync) < length(after_sync)
             
@@ -723,7 +759,7 @@ end
             @test !occursin(r"reject.*cache"i, full_logs)
             
             # Running the import should not have triggered additional precompilation, everything should have been precompiled during Pkg.precompile() (in sync_nbpkg).
-            after_run = precomp_entries()
+            after_run = precomp_entries_settled()
             @test after_sync == after_run
             
             cleanup(🍭, notebook)

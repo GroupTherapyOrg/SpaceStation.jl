@@ -1,8 +1,15 @@
+import { run_captured } from "./spawn.ts"
+
 // Julia installation knowledge for the desktop shell: which juliaup channels exist, which one
 // the user prefers, and where settings live. juliaup state is read from its own metadata file
 // (~/.julia/juliaup/juliaup.json) — structured and stable, no CLI output parsing.
 
-export const home_dir = () => Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE") ?? "."
+// Windows has no HOME by convention, but Git Bash / MSYS2 set one — and it points somewhere Julia's
+// own homedir() never looks (that resolves the user profile). The two MUST agree: the server writes
+// its connection file under homedir(), and boot.ts reads the access secret back out of it. So
+// USERPROFILE wins on Windows, HOME everywhere else.
+export const home_dir = () =>
+    (Deno.build.os === "windows" ? (Deno.env.get("USERPROFILE") ?? Deno.env.get("HOME")) : (Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE"))) ?? "."
 
 export const data_dir = () =>
     Deno.build.os === "darwin"
@@ -15,7 +22,7 @@ export type JuliaSettings = { channel: string | null; ask: boolean }
 
 const settings_path = () => `${data_dir()}/settings.json`
 
-export const load_settings = (): { julia?: JuliaSettings; color_scheme?: "light" | "dark" | "system" } => {
+export const load_settings = (): { julia?: JuliaSettings; color_scheme?: "light" | "dark" | "system"; port?: number } => {
     try {
         return JSON.parse(Deno.readTextFileSync(settings_path()))
     } catch {
@@ -82,7 +89,10 @@ export type JuliaupInfo = { default: string | null; channels: Array<{ name: stri
 /** Installed channels + default, from juliaup's own metadata. Null when juliaup isn't set up. */
 export const juliaup_info = (): JuliaupInfo | null => {
     try {
-        const depot = Deno.env.get("JULIAUP_DEPOT_PATH") ?? Deno.env.get("JULIA_DEPOT_PATH")?.split(":")[0] ?? `${home_dir()}/.julia`
+        // JULIA_DEPOT_PATH is a LIST, separated the way the platform separates path lists — ';' on
+        // Windows, ':' elsewhere. Splitting on ':' everywhere truncated "C:\Users\me\.julia" to "C".
+        const depot_sep = Deno.build.os === "windows" ? ";" : ":"
+        const depot = Deno.env.get("JULIAUP_DEPOT_PATH") ?? Deno.env.get("JULIA_DEPOT_PATH")?.split(depot_sep)[0] ?? `${home_dir()}/.julia`
         const meta = JSON.parse(Deno.readTextFileSync(`${depot}/juliaup/juliaup.json`))
         const channels = Object.entries(meta.InstalledChannels ?? {})
             .map(([name, v]: [string, any]) => ({ name, version: String(v?.Version ?? "").split("+")[0] }))
@@ -121,10 +131,10 @@ export const juliaup_list = async (): Promise<Array<{ name: string; version: str
     const bin = juliaup_bin()
     if (bin == null) return null
     try {
-        const out = await new Deno.Command(bin, { args: ["list"], stdout: "piped", stderr: "null" }).output()
+        const out = await run_captured(bin, ["list"])
         if (!out.success) return null
         const rows: Array<{ name: string; version: string }> = []
-        for (const line of new TextDecoder().decode(out.stdout).split("\n")) {
+        for (const line of out.stdout.split("\n")) {
             const m = line.match(/^\s*(\S+)\s+(\S+)\s*$/)
             if (m == null || m[1] === "Channel" || m[1].startsWith("-")) continue
             if (m[1].includes("~")) continue // arch-pinned variants: noise in a picker
@@ -183,8 +193,8 @@ export const ensure_cli_on_path = async (log: (line: string) => void): Promise<v
                 "$bin = Join-Path $env:USERPROFILE '.julia\\bin'; " +
                 "$cur = [Environment]::GetEnvironmentVariable('Path','User'); if ($null -eq $cur) { $cur = '' }; " +
                 "if (-not (($cur -split ';') -contains $bin)) { [Environment]::SetEnvironmentVariable('Path', ($cur.TrimEnd(';') + ';' + $bin), 'User'); Write-Output 'added' }"
-            const out = await new Deno.Command("powershell", { args: ["-NoProfile", "-Command", script], stdout: "piped", stderr: "null" }).output()
-            if (new TextDecoder().decode(out.stdout).includes("added")) {
+            const out = await run_captured("powershell", ["-NoProfile", "-Command", script])
+            if (out.stdout.includes("added")) {
                 log("added ~/.julia/bin to your PATH — open a new terminal to use the `spacestation` command")
             }
         } catch {
@@ -216,8 +226,8 @@ export const ensure_cli_on_path = async (log: (line: string) => void): Promise<v
 export const has_plain_julia = async (): Promise<string | null> => {
     for (const candidate of [Deno.env.get("SPACESTATION_JULIA"), "julia", "/opt/homebrew/bin/julia", "/usr/local/bin/julia"].filter((c): c is string => !!c)) {
         try {
-            const out = await new Deno.Command(candidate, { args: ["--version"], stdout: "piped", stderr: "null" }).output()
-            if (out.success) return new TextDecoder().decode(out.stdout).trim()
+            const out = await run_captured(candidate, ["--version"])
+            if (out.success) return out.stdout.trim()
         } catch {
             // keep looking
         }

@@ -2,7 +2,8 @@
 // this to a Deno.BrowserWindow, smoke.ts drives it from a plain `deno run` for headless testing.
 
 import * as buildinfo from "./buildinfo.ts"
-import { data_dir, ensure_cli_on_path, home_dir, juliaup_bin, vendored_bin_dir } from "./julia.ts"
+import { data_dir, ensure_cli_on_path, home_dir, juliaup_bin, load_settings, save_settings, vendored_bin_dir } from "./julia.ts"
+import { run_captured, spawn_logged, type Running } from "./spawn.ts"
 
 export type Phase = "idle" | "installing-julia" | "finding-julia" | "installing" | "starting" | "ready" | "error"
 
@@ -24,9 +25,13 @@ export interface BootOptions {
 
 const LOG_LINES = 200
 
+// Where the sticky desktop port search starts. Not 1234: a browser-run `spacestation` takes that by
+// default, and the two should not fight over one origin. See pick_port().
+const DESKTOP_PORT_BASE = 1250
+
 export class SpaceStationServer {
     state: BootState = { phase: "idle", detail: "", log: [], url: null, port: null }
-    private child: Deno.ChildProcess | null = null
+    private child: Running | null = null
     private stopping = false
     onchange: (() => void) | null = null
 
@@ -51,7 +56,7 @@ export class SpaceStationServer {
     /** Locate a runnable `julia`. A compiled .app launched from Finder has a minimal PATH, so the
      *  well-known install locations are checked explicitly, juliaup first. */
     async find_julia(): Promise<string | null> {
-        const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE") ?? ""
+        const home = home_dir()
         const exe = Deno.build.os === "windows" ? "julia.exe" : "julia"
         const vendored = vendored_bin_dir()
         const candidates = [
@@ -66,9 +71,9 @@ export class SpaceStationServer {
         ].filter((c): c is string => !!c)
         for (const candidate of candidates) {
             try {
-                const out = await new Deno.Command(candidate, { args: ["--version"], stdout: "piped", stderr: "null" }).output()
+                const out = await run_captured(candidate, ["--version"])
                 if (out.success) {
-                    this.log_line(`found ${new TextDecoder().decode(out.stdout).trim()} at ${candidate}`)
+                    this.log_line(`found ${out.stdout.trim()} at ${candidate}`)
                     return candidate
                 }
             } catch {
@@ -107,9 +112,7 @@ export class SpaceStationServer {
     /** Run a command with stdout+stderr streaming into the boot log; true on exit 0. */
     private async run_logged(cmd: string, args: string[]): Promise<boolean> {
         try {
-            const child = new Deno.Command(cmd, { args, stdout: "piped", stderr: "piped" }).spawn()
-            this.pipe(child.stdout)
-            this.pipe(child.stderr)
+            const child = spawn_logged(cmd, args, undefined, (line) => this.log_line(line))
             return (await child.status).success
         } catch (e) {
             this.log_line(`${cmd} failed: ${e}`)
@@ -117,8 +120,41 @@ export class SpaceStationServer {
         }
     }
 
-    /** Ask the OS for a free port. (Tiny race between close and Julia binding it — acceptable.) */
+    /** The port the server will bind — kept STICKY across launches, which matters far more than it
+     *  looks. The frontend keeps its preferences in localStorage (the terminal's dock, height and
+     *  width, the sidebar width, the open-terminal tabs, the recent-notebook list — land.js), and
+     *  localStorage is scoped to the ORIGIN: scheme + host + PORT. Asking the OS for a random free
+     *  port every launch therefore handed the app a brand-new, empty origin every single time, which
+     *  is why the desktop forgot every one of those settings on restart while the browser — sitting
+     *  on a stable :1234 — remembered them.
+     *
+     *  So: reuse the port we used last time, else walk a small fixed range, and only fall back to a
+     *  random port if none of that is free. The range deliberately avoids 1234, which a browser-run
+     *  `spacestation` grabs by default (and which Authentication.jl notes is already contended
+     *  across nodes via the `pluto_secret_1234` cookie name).
+     *
+     *  (Tiny race between closing the probe socket and Julia binding it — acceptable, as before.) */
     pick_port(): number {
+        const is_free = (port: number): boolean => {
+            try {
+                Deno.listen({ hostname: "127.0.0.1", port }).close()
+                return true
+            } catch {
+                return false
+            }
+        }
+        const remembered = load_settings().port
+        const preferred = [
+            ...(typeof remembered === "number" && remembered > 0 ? [remembered] : []),
+            ...Array.from({ length: 16 }, (_, i) => DESKTOP_PORT_BASE + i),
+        ]
+        for (const port of preferred) {
+            if (!is_free(port)) continue
+            if (port !== remembered) save_settings({ port })
+            return port
+        }
+        // Everything we prefer is taken. Still start — losing the saved preferences is much better
+        // than refusing to launch — but do not remember this one, so the next launch tries again.
         const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 })
         const port = (listener.addr as Deno.NetAddr).port
         listener.close()
@@ -128,7 +164,7 @@ export class SpaceStationServer {
     /** SpaceStation writes a connection file per server (port + access secret) exactly so external
      *  tools can find it — flat JSON in the state dir, keyed `<node>-<port>.json`. */
     read_secret(port: number): string | null {
-        const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE") ?? "."
+        const home = home_dir()
         const dir = `${Deno.env.get("XDG_STATE_HOME") ?? `${home}/.local/state`}/pluto/servers`
         try {
             for (const entry of Deno.readDirSync(dir)) {
@@ -240,9 +276,10 @@ export class SpaceStationServer {
         if (use_channel) args.unshift(`+${channel}`)
         if (managed) Deno.mkdirSync(project, { recursive: true })
 
-        const child = new Deno.Command(julia, {
+        const child = spawn_logged(
+            julia,
             args,
-            env: {
+            {
                 // the hub reads this via /api/v1/config: one webview window, so open workspaces
                 // in-place instead of spawning browser tabs
                 SPACESTATION_DESKTOP: "1",
@@ -253,12 +290,9 @@ export class SpaceStationServer {
                 PATH: `${home_dir()}/.julia/bin${Deno.build.os === "windows" ? ";" : ":"}${Deno.env.get("PATH") ?? ""}`,
                 ...(managed ? { SPACESTATION_DESKTOP_ENV: project } : {}),
             },
-            stdout: "piped",
-            stderr: "piped",
-        }).spawn()
+            (line) => this.log_line(line)
+        )
         this.child = child
-        this.pipe(child.stdout)
-        this.pipe(child.stderr)
         child.status.then((status) => {
             this.child = null
             if (!this.stopping) this.set("error", `the SpaceStation server exited unexpectedly (code ${status.code})`)
@@ -291,40 +325,48 @@ export class SpaceStationServer {
         this.stop()
     }
 
-    private async pipe(stream: ReadableStream<Uint8Array>) {
-        const decoder = new TextDecoder()
-        let buffer = ""
-        try {
-            for await (const chunk of stream) {
-                buffer += decoder.decode(chunk, { stream: true })
-                const lines = buffer.split("\n")
-                buffer = lines.pop() ?? ""
-                for (const line of lines) this.log_line(line)
-            }
-        } catch {
-            // stream closed with the process
-        }
-        if (buffer.trim() !== "") this.log_line(buffer)
-    }
-
-    /** Graceful shutdown: SIGTERM lets the server reap terminals, tunnels, and child workspace
-     *  servers (its on_shutdown handler); escalate only if it lingers. */
+    /** Graceful shutdown, in three escalating steps.
+     *
+     *  Ask the server to stop ITSELF first, over the secret-gated /api/v1/shutdown route it already
+     *  exposes (CollabLocal.jl:163-171 shuts child workspaces down exactly this way). Only that path
+     *  runs the server's on_shutdown handler, which reaps terminals, tunnels and child workspace
+     *  servers. A signal cannot stand in for it on Windows: Deno maps SIGTERM to TerminateProcess,
+     *  so the server dies where it stands and every process it spawned is orphaned — they outlive
+     *  the app and hold their ports. Signals remain the fallback for a server too wedged to answer. */
     async stop(): Promise<void> {
         const child = this.child
         if (child == null) return
         this.stopping = true
+
+        const exited = (ms: number) => Promise.race([child.status.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), ms))])
+
+        const port = this.state.port
+        if (port != null) {
+            const secret = this.read_secret(port)
+            try {
+                const res = await fetch(`http://127.0.0.1:${port}/api/v1/shutdown${secret == null ? "" : `?secret=${encodeURIComponent(secret)}`}`, {
+                    method: "POST",
+                    signal: AbortSignal.timeout(3000),
+                })
+                await res.body?.cancel()
+            } catch {
+                // not listening, already going down, or no secret to present — escalate below
+            }
+            // Give it room to actually unwind: reaping workers is not instant.
+            if (await exited(8000)) return
+        }
+
         try {
             child.kill("SIGTERM")
         } catch {
-            return
+            // already gone, or the signal is unsupported on this platform — escalate anyway, rather
+            // than returning and leaving a live process behind (which is what used to happen)
         }
-        const killed = await Promise.race([child.status.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), 5000))])
-        if (!killed) {
-            try {
-                child.kill("SIGKILL")
-            } catch {
-                // already gone
-            }
+        if (await exited(5000)) return
+        try {
+            child.kill("SIGKILL")
+        } catch {
+            // already gone
         }
     }
 }
