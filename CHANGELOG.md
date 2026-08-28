@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.8](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.4.7...v0.4.8) (2026-08-28)
+
+
+### Bug Fixes
+
+* open a window on Windows — WebView2 had nowhere to write its data ([#56](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/56)) ([bfc71d8](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/bfc71d8402e8ae62a52e1d7fcf20c356cd81ecdd))
+
 ## [0.4.7](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.4.6...v0.4.7) (2026-08-26)
 
 
