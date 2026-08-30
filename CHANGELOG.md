@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.9](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.4.8...v0.4.9) (2026-08-30)
+
+
+### Bug Fixes
+
+* upgrade xterm.js 5.5.0 → 6.0.0 for the desktop app's caps-typing corruption ([#61](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/61)) ([faa51cb](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/faa51cba127ae5f676e810fe843ae0d36d7623f4))
+
 ## [0.4.8](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.4.7...v0.4.8) (2026-08-28)
 
 
