@@ -784,8 +784,12 @@ const TerminalView = ({ tid, cwd, visible, scheme }) => {
             // _afterResize re-syncs the viewport — which is why dragging the panel width "fixed" a
             // broken tab); an unchanged-size reveal repaired nothing. So repair here: put the view
             // back where it was when the tab was hidden, then force the scroll geometry to re-sync.
-            // (viewport.syncScrollArea is internal API, but the xterm import is pinned to 5.5.0 —
-            // and FitAddon itself reaches through _core the same way.)
+            // (viewport.syncScrollArea was internal API and is GONE in xterm 6.0 — the viewport was
+            // rewritten around VS Code's scrollable element, which tracks scroll state internally
+            // instead of trusting the browser element's scrollTop. That internal tracking is exactly
+            // what the display:none scroll loss needed, so the repair below may simply be a no-op on
+            // 6.0; the optional chain keeps it harmless either way, and scrollToBottom/scrollLines
+            // are public API.)
             const term = term_ref.current
             if (term == null) return
             try {
@@ -824,8 +828,12 @@ const TerminalView = ({ tid, cwd, visible, scheme }) => {
         started.current = true
         ;(async () => {
             const [{ Terminal }, { FitAddon }, config] = await Promise.all([
-                import("https://esm.sh/@xterm/xterm@5.5.0?target=es2020"),
-                import("https://esm.sh/@xterm/addon-fit@0.10.0?target=es2020"),
+                // 6.0.0, not 5.5.0: 5.5 predates two upstream fixes that hit the desktop app directly —
+                // "Fixed CapsLock triggering input twice in MacOS" (#5282) and "Fix duplicate input for
+                // some IMEs" (#5024). The desktop shell is WKWebView (WebKit), where xterm 5.5's input
+                // layer garbles caps/fast typing into TUIs like Claude Code; Chrome never showed it.
+                import("https://esm.sh/@xterm/xterm@6.0.0?target=es2020"),
+                import("https://esm.sh/@xterm/addon-fit@0.11.0?target=es2020"),
                 get_json("./api/v1/config").catch(() => null),
             ])
             const term = new Terminal({
