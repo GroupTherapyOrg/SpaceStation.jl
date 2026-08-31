@@ -88,7 +88,7 @@ HEADLESS=false PLUTO_PORT=2345 npm run test -- -t="suite name"  # one suite
 ### TypeScript check (matches CI `TypeScriptCheck.yml`)
 ```bash
 cd frontend && npm install
-tsc --noEmit --strictNullChecks false   # from repo root
+tsc --noEmit   # from repo root (CI runs full strict — no --strictNullChecks false)
 ```
 `tsconfig.json` has `allowJs` + `checkJs` — the frontend is plain JS with JSDoc type annotations, checked as TS.
 

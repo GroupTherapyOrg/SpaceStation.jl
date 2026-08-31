@@ -5,6 +5,13 @@ import URIs
 using MIMEs: mime_from_path
 const default_binder_url = "https://mybinder.org/v2/gh/fonsp/pluto-on-binder/v$(string(PLUTO_VERSION))"
 
+# This fork's assets live in this fork's repo. The roots below were upstream's
+# JuliaPluto/Pluto.jl, which has no tag for SpaceStation's version numbers — every asset in an
+# exported HTML 404'd and the file opened blank (issue #60, the reporter's follow-up). jsdelivr
+# serves any public GitHub repo at any tag, and this repo's frontend/ needs no build step, so
+# pointing the root here is the whole fix.
+const cdn_repo = "GroupTherapyOrg/SpaceStation.jl"
+
 const cdn_version_override = nothing
 # const cdn_version_override = "2a48ae2"
 
@@ -34,7 +41,7 @@ function cdnified_html(filename::AbstractString;
             try
                 original = read(project_relative_path(distdir, filename), String)
                 
-                cdn_root = "https://cdn.jsdelivr.net/gh/JuliaPluto/Pluto.jl@$(string(PLUTO_VERSION))/$(distdir)/"
+                cdn_root = "https://cdn.jsdelivr.net/gh/$(cdn_repo)@$(string(PLUTO_VERSION))/$(distdir)/"
 
                 @debug "Using CDN for Pluto assets:" cdn_root
 
@@ -67,7 +74,7 @@ function cdnified_html(filename::AbstractString;
         let
             original = read(project_relative_path("frontend", filename), String)
 
-            cdn_root = something(pluto_cdn_root, "https://cdn.jsdelivr.net/gh/JuliaPluto/Pluto.jl@$(something(cdn_version_override, string(something(version, PLUTO_VERSION))))/frontend/")
+            cdn_root = something(pluto_cdn_root, "https://cdn.jsdelivr.net/gh/$(cdn_repo)@$(something(cdn_version_override, string(something(version, PLUTO_VERSION))))/frontend/")
 
             @debug "Using CDN for Pluto assets:" cdn_root
             if offline_bundle

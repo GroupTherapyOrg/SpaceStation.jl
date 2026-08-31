@@ -1568,3 +1568,22 @@ dialog.land-confirm button.go.danger {
         animation-duration: 2.4s;
     }
 }
+
+/* the desktop zoom indicator (common/Zoom.js): a transient "120%" chip, browser-style */
+#zoom-indicator {
+    position: fixed;
+    top: 12px;
+    right: 12px;
+    z-index: 10000;
+    padding: 0.35rem 0.8rem;
+    border-radius: 8px;
+    background: rgba(20, 18, 28, 0.85);
+    color: #e8e4f5;
+    font: 600 0.9rem system-ui, sans-serif;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease-out;
+}
+#zoom-indicator.visible {
+    opacity: 1;
+}
