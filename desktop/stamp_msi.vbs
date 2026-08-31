@@ -21,7 +21,7 @@
 '    FindRelatedProducts / RemoveExistingProducts makes it a proper major upgrade. UpgradeCode is
 '    left alone: it is the stable identity tying releases together.
 '
-'   cscript //nologo stamp_msi.vbs dist\SpaceStation.msi 0.4.8
+'   cscript //nologo stamp_msi.vbs dist\SpaceStation.msi 0.4.8 icons\spacestation.ico
 '
 ' VBScript, not PowerShell, on purpose. This drives the WindowsInstaller COM automation layer, whose
 ' View.Execute takes an optional Record parameter that neither pwsh 7 nor Windows PowerShell 5.1 will
@@ -129,6 +129,35 @@ Else
     WScript.Echo "summary: 'elevated privileges not required' already set"
 End If
 
+' ---- Shortcut + Add/Remove Programs icon (issue #63) ----
+' The packager embeds no icon in the exe, so the Start Menu shortcut and the Programs list show
+' the generic executable icon. The runtime half (WM_SETICON in the shell) covers the live
+' taskbar; this covers the installer surfaces: an Icon-table stream referenced by the Shortcut
+' row and by ARPPRODUCTICON. The argument is optional so older invocations keep working.
+If WScript.Arguments.Count >= 3 Then
+    Dim icoPath, iview, irec
+    icoPath = WScript.Arguments(2)
+    If Not fso.FileExists(icoPath) Then
+        WScript.Echo "FAILED: icon file not found: " & icoPath
+        WScript.Quit 1
+    End If
+    TryRunSQL "CREATE TABLE `Icon` (`Name` CHAR(72) NOT NULL, `Data` OBJECT NOT NULL PRIMARY KEY `Name`)"
+    On Error Resume Next
+    Set iview = db.OpenView("SELECT `Name`, `Data` FROM `Icon`")
+    iview.Execute
+    Set irec = installer.CreateRecord(2)
+    irec.StringData(1) = "spacestation.ico"
+    irec.SetStream 2, icoPath
+    ' 3 = msiViewModifyAssign: insert-or-replace, so re-stamping an already-stamped .msi is legal
+    iview.Modify 3, irec
+    iview.Close
+    CheckError "Icon table stream insert (" & icoPath & ")"
+    On Error GoTo 0
+    RunSQL "UPDATE `Shortcut` SET `Icon_`='spacestation.ico'"
+    TryRunSQL "DELETE FROM `Property` WHERE `Property`='ARPPRODUCTICON'"
+    RunSQL "INSERT INTO `Property` (`Property`, `Value`) VALUES ('ARPPRODUCTICON', 'spacestation.ico')"
+End If
+
 db.Commit
 Set db = Nothing
 Set installer = Nothing
@@ -146,9 +175,15 @@ gotParent = ReadOne(vdb, "SELECT `Directory_Parent` FROM `Directory` WHERE `Dire
 Set vdb = Nothing
 Set verifier = Nothing
 
-WScript.Echo "verify: ProductVersion=" & gotVersion & " ALLUSERS=[" & gotAllUsers & "] (2 = per-user) INSTALLDIR parent=" & gotParent
+Dim gotIcon
+gotIcon = ReadOne(vdb, "SELECT `Icon_` FROM `Shortcut`")
+WScript.Echo "verify: ProductVersion=" & gotVersion & " ALLUSERS=[" & gotAllUsers & "] (2 = per-user) INSTALLDIR parent=" & gotParent & " shortcut icon=[" & gotIcon & "]"
 If gotVersion <> productVersion Then
     WScript.Echo "FAILED: ProductVersion did not persist (wanted " & productVersion & ", file says " & gotVersion & ")"
+    WScript.Quit 1
+End If
+If WScript.Arguments.Count >= 3 And gotIcon <> "spacestation.ico" Then
+    WScript.Echo "FAILED: the shortcut is not wired to the icon (Icon_=[" & gotIcon & "])"
     WScript.Quit 1
 End If
 If gotParent <> "LocalAppDataFolder" Then
