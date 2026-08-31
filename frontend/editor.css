@@ -659,6 +659,13 @@ header dialog#export div#container {
 header.show_export dialog#export div#container {
     overflow-x: auto;
 }
+/* feedback line for the desktop app's server-side exports (see ExportBanner's desktop branch) */
+#export .export_desktop_status {
+    flex-basis: 100%;
+    font-size: 0.85rem;
+    opacity: 0.8;
+    font-style: italic;
+}
 a.export_card {
     margin: 20px 5px;
     flex: 0 0 auto;

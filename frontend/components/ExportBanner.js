@@ -2,7 +2,7 @@
 import dialogPolyfill from "https://cdn.jsdelivr.net/npm/dialog-polyfill@0.5.6/dist/dialog-polyfill.esm.min.js"
 
 import { useEventListener } from "../common/useEventListener.js"
-import { html, useLayoutEffect, useRef } from "../imports/Preact.js"
+import { html, useEffect, useLayoutEffect, useRef, useState } from "../imports/Preact.js"
 import { getCurrentLanguage, t, th } from "../common/lang.js"
 import * as desktop from "./DesktopInterface.js"
 import { with_offline_bundle_query } from "./PlutoLandUpload.js"
@@ -127,12 +127,36 @@ export const ExportBanner = ({
 
     const warn_if_safe_preview = () => (process_waiting_for_permission ? confirm(t("t_export_safe_preview_warning")) : true)
 
+    // The desktop shell is a WKWebView: window.print() and <a download> are no-ops there unless the
+    // embedder implements them, so these cards looked clickable and did nothing in the app (#60).
+    // In desktop mode the LOCAL server does the work instead — saves exports straight to ~/Downloads,
+    // and for PDF opens the system browser, where the print dialog exists. `desktop` stays false in
+    // every real browser, and the cards keep their original behavior there.
+    const [desktop, set_desktop] = useState(false)
+    const [desktop_status, set_desktop_status] = useState(/** @type {String?} */ (null))
+    useEffect(() => {
+        fetch("./api/v1/config")
+            .then((r) => r.json())
+            .then((c) => set_desktop(c?.desktop === true))
+            .catch(() => {})
+    }, [])
+    const desktop_export = (/** @type {Event} */ e, /** @type {String} */ type) => {
+        if (!desktop) return false
+        e.preventDefault()
+        set_desktop_status(t("t_export_desktop_working"))
+        fetch(`./api/v1/desktop_export?id=${notebook_id}&type=${type}`, { method: "POST" })
+            .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+            .then((d) => set_desktop_status(type === "pdf" ? t("t_export_desktop_opening_browser") : t("t_export_desktop_saved", { filename: d.filename })))
+            .catch(() => set_desktop_status(t("t_export_desktop_failed")))
+        return true
+    }
+
     return html`
         <dialog id="export" inert=${!open} open=${open} ref=${element_ref} class=${prideMonth ? "pride" : ""}>
             <div id="container">
                 <div class="export_title">${t("t_export_category_export")}</div>
                 <!-- no "download" attribute here: we want the jl contents to be shown in a new tab -->
-                <a href=${notebookfile_url} target="_blank" class="export_card" onClick=${(e) => exportNotebookDesktop(e, "file", notebook_id)}>
+                <a href=${notebookfile_url} target="_blank" class="export_card" onClick=${(e) => desktop_export(e, "file") || exportNotebookDesktop(e, "file", notebook_id)}>
                     <header role="none"><${Triangle} fill="#a270ba" /> ${t("t_export_card_notebook_file")}</header>
                     <section>${th("t_export_card_notebook_file_description")}</section>
                 </a>
@@ -148,6 +172,7 @@ export const ExportBanner = ({
                         }
                         e.preventDefault()
                         WarnForVisisblePasswords()
+                        if (desktop_export(e, "html")) return
                         window.dispatchEvent(new CustomEvent("open pluto html export", { detail: { download_url: notebookexport_url } }))
                     }}
                 >
@@ -162,12 +187,14 @@ export const ExportBanner = ({
                             e.preventDefault()
                             return
                         }
+                        if (desktop_export(e, "pdf")) return
                         window.print()
                     }}
                 >
                     <header role="none"><${Square} fill="#619b3d" />${t("t_export_card_pdf")}</header>
                     <section>${th("t_export_card_pdf_description")}</section>
                 </a>
+                ${desktop_status == null ? null : html`<div class="export_desktop_status" role="status">${desktop_status}</div>`}
                 ${html`
                     <div class="export_title">${t("t_export_category_record")}</div>
                     <a

@@ -81,6 +81,18 @@ if (ua == null) {
 }
 say(`[window-smoke] the webview rendered and ran JS — user-agent: ${ua}`)
 
+// The runtime icon setter (issue #63): prove the whole FFI chain — VFS ico materialization,
+// window-handle lookup, LoadImageW, WM_SETICON — actually works on a real Windows window. Off
+// Windows it reports "skipped" and this stays a no-op.
+{
+    const { set_windows_window_icon } = await import("./windows_icon.ts")
+    const icon_status = await set_windows_window_icon(win, "SpaceStation window smoke")
+    say(`[window-smoke] window icon: ${icon_status}`)
+    if (Deno.build.os === "windows" && icon_status !== "set") {
+        fail(`the runtime window icon was not set: ${icon_status}`)
+    }
+}
+
 // #55's regression check, restated for what actually fixes it. WebView2 always puts its user-data
 // folder beside the executable — laufey passes a NULL userDataFolder and WEBVIEW2_USER_DATA_FOLDER
 // is a convention the host app must implement, which CI demonstrated it does not. So the folder's

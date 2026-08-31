@@ -13,6 +13,7 @@ import { SpaceStationServer, type BootOptions } from "./boot.ts"
 import { serve_ui } from "./splash.ts"
 import { begin_window_drag, extend_under_titlebar, is_fullscreen, main_screen_size, set_app_appearance } from "./macos_titlebar.ts"
 import { has_plain_julia, julia_catalog, juliaup_info, load_settings, save_settings } from "./julia.ts"
+import { set_windows_window_icon } from "./windows_icon.ts"
 
 // Deno.BrowserWindow only exists inside the desktop runtime host. Fail with a hint, not a crash,
 // when someone runs this with plain `deno run` (use smoke.ts for that).
@@ -77,6 +78,12 @@ const win = new BrowserWindow({
     transparentTitlebar: mac,
 })
 const under_titlebar = extend_under_titlebar()
+
+// The packaged .exe carries no icon resource (deno desktop doesn't embed one yet), so hand the
+// window its icon at runtime — this is what the taskbar and Alt+Tab display. No-op off Windows.
+void set_windows_window_icon(win, "SpaceStation").then((status) => {
+    if (status !== "set" && !status.startsWith("skipped")) console.warn("window icon:", status)
+})
 
 // The launcher's theme choice pins the native window appearance (macOS — a no-op elsewhere), so
 // WKWebView's prefers-color-scheme and its own chrome follow it like a real OS dark-mode switch.
