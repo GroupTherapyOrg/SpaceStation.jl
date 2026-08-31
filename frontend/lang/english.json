@@ -152,6 +152,10 @@
     "t_export_card_record": "Record ",
     "t_export_card_record_description": "Capture the entire notebook, and any changes you make.",
     "t_export_card_pride_month_message": "The future is <strong>queer</strong>!",
+    "t_export_desktop_working": "Exporting…",
+    "t_export_desktop_saved": "Saved to your Downloads folder as “{{filename}}”.",
+    "t_export_desktop_opening_browser": "Opening in your browser — use its print dialog to save the PDF.",
+    "t_export_desktop_failed": "The export failed — see the server log for details.",
 
     "t_save_notebook_ellipsis": "Save notebook...",
     "t_save_notebook_button_label_when_currently_not_saved": "Choose",

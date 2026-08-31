@@ -11,6 +11,15 @@ import { parse_launch_params } from "./common/parse_launch_params.js"
 
 const url_params = new URLSearchParams(window.location.search)
 
+// &pluto_print=1: the desktop app's PDF export opens this page in a real browser purely to print
+// (its own WKWebView has no window.print) — pop the dialog once the page has settled. The delay is
+// crude but printing is user-supervised: worst case they close the dialog and press Cmd/Ctrl+P.
+if (url_params.get("pluto_print") === "1") {
+    window.addEventListener("load", () => {
+        setTimeout(() => window.print(), 2500)
+    })
+}
+
 //////////////
 // utils:
 

@@ -201,6 +201,42 @@ function http_router_for(session::ServerSession)
         end
     end
     HTTP.register!(router, "GET", "/notebookexport", serve_notebookexport)
+
+    # Desktop-only export actions (issue #60). The desktop shell is a WKWebView, which implements
+    # neither window.print() nor <a download> unless the embedding app does — so the export cards,
+    # fine in every real browser, silently did nothing in the app. This server runs on the same
+    # machine as that webview and can do what the webview cannot: write the export straight into
+    # ~/Downloads, and for PDF open the notebook in the system's default browser, where the print
+    # dialog (and its save-as-PDF) actually exists. Gated on the desktop env var, which the shell
+    # sets and local child workspace servers inherit — on an ssh-remote server it is absent, and
+    # this endpoint correctly refuses (writing to the REMOTE machine's Downloads would be wrong).
+    function serve_desktop_export(request::HTTP.Request)
+        haskey(ENV, "SPACESTATION_DESKTOP") ||
+            return error_response(400, "Desktop only", "This endpoint exists only in the desktop app.", "")
+        try
+            notebook = notebook_from_uri(request)
+            query = HTTP.queryparams(HTTP.URI(request.target))
+            type = get(query, "type", "file")
+            if type == "pdf"
+                # The Host header carries the port this request actually arrived on — no plumbing.
+                host = HTTP.header(request, "Host", "127.0.0.1")
+                url = "http://$(host)/edit?id=$(notebook.notebook_id)&secret=$(session.secret)&pluto_print=1"
+                cmd = Sys.isapple() ? `open $url` : Sys.iswindows() ? `cmd /c start "" $url` : `xdg-open $url`
+                Base.run(cmd; wait=false) # Base.: inside this module, bare `run` is the server entrypoint
+                return HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], """{"opened":true}""")
+            end
+            downloads = joinpath(homedir(), "Downloads")
+            isdir(downloads) || (downloads = homedir())
+            base = joinpath(downloads, without_pluto_file_extension(basename(notebook.path)))
+            path = type == "html" ? numbered_until_new(base; suffix=".html") : numbered_until_new(base; suffix=".jl")
+            write(path, type == "html" ? generate_html(notebook) : sprint(save_notebook, notebook))
+            HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"],
+                """{"saved":true,"filename":$(_json(basename(path)))}""")
+        catch e
+            return error_response(400, "Export failed", "Please <a href='https://github.com/GroupTherapyOrg/SpaceStation.jl/issues'>report this error</a>!", sprint(showerror, e, stacktrace(catch_backtrace())))
+        end
+    end
+    HTTP.register!(router, "POST", "/api/v1/desktop_export", serve_desktop_export)
     
     function serve_notebookupload(request::HTTP.Request)
         uri = HTTP.URI(request.target)
