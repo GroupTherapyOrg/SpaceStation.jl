@@ -192,8 +192,12 @@ end
     @test occursin(string(Pluto.PLUTO_VERSION), export_contents)
     @test occursin("</html>", export_contents)
     @test occursin("insertion-spot", export_contents)
-    # pluto.land needs to find this pattern:
-    plutoland_regex = r"href=\"(https://cdn\.jsdelivr\.net/gh/(?:fonsp|JuliaPluto)/Pluto\.jl@([\d.]+)/)[\w/.\\d\-]*\""
+    # The export's assets must come from THIS fork's repo: upstream has no tags for SpaceStation's
+    # versions, so the old (?:fonsp|JuliaPluto)/Pluto.jl root 404'd on every asset and exports
+    # opened blank (#60). This regex previously pinned that broken root — the test encoded the bug.
+    # (Upstream's comment here said pluto.land greps for its pattern; this fork's upload flow leans
+    # on the offline bundle, which embeds assets, so that concern does not transfer.)
+    plutoland_regex = r"href=\"(https://cdn\.jsdelivr\.net/gh/GroupTherapyOrg/SpaceStation\.jl@([\d.]+)/)[\w/.\\d\-]*\""
     @test occursin(plutoland_regex, export_contents)
     
     
