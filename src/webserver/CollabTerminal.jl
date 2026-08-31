@@ -392,7 +392,30 @@ function handle_terminal_websocket(ws, session::ServerSession, query::Dict{Strin
                         # tiny geometry, and resizing the PTY to it reflows the shell to a sliver (the
                         # output then sticks in scrollback). No real terminal is usefully this small.
                         if rows !== nothing && cols !== nothing && 1 < rows < 1000 && 9 < cols < 1000
+                            changed = t.pty.rows != rows || t.pty.cols != cols
                             pty_resize!(t.pty, rows, cols)
+                            # Tell every OTHER attached client, so no grid can diverge from the pty.
+                            # Without this, a resize from any second attachment — a background browser
+                            # tab on the same workspace, a second window — reshaped the pty SILENTLY
+                            # under the client the user is looking at: the app inside starts drawing
+                            # for the new width while that client's grid keeps the old one, and every
+                            # redraw-in-place TUI (Claude Code, vim) turns the mismatch into
+                            # duplicated/cut-off frame fragments. Reproduced byte-for-byte with two
+                            # protocol clients; the frontend already adopts geometry frames whenever
+                            # they arrive (its attach handler), so the server side is the whole fix.
+                            # The adopting clients echo a same-size resize back, which `changed`
+                            # filters — no broadcast loop.
+                            if changed
+                                lock(t.lock) do
+                                    for client in t.clients
+                                        client === ws && continue
+                                        try
+                                            HTTP.WebSockets.send(client, """{"rows":$(rows),"cols":$(cols)}""")
+                                        catch
+                                        end
+                                    end
+                                end
+                            end
                         end
                     end
                 elseif startswith(message, "2:")
