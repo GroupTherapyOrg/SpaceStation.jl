@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.10](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.4.9...v0.4.10) (2026-08-31)
+
+
+### Bug Fixes
+
+* desktop parity — terminal corruption, export cards, Windows app icon ([#64](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/64)) ([4829942](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/48299425d1ef4e13ea8a52a7d8e700f8555ef90e))
+
 ## [0.4.9](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.4.8...v0.4.9) (2026-08-30)
 
 
