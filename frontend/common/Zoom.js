@@ -15,12 +15,14 @@
 
 const KEY = "spacestation zoom"
 // Chrome's ladder, for muscle-memory-compatible steps.
-const LADDER = [0.25, 1 / 3, 0.5, 2 / 3, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5]
+const MIN_ZOOM = 0.25
+const MAX_ZOOM = 5
+const LADDER = [MIN_ZOOM, 1 / 3, 0.5, 2 / 3, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, MAX_ZOOM]
 
 export const get_zoom = () => {
     try {
         const z = Number(localStorage.getItem(KEY))
-        return Number.isFinite(z) && z >= LADDER[0] && z <= LADDER[LADDER.length - 1] ? z : 1
+        return Number.isFinite(z) && z >= MIN_ZOOM && z <= MAX_ZOOM ? z : 1
     } catch {
         return 1
     }
@@ -49,7 +51,7 @@ const show_indicator = (z) => {
 }
 
 export const set_zoom = (z) => {
-    z = Math.min(LADDER[LADDER.length - 1], Math.max(LADDER[0], z))
+    z = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z))
     try {
         localStorage.setItem(KEY, String(z))
     } catch {}
@@ -60,9 +62,17 @@ export const set_zoom = (z) => {
 const step = (direction) => {
     const current = get_zoom()
     // nearest ladder rung, then move one step — so continuous pinch and discrete keys interleave sanely
-    let i = 0
-    for (let j = 1; j < LADDER.length; j++) if (Math.abs(LADDER[j] - current) < Math.abs(LADDER[i] - current)) i = j
-    set_zoom(LADDER[Math.min(LADDER.length - 1, Math.max(0, i + direction))])
+    let nearest = 0
+    let best = Infinity
+    LADDER.forEach((v, i) => {
+        const d = Math.abs(v - current)
+        if (d < best) {
+            best = d
+            nearest = i
+        }
+    })
+    const next = LADDER[Math.min(LADDER.length - 1, Math.max(0, nearest + direction))]
+    if (next !== undefined) set_zoom(next)
 }
 
 // Apply the stored zoom on load in every context (harmless at 1). The event wiring below is
