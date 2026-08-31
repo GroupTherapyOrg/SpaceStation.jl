@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.4.10...v0.5.0) (2026-08-31)
+
+
+### Features
+
+* browser-style zoom in the desktop, and a working HTML export ([#67](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/67)) ([5749c8c](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/5749c8c1a25698f8c9ca8dedf37f1414ce2bb027))
+
 ## [0.4.10](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.4.9...v0.4.10) (2026-08-31)
 
 
