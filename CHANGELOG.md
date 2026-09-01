@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.3](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.5.2...v0.5.3) (2026-09-01)
+
+
+### Bug Fixes
+
+* never seed AGENTS.md/CLAUDE.md into fresh workspaces ([#74](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/74)) ([202d9b1](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/202d9b17c12cf754ab553ecd0d49f524e2e7bf1f)), closes [#73](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/73)
+
 ## [0.5.2](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.5.1...v0.5.2) (2026-09-01)
 
 
