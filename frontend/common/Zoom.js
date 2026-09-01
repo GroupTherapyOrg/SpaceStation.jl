@@ -69,9 +69,10 @@ let indicator_timer = null
 const update_indicator = (z, flash) => {
     let el = document.getElementById("zoom-indicator")
     if (el == null) {
-        el = document.createElement("div")
-        el.id = "zoom-indicator"
-        el.setAttribute("role", "status")
+        // built into a local const: closures over a reassigned `let` defeat TS's null narrowing
+        const made = document.createElement("div")
+        made.id = "zoom-indicator"
+        made.setAttribute("role", "status")
         const mk = (cls, text, title, action) => {
             const b = document.createElement("button")
             b.className = cls
@@ -81,12 +82,13 @@ const update_indicator = (z, flash) => {
             // the click must not steal focus from the cell being edited
             b.addEventListener("mousedown", (e) => e.preventDefault())
             b.addEventListener("click", action)
-            el.appendChild(b)
+            made.appendChild(b)
         }
         mk("zoom-step-out", "−", t("t_zoom_out"), () => step(-1))
         mk("zoom-reset", "100%", t("t_zoom_reset"), () => set_zoom(1))
         mk("zoom-step-in", "+", t("t_zoom_in"), () => step(+1))
-        document.body.appendChild(el)
+        document.body.appendChild(made)
+        el = made
     }
     const reset = el.querySelector(".zoom-reset")
     if (reset != null) reset.textContent = `${Math.round(z * 100)}%`
