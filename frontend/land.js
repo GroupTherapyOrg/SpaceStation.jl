@@ -16,7 +16,6 @@
 import { html, render, useState, useEffect, useCallback, useRef } from "./imports/Preact.js"
 import { pluto_file_extensions, has_pluto_file_extension } from "./common/PlutoFileExtensions.js"
 import { cycle_color_scheme, get_color_scheme, prefers_dark } from "./common/ColorScheme.js"
-import "./common/Zoom.js" // browser-style zoom for the desktop app (no-op in real browsers)
 
 const get_text = async (url, opts) => {
     const r = await fetch(url, opts)

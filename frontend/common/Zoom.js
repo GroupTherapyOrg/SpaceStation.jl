@@ -1,17 +1,25 @@
-// Browser-style zoom for the desktop app (issue #66). In a browser, Cmd/Ctrl+= / - / 0 and
-// pinch are chrome features; the desktop shell is a bare webview with no chrome, so none of it
-// existed there. This module recreates it the way Chrome behaves: the familiar zoom ladder,
-// remembered PER ORIGIN — which, since every workspace is its own origin, gives per-workspace
-// zoom for free, exactly like per-site zoom in a real browser.
+// Notebook zoom for the desktop app (issue #66), take two.
 //
-// Desktop-only by a server signal, not by guesswork: /api/v1/config reports desktop:true when the
-// server was launched by the shell. In a real browser that's false and this module does nothing,
-// so the browser's own zoom keeps working without us double-zooming on top of it. (Pages CAN
-// preempt browser zoom via preventDefault — that is why gating matters.)
+// The first version applied page zoom to EVERY document, which scaled the hub chrome, the
+// sidebar and the terminal along with the notebook — in a browser those live in other tabs, so
+// real browser zoom never feels like that — and it did nothing about scroll position, so the
+// view lurched on every step. This version matches what zooming a standalone notebook tab in a
+// real browser gives you:
 //
-// Importing applies the stored zoom; the keyboard/trackpad wiring arms only in desktop mode.
-// Same-origin frames (the hub's editor iframes) stay in sync through `storage` events, the same
-// mechanism ColorScheme.js uses.
+//   * SCOPED: only the notebook (editor) document zooms. The hub — sidebar, tabs, terminal —
+//     stays at 100%, like browser chrome does. Zoom.js is imported by editor.js only.
+//   * ENGINE LAYOUT, NOT REINVENTED SCALING: the CSS `zoom` property on the notebook root is the
+//     engine's own zoom implementation — lengths scale, the content reflows to the viewport.
+//   * ANCHORED: browsers keep the visible content stable when zoom changes; CSS `zoom` alone
+//     does not, so the scroll position is corrected to keep the viewport CENTER on the same
+//     content, every step, exactly the anchoring a browser does.
+//   * PER ORIGIN: remembered per workspace (each workspace is its own origin), like per-site
+//     zoom in a browser; same-origin editor frames follow live through `storage` events.
+//
+// Desktop-only by the server signal (/api/v1/config desktop:true): in a real browser this module
+// applies a stored zoom and otherwise stays inert, so it never fights the browser's own zoom.
+
+import { t } from "./lang.js"
 
 const KEY = "spacestation zoom"
 // Chrome's ladder, for muscle-memory-compatible steps.
@@ -28,26 +36,74 @@ export const get_zoom = () => {
     }
 }
 
+/** Apply the zoom AND keep the content at the viewport's center where it was.
+ *
+ *  The zoom goes on the notebook's <main> container, NOT the document root. Root-level zoom is
+ *  the cursed path in WebKit: scroll coordinates and even the engine's own scrollIntoView
+ *  mis-compute under it (both were measured drifting ~6000px in the key-event probe). Zooming a
+ *  container with compensated width — zoom: z; width: calc(100%/z) — reflows the content to the
+ *  viewport exactly like browser zoom, while the document scroller stays unzoomed and every
+ *  scroll primitive keeps working. It also scopes tighter: the editor's own header stays 100%.
+ */
+const zoom_target = () => document.querySelector("main") ?? document.documentElement
+
 const apply = (z) => {
-    // Standard CSS `zoom` (WebKit has shipped it forever; standardized 2024): layout-affecting,
-    // so clientWidth changes and ResizeObservers fire — the terminal refits, CodeMirror reflows,
-    // exactly as they do under real browser zoom.
-    document.documentElement.style.zoom = z === 1 ? "" : String(z)
+    const el = zoom_target()
+    if (!(el instanceof HTMLElement)) return
+    el.style.zoom = z === 1 ? "" : String(z)
+    el.style.width = z === 1 ? "" : `calc(100% / ${z})`
 }
 
+const apply_anchored = (z) => {
+    // remember the element at the viewport center, let the engine re-center it afterwards
+    let anchor = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2)
+    if (anchor != null && (anchor === document.documentElement || anchor === document.body || anchor.closest?.("#zoom-indicator") != null)) anchor = null
+    apply(z)
+    anchor?.scrollIntoView({ block: "center", inline: "nearest" })
+}
+
+// ---- the indicator, which doubles as the mouse-only control (− % +), browser-style ----
+// While zoomed it stays on screen (dimmed when idle); clicking the percentage resets to 100%,
+// so an accidental pinch always has a visible way back. At 100% it disappears.
 let indicator_timer = null
-const show_indicator = (z) => {
+const update_indicator = (z, flash) => {
     let el = document.getElementById("zoom-indicator")
     if (el == null) {
         el = document.createElement("div")
         el.id = "zoom-indicator"
         el.setAttribute("role", "status")
+        const mk = (cls, text, title, action) => {
+            const b = document.createElement("button")
+            b.className = cls
+            b.textContent = text
+            b.title = title
+            b.tabIndex = -1
+            // the click must not steal focus from the cell being edited
+            b.addEventListener("mousedown", (e) => e.preventDefault())
+            b.addEventListener("click", action)
+            el.appendChild(b)
+        }
+        mk("zoom-step-out", "−", t("t_zoom_out"), () => step(-1))
+        mk("zoom-reset", "100%", t("t_zoom_reset"), () => set_zoom(1))
+        mk("zoom-step-in", "+", t("t_zoom_in"), () => step(+1))
         document.body.appendChild(el)
     }
-    el.textContent = `${Math.round(z * 100)}%`
-    el.classList.add("visible")
+    const reset = el.querySelector(".zoom-reset")
+    if (reset != null) reset.textContent = `${Math.round(z * 100)}%`
     clearTimeout(indicator_timer)
-    indicator_timer = setTimeout(() => el.classList.remove("visible"), 1200)
+    if (z === 1) {
+        if (flash) {
+            el.classList.add("visible")
+            el.classList.remove("idle")
+            indicator_timer = setTimeout(() => el.classList.remove("visible"), 1200)
+        } else {
+            el.classList.remove("visible")
+        }
+    } else {
+        el.classList.add("visible")
+        el.classList.remove("idle")
+        indicator_timer = setTimeout(() => el.classList.add("idle"), 1600)
+    }
 }
 
 export const set_zoom = (z) => {
@@ -55,8 +111,8 @@ export const set_zoom = (z) => {
     try {
         localStorage.setItem(KEY, String(z))
     } catch {}
-    apply(z)
-    show_indicator(z)
+    apply_anchored(z)
+    update_indicator(z, true)
 }
 
 const step = (direction) => {
@@ -75,13 +131,22 @@ const step = (direction) => {
     if (next !== undefined) set_zoom(next)
 }
 
-// Apply the stored zoom on load in every context (harmless at 1). The event wiring below is
-// desktop-gated; applying isn't, so a same-origin frame opened later starts at the right zoom
-// even before the config answer arrives.
-apply(get_zoom())
+// Apply the stored zoom on load (anchoring is a no-op at scrollTop 0), and surface the control
+// if the notebook comes up zoomed. Harmless at 100%.
+const boot = () => {
+    apply_anchored(get_zoom())
+    update_indicator(get_zoom(), false)
+}
+if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot)
+else boot()
 
+// Another same-origin editor frame changed the zoom: follow it, chip synced, no flash.
 window.addEventListener("storage", (e) => {
-    if (e.key === KEY) apply(get_zoom())
+    if (e.key === KEY) {
+        const z = get_zoom()
+        apply_anchored(z)
+        update_indicator(z, false)
+    }
 })
 
 const arm = () => {

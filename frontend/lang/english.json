@@ -156,6 +156,9 @@
     "t_export_desktop_saved": "Saved to your Downloads folder as “{{filename}}”.",
     "t_export_desktop_opening_browser": "Opening in your browser — use its print dialog to save the PDF.",
     "t_export_desktop_failed": "The export failed — see the server log for details.",
+    "t_zoom_out": "Zoom out",
+    "t_zoom_in": "Zoom in",
+    "t_zoom_reset": "Reset the zoom to 100%",
 
     "t_save_notebook_ellipsis": "Save notebook...",
     "t_save_notebook_button_label_when_currently_not_saved": "Choose",
