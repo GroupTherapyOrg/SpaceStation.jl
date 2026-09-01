@@ -112,6 +112,7 @@ Commands:
 
 Inside a SpaceStation terminal, SPACESTATION_PORT/SPACESTATION_SECRET target the live session
 automatically. Exit codes: 0 ok · 1 cells errored · 2 no server / bad usage.
+  agents-md                seed ./AGENTS.md + ./CLAUDE.md with the collab block (kept out of git status via .git/info/exclude)
 """
 
 # Parse `--cell <id>` (repeatable), `--json`, `--out <f>`, `--stale` out of a tail arg list.
@@ -142,6 +143,16 @@ working directory (for resolving relative notebook paths). Returns the process e
 """
 function collab_cli_main(args::Vector{String}, cwd::String)::Int
     (isempty(args) || args[1] in ("help", "--help", "-h")) && (print(_COLLAB_HELP); return isempty(args) ? 2 : 0)
+
+    # Explicit, on-demand opt-in for the agent surface files (issue #73: never seeded silently).
+    # Needs no live server — it writes the managed block into ./AGENTS.md + ./CLAUDE.md and adds
+    # both to .git/info/exclude so they stay out of git status.
+    if args[1] == "agents-md"
+        ensure_agents_md(cwd)
+        ensure_git_exclude(cwd)
+        println("seeded AGENTS.md and CLAUDE.md in $(cwd) (git status stays clean: both are in .git/info/exclude)")
+        return 0
+    end
     cmd = args[1]
 
     if cmd == "servers"
