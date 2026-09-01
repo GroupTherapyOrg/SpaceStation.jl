@@ -215,18 +215,64 @@ function ensure_agents_md(dir::AbstractString; files=("AGENTS.md", "CLAUDE.md"))
 end
 
 """
+    ensure_git_exclude(dir; files)
+
+Keep the seeded files out of `git status` without touching anything shareable: append them to
+`.git/info/exclude`, the repo-local, never-committed cousin of `.gitignore`. This is what makes
+opt-in seeding polite — the files exist for agents, and git treats them as invisible machine-local
+artifacts (issue #73: "Git wants to add and track them as soon as I open a project"). Best-effort:
+skipped when `dir` isn't a git repo, when `.git` is a worktree pointer file, or when the entries
+are already present (also honors an existing tracked file: exclude only affects untracked paths).
+"""
+function ensure_git_exclude(dir::AbstractString; files=("AGENTS.md", "CLAUDE.md"))
+    gitdir = joinpath(dir, ".git")
+    isdir(gitdir) || return  # not a repo, or a worktree pointer file — leave it alone
+    path = joinpath(gitdir, "info", "exclude")
+    try
+        old = isfile(path) ? read(path, String) : ""
+        lines = split(old, '\n')
+        missing = [name for name in files if !any(l -> strip(l) == name || strip(l) == "/" * name, lines)]
+        isempty(missing) && return
+        addition = "# SpaceStation agent surface (machine-local; seeded on request)\n" * join(("/" * name for name in missing), "\n") * "\n"
+        mkpath(dirname(path))
+        write(path, (isempty(old) || endswith(old, "\n") ? old : old * "\n") * addition)
+    catch
+    end
+    return
+end
+
+"""
 When a folder workspace is open, refresh its AGENTS.md/CLAUDE.md collab section so any coding agent
-discovers the pluto-collab workflow. **On by default** — the managed block is idempotent and only
-touches its own marked region, so it's safe to (re)write on every open. Opt out with
-`SPACESTATION_AGENTS_MD=0` (also `false`/`no`/`off`) or the `--no-agents-md` flag. The legacy
-`PLUTOSPACE_AGENTS_MD` name remains accepted for compatibility. Only runs for a
-folder workspace (never for a single-notebook or launcher session — there's no project root to seed).
+discovers the pluto-collab workflow.
+
+**Refresh-only by default** (issue #73): a fresh folder is NEVER seeded silently — people who
+don't use AI agents shouldn't find generated files in `git status` just for opening a project.
+Unset, the managed block is only refreshed where it ALREADY exists (a workspace that opted in
+once keeps getting updates). Opt in with `SPACESTATION_AGENTS_MD=1` or `--agents-md` (seeds new
+folders too); opt out entirely with `=0` (also `false`/`no`/`off`) or `--no-agents-md`. The
+legacy `PLUTOSPACE_AGENTS_MD` name remains accepted. Whenever files are written, they are also
+added to `.git/info/exclude` so even opted-in repos keep a clean `git status`. Only runs for a
+folder workspace (never for a single-notebook or launcher session — there's no project root to
+seed).
 """
 function maybe_write_agents_md(session)
-    setting = get(ENV, "SPACESTATION_AGENTS_MD", get(ENV, "PLUTOSPACE_AGENTS_MD", "1"))
+    setting = get(ENV, "SPACESTATION_AGENTS_MD", get(ENV, "PLUTOSPACE_AGENTS_MD", ""))
     lowercase(strip(setting)) in ("0", "false", "no", "off") && return
     dir = session.options.server.workspace_folder
     dir === nothing && return
-    ensure_agents_md(tamepath(dir))
+    dir = tamepath(dir)
+    force = lowercase(strip(setting)) in ("1", "true", "yes", "on")
+    if !force
+        # refresh-only: touch nothing unless this workspace already carries the managed block
+        has_block = any(("AGENTS.md", "CLAUDE.md")) do name
+            path = joinpath(dir, name)
+            isfile(path) || return false
+            content = try read(path, String) catch; "" end
+            occursin(_AGENTS_BEGIN, content) || occursin(_LEGACY_AGENTS_BEGIN, content)
+        end
+        has_block || return
+    end
+    ensure_agents_md(dir)
+    ensure_git_exclude(dir)
     return
 end

@@ -30,8 +30,11 @@ function main(args)
           spacestation --port <n>         pick a port
           spacestation --autorun          classic Pluto reactivity (default is lazy/collab mode)
           spacestation --no-browser       don't open the browser
-          spacestation --no-agents-md     do NOT seed the workspace's AGENTS.md/CLAUDE.md (seeding
-                                       the managed, idempotent collab block is ON by default)
+          spacestation --agents-md        seed the workspace's AGENTS.md/CLAUDE.md collab block
+                                       (default: only REFRESH the block where it already exists —
+                                       a fresh folder is never touched; --no-agents-md disables
+                                       even that). Seeded files are added to .git/info/exclude,
+                                       so git status stays clean either way.
           spacestation collab <cmd> …     talk to a live session from any terminal (status / run
                                        --stale / output / figure / …); cross-platform, no bash needed.
                                        See: spacestation collab help
