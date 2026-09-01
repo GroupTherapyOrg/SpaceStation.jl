@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.5.0...v0.5.1) (2026-09-01)
+
+
+### Bug Fixes
+
+* zoom the notebook, not the app — anchored, scoped, with a reset control ([#69](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/69)) ([0b80039](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/0b80039263158ac353f611d404d2dcb192fc3a3c))
+
 ## [0.5.0](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.4.10...v0.5.0) (2026-08-31)
 
 
