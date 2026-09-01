@@ -45,10 +45,14 @@ export const get_zoom = () => {
  *  viewport exactly like browser zoom, while the document scroller stays unzoomed and every
  *  scroll primitive keeps working. It also scopes tighter: the editor's own header stays 100%.
  */
-const zoom_target = () => document.querySelector("main") ?? document.documentElement
-
+// BODY, not <main>: main is a flex item with its own max-width and centering, and compensating a
+// capped, centered element re-centers the shrunken layout box and clips the visual overflow behind
+// body's overflow-x:hidden — v0.5.1 shipped exactly that (content shoved sideways, right side
+// unreachable). body has margin:0 and is the page container: compensated body reflows the whole
+// page to the viewport at every step, header included — which is precisely what browser zoom does
+// to a standalone notebook tab.
 const apply = (z) => {
-    const el = zoom_target()
+    const el = document.body
     if (!(el instanceof HTMLElement)) return
     el.style.zoom = z === 1 ? "" : String(z)
     el.style.width = z === 1 ? "" : `calc(100% / ${z})`
