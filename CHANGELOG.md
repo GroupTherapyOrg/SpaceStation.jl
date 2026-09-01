@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.5.1...v0.5.2) (2026-09-01)
+
+
+### Bug Fixes
+
+* compensate the body for zoom, not &lt;main&gt; — kills the proportional left border ([#71](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/71)) ([ecbd4b0](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/ecbd4b0cccbffcb9d9c95c1c57e550ad88da1a60))
+
 ## [0.5.1](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.5.0...v0.5.1) (2026-09-01)
 
 
