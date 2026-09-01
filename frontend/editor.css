@@ -4641,21 +4641,42 @@ jlerror.syntax-error > header {
     color: var(--white);
 }
 
-/* the desktop zoom indicator (common/Zoom.js): a transient "120%" chip, browser-style */
+/* the notebook zoom control (common/Zoom.js): persistent while zoomed, "− 100% +", browser-style */
 #zoom-indicator {
     position: fixed;
     top: 12px;
-    right: 12px;
+    right: 18px;
     z-index: 10000;
-    padding: 0.35rem 0.8rem;
+    display: flex;
+    align-items: stretch;
     border-radius: 8px;
+    overflow: hidden;
     background: rgba(20, 18, 28, 0.85);
-    color: #e8e4f5;
-    font: 600 0.9rem system-ui, sans-serif;
     opacity: 0;
     pointer-events: none;
     transition: opacity 0.15s ease-out;
 }
 #zoom-indicator.visible {
     opacity: 1;
+    pointer-events: auto;
+}
+#zoom-indicator.visible.idle {
+    opacity: 0.45;
+}
+#zoom-indicator.visible.idle:hover {
+    opacity: 1;
+}
+#zoom-indicator button {
+    border: none;
+    background: none;
+    color: #e8e4f5;
+    font: 600 0.85rem system-ui, sans-serif;
+    padding: 0.35rem 0.55rem;
+    cursor: pointer;
+}
+#zoom-indicator button:hover {
+    background: rgba(255, 255, 255, 0.12);
+}
+#zoom-indicator .zoom-reset {
+    min-width: 3.2em;
 }
