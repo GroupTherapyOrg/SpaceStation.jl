@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.3](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.6.2...v0.6.3) (2026-09-02)
+
+
+### Bug Fixes
+
+* real icons in the workspace actions menu, sized like Pluto's own menus ([#85](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/85)) ([485d20d](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/485d20da7ed9b8c23994876fc7c6cb7e14a03ee6))
+
 ## [0.6.2](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.6.1...v0.6.2) (2026-09-02)
 
 
