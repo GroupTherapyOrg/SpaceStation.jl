@@ -75,12 +75,15 @@ export interface UiHandlers {
     on_appearance?: (scheme: "light" | "dark" | "system") => void
     on_drag?: () => void
     window_state?: () => { fullscreen: boolean }
+    /** The native zoom: "in" / "out" step Chrome's ladder, "reset" is 100%; returns the factor now in effect. */
+    on_zoom?: (action: "in" | "out" | "reset") => number
+    zoom?: () => number
     /** Fired once, on the first request from the window. main.ts uses it as proof of life: a webview
      *  that never came up never asks for a page, and the shell must not sit there pretending. */
     on_first_request?: () => void
 }
 
-export const serve_ui = ({ state, julia_info, on_launch, on_appearance, on_drag, window_state, on_first_request }: UiHandlers) => {
+export const serve_ui = ({ state, julia_info, on_launch, on_appearance, on_drag, window_state, on_zoom, zoom, on_first_request }: UiHandlers) => {
     let announced = false
     return Deno.serve(async (req) => {
         if (!announced) {
@@ -99,7 +102,18 @@ export const serve_ui = ({ state, julia_info, on_launch, on_appearance, on_drag,
         }
         // the deck asks after every resize: fullscreen hides the traffic lights, so the strip
         // drops the gap it reserves for them
-        if (path === "/api/window") return json(window_state?.() ?? { fullscreen: false })
+        if (path === "/api/window") return json({ ...(window_state?.() ?? { fullscreen: false }), zoom: zoom?.() ?? 1 })
+        if (path === "/api/zoom" && req.method === "GET") return json({ zoom: zoom?.() ?? 1 })
+        if (path === "/api/zoom" && req.method === "POST") {
+            let action: unknown = null
+            try {
+                action = (await req.json())?.action
+            } catch {
+                // no body
+            }
+            if (action !== "in" && action !== "out" && action !== "reset") return new Response("bad action", { status: 400 })
+            return json({ zoom: on_zoom?.(action) ?? 1 })
+        }
         if (path === "/api/appearance" && req.method === "POST") {
             try {
                 const { scheme } = await req.json()

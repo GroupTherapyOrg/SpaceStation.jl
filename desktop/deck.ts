@@ -40,13 +40,20 @@ export const deck_html = (launcher_url: string) => /* html */ `<!doctype html>
         padding: 1px 4px; border-radius: 4px; cursor: pointer; line-height: 1;
     }
     .tab .close:hover { background: #2b2740; color: #e8e4f5; }
+    /* the native zoom factor while it is not 100% — click to go back (issue #66) */
+    #zoom-pill {
+        -webkit-app-region: no-drag; margin-left: auto; align-self: center; border: 0; border-radius: 999px;
+        padding: 2px 9px; background: #2b2740; color: #e8e4f5; font: 600 11px system-ui, sans-serif; cursor: pointer;
+    }
+    #zoom-pill:hover { background: #3a3555; }
+    #zoom-pill[hidden] { display: none; }
     #stage { flex: 1; position: relative; background: #16141f; }
     #stage iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: none; }
     #stage iframe.active { display: block; }
 </style>
 </head>
 <body>
-    <div id="strip"></div>
+    <div id="strip"><button id="zoom-pill" hidden title="Back to 100% (⌘0)">100%</button></div>
     <div id="stage"></div>
     <script>
         const LAUNCHER_URL = ${JSON.stringify(launcher_url)}
@@ -128,6 +135,29 @@ export const deck_html = (launcher_url: string) => /* html */ `<!doctype html>
             return f
         }
 
+        // ---- native zoom (issue #66): the pages forward ⌘= / ⌘- / ⌘0 here; the shell owns the zoom ----
+        const zoom_pill = document.getElementById("zoom-pill")
+        const show_zoom = (z) => {
+            zoom_pill.textContent = Math.round(z * 100) + "%"
+            zoom_pill.hidden = Math.abs(z - 1) < 0.001
+        }
+        window.__spacestation_zoom = show_zoom
+        const zoom_action = (action) =>
+            fetch("./api/zoom", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action }) })
+                .then((r) => r.json())
+                .then((s) => show_zoom(s.zoom))
+                .catch(() => {})
+        zoom_pill.addEventListener("click", () => zoom_action("reset"))
+        fetch("./api/zoom").then((r) => r.json()).then((s) => show_zoom(s.zoom)).catch(() => {})
+        // the strip itself may have focus (after a tab click): handle the keys here too
+        window.addEventListener("keydown", (e) => {
+            if (!e.metaKey || e.ctrlKey || e.altKey) return
+            const action = e.code === "Equal" || e.key === "=" || e.key === "+" ? "in" : e.code === "Minus" || e.key === "-" ? "out" : e.code === "Digit0" || e.key === "0" ? "reset" : null
+            if (action == null) return
+            e.preventDefault()
+            zoom_action(action)
+        }, true)
+
         const render = () => {
             for (const el of strip.querySelectorAll(".tab")) el.remove()
             for (const tab of tabs) {
@@ -154,7 +184,7 @@ export const deck_html = (launcher_url: string) => /* html */ `<!doctype html>
                     el.appendChild(close)
                 }
                 el.onclick = () => activate(tab.id)
-                strip.appendChild(el)
+                strip.insertBefore(el, zoom_pill)
             }
             for (const tab of tabs) frame_for(tab).className = tab.id === active ? "active" : ""
         }
@@ -194,6 +224,7 @@ export const deck_html = (launcher_url: string) => /* html */ `<!doctype html>
             if (d == null || typeof d !== "object") return
             if (d.type === "spacestation:open-workspace" && typeof d.url === "string") open_tab(d.url, d.title)
             if (d.type === "spacestation:focus-launcher") activate("launcher")
+            if (d.type === "spacestation:zoom" && (d.action === "in" || d.action === "out" || d.action === "reset")) zoom_action(d.action)
             if (d.type === "spacestation:color-scheme" && typeof d.scheme === "string") {
                 scheme = d.scheme
                 try {

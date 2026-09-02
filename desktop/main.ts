@@ -11,7 +11,7 @@
 
 import { SpaceStationServer, type BootOptions } from "./boot.ts"
 import { serve_ui } from "./splash.ts"
-import { begin_window_drag, extend_under_titlebar, is_fullscreen, main_screen_size, set_app_appearance } from "./macos_titlebar.ts"
+import { begin_window_drag, enable_magnification, extend_under_titlebar, is_fullscreen, main_screen_size, set_app_appearance, set_page_zoom } from "./macos_titlebar.ts"
 import { has_plain_julia, julia_catalog, juliaup_info, load_settings, save_settings } from "./julia.ts"
 import { set_windows_window_icon } from "./windows_icon.ts"
 
@@ -85,6 +85,50 @@ void set_windows_window_icon(win, "SpaceStation").then((status) => {
     if (status !== "set" && !status.startsWith("skipped")) console.warn("window icon:", status)
 })
 
+// ---- Zoom (issue #66): the webview's own page zoom, owned by the shell ----
+// macOS: WKWebView's `pageZoom` (Safari's ⌘=), remembered in settings.json like VS Code's
+// window.zoomLevel, plus native trackpad magnification. Chrome's zoom ladder for the steps. The
+// keystrokes arrive from the pages (they forward ⌘= / ⌘- / ⌘0 to the deck, which POSTs /api/zoom)
+// and from the View menu. Windows needs none of this: WebView2 zooms by itself on Ctrl+= / Ctrl+-
+// / Ctrl+0 and Ctrl+wheel, as long as the pages leave those keys alone — which they now do.
+const ZOOM_LADDER = [0.25, 1 / 3, 0.5, 2 / 3, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5]
+let zoom = (() => {
+    const saved = Number(load_settings().zoom)
+    return Number.isFinite(saved) && saved >= ZOOM_LADDER[0]! && saved <= ZOOM_LADDER[ZOOM_LADDER.length - 1]! ? saved : 1
+})()
+const apply_zoom = (factor: number): number => {
+    if (!mac) return zoom
+    if (set_page_zoom(factor)) {
+        zoom = factor
+        save_settings({ zoom })
+        // the deck shows the factor while it is not 100% (a pill in the tab strip, click = reset)
+        try {
+            win.executeJs(`window.__spacestation_zoom?.(${factor})`)
+        } catch {
+            // the deck may not be up yet; it asks /api/zoom when it loads
+        }
+    }
+    return zoom
+}
+const zoom_step = (action: "in" | "out" | "reset"): number => {
+    if (action === "reset") return apply_zoom(1)
+    let nearest = 0
+    let best = Infinity
+    ZOOM_LADDER.forEach((v, i) => {
+        const d = Math.abs(v - zoom)
+        if (d < best) {
+            best = d
+            nearest = i
+        }
+    })
+    const next = ZOOM_LADDER[Math.min(ZOOM_LADDER.length - 1, Math.max(0, nearest + (action === "in" ? 1 : -1)))]
+    return next === undefined ? zoom : apply_zoom(next)
+}
+if (mac) {
+    enable_magnification()
+    if (zoom !== 1) set_page_zoom(zoom)
+}
+
 // The launcher's theme choice pins the native window appearance (macOS — a no-op elsewhere), so
 // WKWebView's prefers-color-scheme and its own chrome follow it like a real OS dark-mode switch.
 const saved_scheme = load_settings().color_scheme
@@ -151,6 +195,16 @@ if (mac) {
                     ],
                 },
             },
+            {
+                submenu: {
+                    label: "View",
+                    items: [
+                        { item: { label: "Zoom In", id: "zoom-in", enabled: true, accelerator: "CmdOrCtrl+Equal" } },
+                        { item: { label: "Zoom Out", id: "zoom-out", enabled: true, accelerator: "CmdOrCtrl+Minus" } },
+                        { item: { label: "Actual Size", id: "zoom-reset", enabled: true, accelerator: "CmdOrCtrl+0" } },
+                    ],
+                },
+            },
             { submenu: { label: "Window", items: [{ role: { role: "minimize" } }] } },
         ])
     } catch (e) {
@@ -158,7 +212,11 @@ if (mac) {
     }
 }
 win.addEventListener("menuclick", (e: any) => {
-    if (e.detail?.id === "julia-version") win.navigate(shell_url("/launch?change=1"))
+    const id = e.detail?.id
+    if (id === "julia-version") win.navigate(shell_url("/launch?change=1"))
+    else if (id === "zoom-in") zoom_step("in")
+    else if (id === "zoom-out") zoom_step("out")
+    else if (id === "zoom-reset") zoom_step("reset")
 })
 
 // The server object is replaced when the user switches Julia versions; everything reaches it
@@ -225,6 +283,8 @@ serve_ui({
     },
     on_drag: () => void begin_window_drag(),
     window_state: () => ({ fullscreen: is_fullscreen() }),
+    on_zoom: zoom_step,
+    zoom: () => zoom,
 })
 
 let closing = false
