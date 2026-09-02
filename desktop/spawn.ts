@@ -56,6 +56,7 @@ export const run_captured = async (cmd: string, args: string[]): Promise<{ succe
 }
 
 export interface Running {
+    pid: number
     status: Promise<{ code: number; success: boolean }>
     kill: (signal: "SIGTERM" | "SIGKILL") => void
 }
@@ -77,6 +78,7 @@ export const spawn_logged = (cmd: string, args: string[], env: Record<string, st
         void pump(child.stdout)
         void pump(child.stderr)
         return {
+            pid: child.pid,
             status: child.status.then((s) => ({ code: s.code, success: s.success })),
             kill: (signal) => child.kill(signal),
         }
@@ -97,5 +99,5 @@ export const spawn_logged = (cmd: string, args: string[], env: Record<string, st
         child.on("close", (c: number | null) => resolve({ code: c ?? 1, success: c === 0 }))
         child.on("error", () => resolve({ code: 1, success: false }))
     })
-    return { status, kill: (signal) => void child.kill(signal) }
+    return { pid: child.pid ?? 0, status, kill: (signal) => void child.kill(signal) }
 }
