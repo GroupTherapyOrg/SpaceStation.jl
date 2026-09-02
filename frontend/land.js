@@ -1906,14 +1906,14 @@ const Land = () => {
                                                   : notebook_env?.id !== active_notebook_tab.id
                                                     ? "Checking the notebook's environment…"
                                                     : notebook_env.managed
-                                                      ? `Opens a terminal running ${notebook_env.command}`
-                                                      : "This notebook manages its own environment (Pkg.activate), so there is nothing to open"}
+                                                      ? `Open a terminal in this notebook's package environment. It runs:\n${notebook_env.command}`
+                                                      : "This notebook has no Pluto-managed environment yet: it has not run, or it activates its own with Pkg.activate"}
                                               onClick=${() => {
                                                   set_menu_open(false)
                                                   if (active_notebook_tab) new_terminal({ label: `env: ${basename(active_notebook_tab.path)}`, notebook_env: active_notebook_tab.id })
                                               }}
                                           >
-                                              ⌨ Open notebook environment in a terminal
+                                              ⌨ Open env in terminal
                                           </button>
                                           <button class="header-menu-item danger" role="menuitem" onClick=${() => {
                                               set_menu_open(false)
