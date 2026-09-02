@@ -224,14 +224,32 @@ body.resizing #frames iframe {
     text-align: left;
     white-space: nowrap;
     font: inherit;
-    font-size: 0.85rem;
-    padding: 0.5rem 0.6rem;
+    font-size: 0.8rem;
+    padding: 0.4rem 0.6rem;
     border: none;
     background: none;
     color: inherit;
     border-radius: 0.5rem;
     cursor: pointer;
     transition: background-color 0.08s linear, color 0.08s linear;
+}
+/* Ionicons, as everywhere else in the UI (Pluto's cell menu uses the same set): a currentColor mask,
+   so the icon takes the item's text colour — including the danger red. */
+.header-menu-item .menu-icon {
+    flex-shrink: 0;
+    width: 1.1em;
+    height: 1.1em;
+    background-color: currentColor;
+    -webkit-mask: center / contain no-repeat;
+    mask: center / contain no-repeat;
+}
+.header-menu-item .menu-icon.terminal {
+    -webkit-mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/terminal-outline.svg");
+    mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/terminal-outline.svg");
+}
+.header-menu-item .menu-icon.power {
+    -webkit-mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/power-outline.svg");
+    mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/power-outline.svg");
 }
 .header-menu-item:hover {
     background-color: var(--main-bg-color);
