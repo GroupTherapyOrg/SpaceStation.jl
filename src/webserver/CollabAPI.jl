@@ -466,6 +466,24 @@ function register_collab_api!(router, session::ServerSession)
     end
     HTTP.register!(router, "GET", "/api/v1/notebook", serve_api_notebook)
 
+    # A notebook's package environment, for the hub's "open in a terminal" action (issue #29):
+    # whether Pluto manages one, where it is, and the exact command that activates it in a shell
+    # (composed here so the client never has to know which Julia or which shell is in play).
+    function serve_api_notebook_env(request::HTTP.Request)
+        query = HTTP.queryparams(HTTP.URI(request.target))
+        notebook = _api_notebook_from_query(session, query)
+        notebook === nothing && return _api_error(404, "notebook not found — is it open in this server? (pass ?path=/abs/path.jl or ?id=<uuid>)", false)
+        command = notebook_env_command(notebook)
+        env_dir = command === nothing ? nothing : PkgCompat.env_dir(notebook.nbpkg_ctx)
+        body = _json(Pair[
+            "managed" => command !== nothing,
+            "env_dir" => env_dir,
+            "command" => command,
+        ])
+        HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], body * "\n")
+    end
+    HTTP.register!(router, "GET", "/api/v1/notebook/env", serve_api_notebook_env)
+
     # Read ONE cell's FULL output (the status digest caps each cell at 20k; this returns up to 200k
     # so an agent can pull a long result it saw truncated in `status`).
     function serve_api_cell(request::HTTP.Request)

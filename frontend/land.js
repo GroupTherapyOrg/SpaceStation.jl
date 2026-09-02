@@ -729,7 +729,7 @@ const terminal_theme_for = (scheme) => {
           }
 }
 
-const TerminalView = ({ tid, cwd, visible, scheme }) => {
+const TerminalView = ({ tid, cwd, visible, scheme, notebook_env }) => {
     const node_ref = useRef(null)
     const started = useRef(false)
     const fit_ref = useRef(null)
@@ -924,7 +924,10 @@ const TerminalView = ({ tid, cwd, visible, scheme }) => {
             // the server happened to launch. The server falls back to its workspace_folder if omitted.
             const cwd_param = cwd ? `&cwd=${encodeURIComponent(cwd)}` : ""
             const size_param = `&rows=${term.rows}&cols=${term.cols}`
-            socket = new WebSocket(`${proto}://${window.location.host}/terminal?tid=${tid}${cwd_param}${size_param}`)
+            // A notebook-environment terminal (issue #29): the server types `julia --project=<env>`
+            // into the shell it spawns for this tid — only on spawn, so reattaching never repeats it.
+            const env_param = notebook_env ? `&notebook_env=${encodeURIComponent(notebook_env)}` : ""
+            socket = new WebSocket(`${proto}://${window.location.host}/terminal?tid=${tid}${cwd_param}${size_param}${env_param}`)
             socket_ref.current = socket
             socket.binaryType = "arraybuffer"
             // Measure the panel and tell the pty (the server ignores a no-change resize). Called once
@@ -1178,6 +1181,64 @@ const Land = () => {
     const [show_opener, set_show_opener] = useState(false)
     const [menu_open, set_menu_open] = useState(false)
     const menu_ref = useRef(null)
+
+    // ---- Tab switching from the keyboard (issue #29) ----
+    // The conventions every browser, VS Code and iTerm share: ⌘⇧[ / ⌘⇧] and ⌘⌥← / ⌘⌥→ on macOS,
+    // Ctrl+PageUp / Ctrl+PageDown and Ctrl+Tab / Ctrl+Shift+Tab everywhere, ⌘/Ctrl+1…8 for the
+    // Nth tab and ⌘/Ctrl+9 for the last. They cycle the strip as shown: notebooks and files in
+    // order, then the terminal when it is docked as a tab. The handler runs in the CAPTURE phase on
+    // the hub window and, because the notebook frames are same-origin documents that never bubble
+    // keys up here, on each frame's window as it loads (`attach_tab_keys`) — so the chord works with
+    // a cell, a file, the sidebar or the terminal focused. None of it collides with Pluto's own
+    // bindings (cell folding is ⌘⌥[ on macOS and Ctrl+Shift+[ elsewhere) or with xterm.
+    const tab_keys_ref = useRef({ tabs: /** @type {Array<{id: String}>} */ ([]), active: /** @type {String?} */ (null), terminal_tab: false })
+    const handle_tab_keys = useCallback((/** @type {KeyboardEvent} */ e) => {
+        if (e.defaultPrevented || e.isComposing) return
+        const mac = navigator.platform.toUpperCase().includes("MAC")
+        const mod = mac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey
+        let move = 0
+        let jump = -1
+        if (e.ctrlKey && !e.metaKey && !e.altKey && e.key === "Tab") move = e.shiftKey ? -1 : 1
+        else if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && (e.key === "PageUp" || e.key === "PageDown")) move = e.key === "PageUp" ? -1 : 1
+        else if (mac && e.metaKey && e.shiftKey && !e.altKey && !e.ctrlKey && (e.code === "BracketLeft" || e.code === "BracketRight")) move = e.code === "BracketLeft" ? -1 : 1
+        else if (mac && e.metaKey && e.altKey && !e.shiftKey && !e.ctrlKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) move = e.key === "ArrowLeft" ? -1 : 1
+        else if (mod && !e.shiftKey && !e.altKey && /^Digit[1-9]$/.test(e.code)) jump = Number(e.code.slice(5))
+        if (move === 0 && jump < 0) return
+        const { tabs, active, terminal_tab } = tab_keys_ref.current
+        const order = [...tabs.map((t) => t.id), ...(terminal_tab ? ["__terminal__"] : [])]
+        if (order.length === 0) return
+        e.preventDefault()
+        e.stopPropagation()
+        let next
+        if (jump > 0) next = order[jump === 9 ? order.length - 1 : Math.min(jump, order.length) - 1]
+        else {
+            const i = order.indexOf(active ?? "")
+            next = order[(i + move + order.length) % order.length]
+        }
+        if (next != null) set_active(next)
+    }, [])
+    useEffect(() => {
+        window.addEventListener("keydown", handle_tab_keys, true)
+        return () => window.removeEventListener("keydown", handle_tab_keys, true)
+    }, [handle_tab_keys])
+    /** Hook a same-origin frame's window (a notebook tab) into the tab-switching keys. */
+    const attach_tab_keys = useCallback(
+        (/** @type {Window?} */ frame_window) => {
+            try {
+                frame_window?.addEventListener("keydown", handle_tab_keys, true)
+            } catch {
+                // cross-origin (should not happen: ./edit is ours) — the chord just won't work from that frame
+            }
+        },
+        [handle_tab_keys]
+    )
+
+    // ---- "Open the notebook's package environment in a terminal" (issue #29) ----
+    // Answers "I can never remember the invocation": the server composes the exact command for
+    // this Julia and this shell, and types it into a fresh terminal tab, so the line is there to
+    // read, edit and learn. Availability is looked up when the menu opens, for the active notebook.
+    const [notebook_env, set_notebook_env] = useState(/** @type {{id: String, managed: boolean, command?: String}?} */ (null))
+
     // Close the header overflow menu on an outside click or Escape — standard popover behaviour.
     useEffect(() => {
         if (!menu_open) return
@@ -1194,6 +1255,24 @@ const Land = () => {
             document.removeEventListener("keydown", on_key)
         }
     }, [menu_open])
+    tab_keys_ref.current = { tabs, active, terminal_tab: terminal_open && terminal_dock === "tab" }
+
+    const active_notebook_tab = active != null && active !== "__terminal__" && tabs.find((t) => t.id === active && t.kind !== "file")
+    useEffect(() => {
+        if (!menu_open) return
+        if (!active_notebook_tab) {
+            set_notebook_env(null)
+            return
+        }
+        let alive = true
+        get_json(`./api/v1/notebook/env?id=${encodeURIComponent(active_notebook_tab.id)}`)
+            .then((info) => alive && set_notebook_env({ id: active_notebook_tab.id, managed: info?.managed === true, command: info?.command }))
+            .catch(() => alive && set_notebook_env({ id: active_notebook_tab.id, managed: false }))
+        return () => {
+            alive = false
+        }
+    }, [menu_open, active_notebook_tab?.id])
+
     const auto_tabbed = useRef(false)
     // If this tab was spawned by a homebase, it carries the homebase URL in its #fragment — remember it so
     // the "home" button returns there instead of opening a disconnected in-tab launcher.
@@ -1310,7 +1389,7 @@ const Land = () => {
 
     // Terminals are tabs INSIDE the terminal panel (like VS Code). Each is a persistent shell
     // keyed by tid; the list + active terminal are restored on reload. `terminal_seq` numbers them.
-    const [terminals, set_terminals] = useState(/** @type {Array<{tid: String, label: String}>} */ ([]))
+    const [terminals, set_terminals] = useState(/** @type {Array<{tid: String, label: String, notebook_env?: String}>} */ ([]))
     const [active_terminal, set_active_terminal] = useState(/** @type {String?} */ (null))
     const terminals_workspace = useRef(/** @type {String?} */ (null))
     const [terminals_loaded_for, set_terminals_loaded_for] = useState(/** @type {String?} */ (null))
@@ -1402,14 +1481,21 @@ const Land = () => {
         [add_tab]
     )
 
-    const new_terminal = useCallback(() => {
-        if (workspace?.root == null || terminals_workspace.current !== workspace.root) return
-        terminal_seq.current += 1
-        const tid = "term-" + Math.random().toString(36).slice(2, 12)
-        set_terminals((ts) => [...ts, { tid, label: `Terminal ${terminal_seq.current}` }])
-        set_active_terminal(tid)
-        set_terminal_open(true)
-    }, [workspace?.root])
+    /** Open a new terminal tab. `notebook_env` (a notebook id) makes it a notebook-environment
+     *  terminal: the shell starts by activating that notebook's package environment (issue #29). */
+    const new_terminal = useCallback(
+        (/** @type {{label?: String, notebook_env?: String}} */ opts = {}) => {
+            if (workspace?.root == null || terminals_workspace.current !== workspace.root) return
+            terminal_seq.current += 1
+            const tid = "term-" + Math.random().toString(36).slice(2, 12)
+            const entry = { tid, label: opts.label ?? `Terminal ${terminal_seq.current}` }
+            if (opts.notebook_env) entry.notebook_env = opts.notebook_env
+            set_terminals((ts) => [...ts, entry])
+            set_active_terminal(tid)
+            set_terminal_open(true)
+        },
+        [workspace?.root]
+    )
 
     const close_terminal = useCallback((tid) => {
         // Reap the server-side shell (this is a real close, not a detach) — best-effort; the tab is
@@ -1711,7 +1797,7 @@ const Land = () => {
                         <button class="close" title="Close terminal" onClick=${() => close_terminal(t.tid)}>×</button>
                     </div>`
                 )}
-                <button class="new-terminal-tab" title="New terminal" onClick=${new_terminal}>
+                <button class="new-terminal-tab" title="New terminal" onClick=${() => new_terminal()}>
                     <span class="nt-icon">⌨</span><span class="nt-plus">＋</span>
                 </button>
             </div>
@@ -1727,7 +1813,7 @@ const Land = () => {
         <div class="terminal-bodies">
             ${(terminals_workspace.current === workspace?.root ? terminals : []).map(
                 (t) => html`<div key=${t.tid} class="terminal-body ${t.tid === active_terminal ? "active" : ""}">
-                    <${TerminalView} tid=${t.tid} cwd=${workspace?.root} visible=${shown && t.tid === active_terminal} scheme=${terminal_scheme} />
+                    <${TerminalView} tid=${t.tid} cwd=${workspace?.root} visible=${shown && t.tid === active_terminal} scheme=${terminal_scheme} notebook_env=${t.notebook_env} />
                 </div>`
             )}
         </div>
@@ -1810,6 +1896,24 @@ const Land = () => {
                                 <button class="header-button menu-button ${menu_open ? "active" : ""}" title="More actions" aria-haspopup="menu" aria-expanded=${menu_open} onClick=${() => set_menu_open((o) => !o)}><span class="menu-dots"></span></button>
                                 ${menu_open
                                     ? html`<div class="header-menu-popover" role="menu">
+                                          <button
+                                              class="header-menu-item"
+                                              role="menuitem"
+                                              disabled=${!(active_notebook_tab && notebook_env?.id === active_notebook_tab.id && notebook_env.managed)}
+                                              title=${!active_notebook_tab
+                                                  ? "Open a notebook tab first"
+                                                  : notebook_env?.id !== active_notebook_tab.id
+                                                    ? "Checking the notebook's environment…"
+                                                    : notebook_env.managed
+                                                      ? `Opens a terminal running ${notebook_env.command}`
+                                                      : "This notebook manages its own environment (Pkg.activate), so there is nothing to open"}
+                                              onClick=${() => {
+                                                  set_menu_open(false)
+                                                  if (active_notebook_tab) new_terminal({ label: `env: ${basename(active_notebook_tab.path)}`, notebook_env: active_notebook_tab.id })
+                                              }}
+                                          >
+                                              ⌨ Open notebook environment in a terminal
+                                          </button>
                                           <button class="header-menu-item danger" role="menuitem" onClick=${() => {
                                               set_menu_open(false)
                                               shutdown_server()
@@ -1919,7 +2023,12 @@ const Land = () => {
                                           <${FileEditorPane} path=${t.path} visible=${t.id === active} />
                                       </div>`
                                     : // every notebook tab is the stock Pluto editor; iframes stay mounted so switching tabs never loses state
-                                      html`<iframe key=${t.id} src=${`./edit?id=${t.id}`} class=${t.id === active ? "active" : ""}></iframe>`
+                                      html`<iframe
+                                          key=${t.id}
+                                          src=${`./edit?id=${t.id}`}
+                                          class=${t.id === active ? "active" : ""}
+                                          onLoad=${(/** @type {Event} */ e) => attach_tab_keys(/** @type {HTMLIFrameElement} */ (e.target).contentWindow)}
+                                      ></iframe>`
                             )}
                             ${tab_mode
                                 ? html`<div class="pane terminal-area-pane ${active === "__terminal__" ? "active" : ""}">
