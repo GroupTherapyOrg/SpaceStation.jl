@@ -1,7 +1,7 @@
 name = "SpaceStation"
 uuid = "9559e6e6-ccab-48cc-a1b8-a141fc5a67a0"
 license = "MIT"
-version = "0.6.2"
+version = "0.6.3"
 authors = ["Dale Black"]
 # SpaceStation is a fork of Pluto.jl (© the Pluto.jl authors — Fons van der Plas and
 # contributors); see LICENSE for the original Pluto copyright and attribution.
