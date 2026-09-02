@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.6.0](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.5.3...v0.6.0) (2026-09-02)
+
+
+### Features
+
+* switch notebook tabs from the keyboard, and open a notebook's environment in a terminal ([e6a444c](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/e6a444c864a25829a25d62ee421a463515129ce2))
+
+
+### Bug Fixes
+
+* give every Windows installer its own Package Code, so a newer .msi upgrades in place ([253e5d7](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/253e5d711bfe187fb66f5263bded9348105da268))
+* notebook zoom reflows to the window and stays anchored in both engines ([35ba052](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/35ba0520f0bbe143c601f04a0f2414be6212aae5))
+* precompile the notebook environment even when the process came up before it existed ([07a1846](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/07a1846ac061dcf30e02bd7e47137077eb24469d))
+
 ## [0.5.3](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.5.2...v0.5.3) (2026-09-01)
 
 
