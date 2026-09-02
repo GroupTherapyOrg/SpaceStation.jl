@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.6.0...v0.6.1) (2026-09-02)
+
+
+### Bug Fixes
+
+* zoom with the webview's own page zoom, not a CSS reimplementation ([#81](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/81)) ([d4d3832](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/d4d3832da8a78c5c102f720184112ef9736d46e8))
+
 ## [0.6.0](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.5.3...v0.6.0) (2026-09-02)
 
 
