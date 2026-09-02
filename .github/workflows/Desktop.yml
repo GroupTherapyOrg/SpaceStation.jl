@@ -197,11 +197,15 @@ jobs:
           # cscript, not PowerShell: WindowsInstaller's View.Execute takes an optional Record
           # parameter that neither pwsh 7 nor Windows PowerShell 5.1 will bind (both fail with
           # "Execute,Params"). VBScript is the host Microsoft's own MSI samples use.
-          cscript //nologo stamp_msi.vbs "dist/${{ matrix.built }}" $version icons\spacestation.ico
+          cscript //nologo stamp_msi.vbs "dist/${{ matrix.built }}" $version icons\spacestation.ico | Tee-Object -Variable stampLog
           # PowerShell does NOT fail a step on a native command's exit code, even with
           # ErrorActionPreference=Stop. Without this the stamp could fail and the build would sail on
           # to ship an unstamped .msi — which is exactly what happened.
           if ($LASTEXITCODE -ne 0) { throw "stamp_msi.vbs failed with exit code $LASTEXITCODE" }
+          # ...and a VBScript RUNTIME error (an "Msi API Error" line) exits 0 after printing its
+          # diagnostic, which is how the stamp's own verification silently stopped running for
+          # several releases. The script's last line is the proof that it ran to the end.
+          if (-not ($stampLog -match '^stamped: ')) { throw "stamp_msi.vbs did not run to completion — see its output above" }
 
       - name: Name the release asset
         shell: bash
@@ -282,6 +286,63 @@ jobs:
           Start-Process msiexec -ArgumentList "/x","`"$msi`"","/qn" -Wait
           if (-not $ok) { throw "the installed Windows app failed the #55 regression test" }
           Write-Host "the installed app opened its webview from a writable per-user directory"
+
+      # The regression test for issue #57. An installer users cannot upgrade to is a fix they never
+      # receive. Stamp a higher-versioned copy of the same package and prove a plain `msiexec /i`
+      # REPLACES the installed one rather than landing beside it or bouncing into maintenance mode
+      # on the old product — which is what happened while every build shared one Package Code.
+      - name: Prove the installer upgrades in place (regression test for #57)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: desktop
+        run: |
+          $ErrorActionPreference = "Stop"
+          $old = (Resolve-Path "dist/${{ matrix.file }}").Path
+          $new = Join-Path $env:RUNNER_TEMP "SpaceStation-upgrade-test.msi"
+          Copy-Item $old $new -Force
+          cscript //nologo stamp_msi.vbs $new "99.0.0" icons\spacestation.ico | Tee-Object -Variable stampLog
+          if ($LASTEXITCODE -ne 0) { throw "stamp_msi.vbs failed with exit code $LASTEXITCODE" }
+          if (-not ($stampLog -match '^stamped: ')) { throw "stamp_msi.vbs did not run to completion — see its output above" }
+
+          # Read the uninstall registry, NOT Win32_Product: querying that class makes Windows
+          # Installer reconfigure every installed product on the machine, which is slow and actively
+          # harmful. A per-user install registers under HKCU; HKLM is checked too so a per-machine
+          # regression cannot hide.
+          $entries = {
+              @("HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall",
+                "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall") |
+                  ForEach-Object { Get-ChildItem $_ -ErrorAction SilentlyContinue } |
+                  ForEach-Object { Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue } |
+                  Where-Object { $_.DisplayName -eq "SpaceStation" }
+          }
+          Start-Process msiexec -ArgumentList "/i","`"$old`"","/qn" -Wait
+          $found = @(& $entries)
+          Write-Host "after installing the release build: $($found.Count) entry/entries, version $(($found | Select-Object -First 1).DisplayVersion)"
+
+          $log = "$env:RUNNER_TEMP\upgrade.log"
+          Start-Process msiexec -ArgumentList "/i","`"$new`"","/qn","/l*v","`"$log`"" -Wait
+          $found = @(& $entries)
+          $after = $found.Count
+          $version = ($found | Select-Object -First 1).DisplayVersion
+          Write-Host "after installing the newer build:  $after entry/entries, version $version"
+
+          $ok = $true
+          if ($after -ne 1) {
+              Write-Host "::error::expected exactly one SpaceStation entry after the upgrade, found $after — the new build installed alongside the old one instead of replacing it."
+              $ok = $false
+          }
+          if ($version -ne "99.0.0") {
+              Write-Host "::error::the installed version is $version, not the 99.0.0 just installed — Windows treated the newer package as the already-installed one and reconfigured it (#57)."
+              $ok = $false
+          }
+          if (-not $ok -and (Test-Path $log)) {
+              Write-Host "--- upgrade.log: FindRelatedProducts / RemoveExistingProducts / reconfigure lines ---"
+              Select-String -Path $log -Pattern "FindRelatedProducts|RemoveExistingProducts|OLDERVERSIONBEINGUPGRADED|reconfigured|Reconfiguration|Return value 3|1603|1402" | ForEach-Object { $_.Line } | Select-Object -First 60
+          }
+          Start-Process msiexec -ArgumentList "/x","`"$new`"","/qn" -Wait
+          Start-Process msiexec -ArgumentList "/x","`"$old`"","/qn" -Wait
+          if (-not $ok) { throw "the Windows installer cannot upgrade in place" }
+          Write-Host "a newer .msi cleanly replaces the installed one"
 
       - name: Sign + notarize (macOS, when credentials exist)
         # NOTE: signing a finished .dmg requires the .app INSIDE to be signed at build time —
@@ -366,11 +427,10 @@ jobs:
           **Windows** — double-click `SpaceStation-win-x64.msi`. If SmartScreen shows *"Windows
           protected your PC"*, click **More info → Run anyway**.
 
-          > **Upgrading from an earlier version? Uninstall it first.** Installing a newer `.msi` over
-          > an existing install currently reconfigures the old version instead of replacing it, so the
-          > update looks like it did nothing. Remove **SpaceStation** from *Settings → Apps → Installed
-          > apps*, then run the new `.msi`. This is a limitation of the installer we generate, tracked
-          > separately; a first-time install is unaffected.
+          > **Upgrading from v0.5.3 or earlier?** Those installers could not be upgraded in place:
+          > run the new `.msi` and, if the installed version does not change, remove **SpaceStation**
+          > from *Settings → Apps → Installed apps* once and install again. From this release on, a
+          > newer `.msi` replaces the installed one directly.
 
           **Linux** — mark the AppImage executable and run it:
 
