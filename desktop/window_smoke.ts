@@ -45,13 +45,16 @@ let saw_beacon: (ua: string) => void
 const beacon = new Promise<string>((resolve) => (saw_beacon = resolve))
 let initial_dpr = 1
 const zoom_reports: number[] = []
+const keys_seen: string[] = []
 
 const PAGE = `<!doctype html><meta charset="utf-8"><title>SpaceStation window smoke</title>
 <body style="font: 14px system-ui; padding: 2rem">opening…
 <script>
 fetch("/beacon?ua=" + encodeURIComponent(navigator.userAgent) + "&dpr=" + devicePixelRatio)
-// The webview's own zoom (issue #66) changes devicePixelRatio and fires resize; report every change.
+// The webview's own zoom (issue #66) changes devicePixelRatio and fires resize; report every change,
+// and every key the page sees, so a failed zoom check says whether the keystroke arrived at all.
 addEventListener("resize", () => fetch("/zoom?dpr=" + devicePixelRatio))
+addEventListener("keydown", (e) => fetch("/keys?k=" + encodeURIComponent(e.key) + "&ctrl=" + e.ctrlKey))
 </script>`
 
 const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen: () => {} }, (req) => {
@@ -63,6 +66,10 @@ const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen: () => {} }
     }
     if (url.pathname === "/zoom") {
         zoom_reports.push(Number(url.searchParams.get("dpr")) || 0)
+        return new Response("ok")
+    }
+    if (url.pathname === "/keys") {
+        keys_seen.push(`${url.searchParams.get("ctrl") === "true" ? "Ctrl+" : ""}${url.searchParams.get("k")}`)
         return new Response("ok")
     }
     return new Response(PAGE, { headers: { "content-type": "text/html; charset=utf-8" } })
@@ -139,28 +146,50 @@ if (Deno.build.os === "windows") {
 
 // Zoom on Windows is WebView2's own (issue #66): Ctrl+= / Ctrl+- / Ctrl+0 and Ctrl+wheel are
 // handled by the browser engine as long as nothing in the app swallows them — the pages no longer
-// do, and the host sets nothing on the WebView2 settings object. Prove it with a real keystroke:
-// SendKeys delivers Ctrl+= to the focused window, and a zoom shows up in the page as a changed
-// devicePixelRatio. No change within the budget means the built-in zoom is off or intercepted.
+// do, and the host sets nothing on the WebView2 settings object. Prove it the way a user meets it:
+// bring the window forward, click into the page (keyboard focus lives in the WebView2 child window
+// only once something has clicked into it), press Ctrl+=, and expect the page's devicePixelRatio
+// to change. The keys the page saw are printed either way, so a failure says whether the keystroke
+// arrived and was ignored, or never arrived.
 if (Deno.build.os === "windows") {
-    try {
-        win.focus()
-    } catch {
-        // focus is best-effort; SendKeys goes to the foreground window, which this should already be
-    }
-    await new Promise((r) => setTimeout(r, 1500))
-    const send = new Deno.Command("powershell", {
-        args: ["-NoProfile", "-Command", "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^=')"],
-        stdout: "null",
-        stderr: "piped",
-    })
+    const script = `
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type @"
+using System; using System.Runtime.InteropServices;
+public static class Native {
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindowW(string cls, string title);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L; public int T; public int R; public int B; }
+}
+"@
+$h = [Native]::FindWindowW($null, "SpaceStation window smoke")
+if ($h -eq [IntPtr]::Zero) { Write-Error "window not found by title"; exit 2 }
+[Native]::SetForegroundWindow($h) | Out-Null
+Start-Sleep -Milliseconds 300
+$r = New-Object Native+RECT
+[Native]::GetWindowRect($h, [ref]$r) | Out-Null
+$cx = [int](($r.L + $r.R) / 2); $cy = [int](($r.T + $r.B) / 2)
+[Native]::SetCursorPos($cx, $cy) | Out-Null
+[Native]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero); Start-Sleep -Milliseconds 60; [Native]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+Start-Sleep -Milliseconds 500
+[System.Windows.Forms.SendKeys]::SendWait("^=")
+Start-Sleep -Milliseconds 1200
+[System.Windows.Forms.SendKeys]::SendWait("^{ADD}")
+Write-Output "clicked at $cx,$cy and sent Ctrl+= then Ctrl+NumpadPlus"
+`
+    const send = new Deno.Command("powershell", { args: ["-NoProfile", "-Command", script], stdout: "piped", stderr: "piped" })
     const sent = await send.output()
-    if (!sent.success) fail(`could not send Ctrl+= to the window: ${new TextDecoder().decode(sent.stderr)}`)
+    say(`[window-smoke] key injection: ${new TextDecoder().decode(sent.stdout).trim()} ${new TextDecoder().decode(sent.stderr).trim()}`)
+    if (!sent.success) fail("could not inject the click and Ctrl+= into the window")
     const deadline = Date.now() + 15_000
     while (Date.now() < deadline && !zoom_reports.some((d) => d > initial_dpr * 1.05)) await new Promise((r) => setTimeout(r, 250))
     const zoomed = zoom_reports.find((d) => d > initial_dpr * 1.05)
+    say(`[window-smoke] keys the page saw: ${JSON.stringify(keys_seen)}; devicePixelRatio reports: ${JSON.stringify(zoom_reports)}`)
     if (zoomed == null) {
-        fail(`Ctrl+= did not zoom the webview (devicePixelRatio stayed at ${initial_dpr}; reports: ${JSON.stringify(zoom_reports)}) — WebView2's built-in zoom is disabled or intercepted (issue #66).`)
+        fail(`Ctrl+= did not zoom the webview (devicePixelRatio stayed at ${initial_dpr}) — WebView2's built-in zoom is disabled or intercepted (issue #66).`)
     }
     say(`[window-smoke] Ctrl+= zoomed the webview natively: devicePixelRatio ${initial_dpr} → ${zoomed}`)
 }
