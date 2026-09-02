@@ -180,9 +180,14 @@ Start-Sleep -Milliseconds 1200
 [System.Windows.Forms.SendKeys]::SendWait("^{ADD}")
 Write-Output "clicked at $cx,$cy and sent Ctrl+= then Ctrl+NumpadPlus"
 `
-    const send = new Deno.Command("powershell", { args: ["-NoProfile", "-Command", script], stdout: "piped", stderr: "piped" })
+    // A file, not -Command: the C# here-string does not survive being passed as one argument.
+    const script_path = `${Deno.makeTempDirSync()}\\zoom-smoke.ps1`
+    Deno.writeTextFileSync(script_path, script)
+    const send = new Deno.Command("powershell", { args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script_path], stdout: "piped", stderr: "piped" })
     const sent = await send.output()
-    say(`[window-smoke] key injection: ${new TextDecoder().decode(sent.stdout).trim()} ${new TextDecoder().decode(sent.stderr).trim()}`)
+    const out = new TextDecoder().decode(sent.stdout).trim()
+    const err = new TextDecoder().decode(sent.stderr).trim()
+    say(`[window-smoke] key injection (exit ${sent.code}): ${out}${err ? `\n${err.slice(0, 1200)}` : ""}`)
     if (!sent.success) fail("could not inject the click and Ctrl+= into the window")
     const deadline = Date.now() + 15_000
     while (Date.now() < deadline && !zoom_reports.some((d) => d > initial_dpr * 1.05)) await new Promise((r) => setTimeout(r, 250))
