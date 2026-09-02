@@ -199,8 +199,49 @@ function _spawn_workspace_shell(session::ServerSession, dir::String; rows::Int=2
     end
 end
 
+"""
+The shell command that activates a notebook's package environment, exactly as a user would type it
+(issue #29): `julia --project=<env>` with THIS server's Julia — the notebook process runs on the same
+binary, so the Manifest in that environment is only valid for it. `julia` is spelled bare when that
+is what `julia` on PATH resolves to, and as a full path otherwise, so the line always works when
+retyped. Quoted for the shell the terminal actually runs (POSIX sh, PowerShell, or cmd).
+
+Returns `nothing` when the notebook has no Pluto-managed environment (it runs `Pkg.activate` itself,
+or nothing has been loaded yet) — there is nothing to open then.
+"""
+function notebook_env_command(notebook::Notebook)::Union{Nothing,String}
+    ctx = notebook.nbpkg_ctx
+    ctx === nothing && return nothing
+    env_dir = try
+        PkgCompat.env_dir(ctx)
+    catch
+        return nothing
+    end
+    (env_dir === nothing || isempty(env_dir)) && return nothing
+    julia_path = joinpath(Sys.BINDIR, Base.julia_exename())
+    on_path = Sys.which("julia")
+    same = on_path !== nothing && try
+        realpath(on_path) == realpath(julia_path)
+    catch
+        false
+    end
+    julia = same ? "julia" : julia_path
+    if Sys.iswindows()
+        shell = _windows_shell_exe()
+        if endswith(lowercase(shell), "cmd.exe")
+            "\"$(julia)\" --project=\"$(env_dir)\""
+        else
+            # PowerShell: a path with spaces or a full path needs the call operator
+            exe = same ? "julia" : "& '$(replace(julia, "'" => "''"))'"
+            "$(exe) --project='$(replace(env_dir, "'" => "''"))'"
+        end
+    else
+        "$(same ? "julia" : _shquote(julia)) --project=$(_shquote(env_dir))"
+    end
+end
+
 "Get the live terminal for this id, or (re)create one. The pump task forwards PTY output to every attached socket and maintains the scrollback ring."
-function _get_or_create_terminal(session::ServerSession, tid::String; requested_cwd::Union{Nothing,AbstractString}=nothing, rows::Int=24, cols::Int=80)::CollabTerminal
+function _get_or_create_terminal(session::ServerSession, tid::String; requested_cwd::Union{Nothing,AbstractString}=nothing, rows::Int=24, cols::Int=80, run::Union{Nothing,String}=nothing)::CollabTerminal
     lock(COLLAB_TERMINALS_LOCK) do
         target = _resolve_terminal_cwd(session, requested_cwd)
         existing = get(COLLAB_TERMINALS, tid, nothing)
@@ -226,6 +267,17 @@ function _get_or_create_terminal(session::ServerSession, tid::String; requested_
         # delete the new shell's pasted files.
         paste_dir = joinpath(tempdir(), "spacestation-paste-$(_safe_tid(tid))-$(time_ns())")
         t = CollabTerminal(_spawn_workspace_shell(session, target; rows=rows, cols=cols), UInt8[], false, Set{Any}(), ReentrantLock(), @async(nothing), target, paste_dir)
+        # A command to run in the NEW shell, typed ahead as keystrokes: the tty queues it until the
+        # shell reads, so it lands as if the user had typed it — visible in the scrollback, editable
+        # in history, and gone when they exit it — and reattaching (reload, another view) never
+        # repeats it, since only a freshly spawned shell gets here.
+        if run !== nothing
+            try
+                pty_write(t.pty, Vector{UInt8}(codeunits(run * "\n")))
+            catch e
+                @warn "terminal: could not type the initial command" exception = (e, catch_backtrace())
+            end
+        end
         t.pump = @asynclog begin
             for data in t.pty.output
                 # Update scrollback and snapshot the client set UNDER the lock, but do the blocking
@@ -340,9 +392,19 @@ function handle_terminal_websocket(ws, session::ServerSession, query::Dict{Strin
     q_rows = tryparse(Int, get(query, "rows", ""))
     q_cols = tryparse(Int, get(query, "cols", ""))
     sane = q_rows !== nothing && q_cols !== nothing && 1 < q_rows < 1000 && 9 < q_cols < 1000
+    # `notebook_env=<uuid>`: a terminal that starts by activating that notebook's package
+    # environment (issue #29). The server composes the command line — the client never sends
+    # shell text — and it only applies when this tid spawns a new shell.
+    run = nothing
+    nb_id = get(query, "notebook_env", "")
+    if !isempty(nb_id)
+        uuid = tryparse(UUID, nb_id)
+        notebook = uuid === nothing ? nothing : get(session.notebooks, uuid, nothing)
+        run = notebook === nothing ? nothing : notebook_env_command(notebook)
+    end
     t = try
         _get_or_create_terminal(session, tid; requested_cwd=(isempty(cwd) ? nothing : cwd),
-                                rows=(sane ? q_rows : 24), cols=(sane ? q_cols : 80))
+                                rows=(sane ? q_rows : 24), cols=(sane ? q_cols : 80), run=run)
     catch e
         # Spawn failed (e.g. Windows older than 10 1809 has no ConPTY). Say so plainly instead
         # of letting the socket close into the frontend's "reload to reattach" message.

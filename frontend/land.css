@@ -235,6 +235,13 @@ body.resizing #frames iframe {
 .header-menu-item:hover {
     background-color: var(--main-bg-color);
 }
+.header-menu-item:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+.header-menu-item:disabled:hover {
+    background-color: transparent;
+}
 .header-menu-item.danger {
     color: #d65f5f;
 }
