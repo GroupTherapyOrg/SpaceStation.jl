@@ -199,6 +199,18 @@ function precompile_nbpkg((session, notebook)::SN; io=stdout)::Bool
     not_ready_yet && println(io, "Done. Starting precompilation...")
     Malt.isrunning(workspace.worker) || return false
 
+    # `Pkg.precompile()` below acts on the WORKER's active project, so make sure that is the
+    # notebook's environment before running it. The worker only switches project in
+    # `use_nbpkg_environment`, which runs at process creation (reading `notebook.nbpkg_ctx`
+    # at that moment) and before each cell evaluation. Neither guarantees the switch has
+    # happened here: `Run.jl` starts the process in parallel with `sync_nbpkg`, so a fresh
+    # worker can come up while `nbpkg_ctx` is still `nothing`, and a notebook that gains its
+    # first `import` while already running has a worker that never had a package environment
+    # at all. In both cases precompilation silently ran against the default project — nothing
+    # to do, no output — and the first `import` paid the full compile cost instead (issue #58,
+    # the "Match compiler options" flake). The call is idempotent (`nbpkg_was_active`).
+    use_nbpkg_environment((session, notebook), workspace)
+
     io_writes_channel = Malt.worker_channel(workspace.worker, :(__precomp_io_writes_channel = Channel(10)))
     
     expr = quote
