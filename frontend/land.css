@@ -1594,3 +1594,35 @@ dialog.land-confirm button.go.danger {
         animation-duration: 2.4s;
     }
 }
+
+/* Refresh on the opener's section headers (issue: hosts and folders appearing while the app runs).
+   Same quiet row-action as the + on the workspace heading; the icon spins while a refresh is in flight. */
+.workspace-opener h2 {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+.workspace-opener h2 .row-action.h2-action.refresh {
+    margin-left: 0.1rem;
+    opacity: 0.45;
+    line-height: 0;
+}
+.workspace-opener h2 .row-action.h2-action.refresh:hover {
+    opacity: 1;
+}
+.workspace-opener .refresh-icon {
+    display: inline-block;
+    width: 1em;
+    height: 1em;
+    background-color: currentColor;
+    -webkit-mask: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/refresh-outline.svg") center / contain no-repeat;
+    mask: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/refresh-outline.svg") center / contain no-repeat;
+}
+.workspace-opener .refresh.spinning .refresh-icon {
+    animation: opener-refresh-spin 0.8s linear infinite;
+}
+@keyframes opener-refresh-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
