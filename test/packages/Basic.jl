@@ -764,6 +764,47 @@ end
             
             cleanup(🍭, notebook)
         end
+
+        # Issue #58. `Pkg.precompile()` runs inside the notebook process and acts on ITS active
+        # project. The process switches to the notebook environment when it is created — reading
+        # `notebook.nbpkg_ctx` at that moment — and before each cell run. Run.jl deliberately starts
+        # the process in parallel with `sync_nbpkg`, so a fresh notebook's process can come up while
+        # the environment does not exist yet: the sync's precompile step then ran against the default
+        # project, did nothing, said nothing, and the first `import` compiled everything instead. The
+        # race is made deterministic here by starting the process BEFORE the first sync.
+        @testset "Precompiles in the notebook environment when the process came up first" begin
+            let # clear compilation cache
+                Sys.iswindows() && sleep(3) # workaround for https://github.com/JuliaLang/julia/issues/34700
+                isdir(compilation_dir_testA) && rm(compilation_dir_testA; force=true, recursive=true)
+            end
+            @test precomp_entries() == []
+
+            🍭 = autorun_session()
+            # An import for Pluto to recognize, but don't actually run it: running it would
+            # precompile as a side effect and hide what the sync step did or did not do.
+            notebook = Notebook([Cell("false && import PlutoPkgTestA")])
+            @test notebook.nbpkg_ctx === nothing
+            # the process exists before the environment does — with the default project active
+            WorkspaceManager.get_workspace((🍭, notebook))
+            @test !notebook.nbpkg_ctx_instantiated
+
+            update_save_run!(🍭, notebook, notebook.cells)
+            @test notebook.nbpkg_ctx_instantiated
+            env_dir = PkgCompat.env_dir(notebook.nbpkg_ctx)
+            @test WorkspaceManager.eval_fetch_in_workspace((🍭, notebook), :(Base.ACTIVE_PROJECT[])) == env_dir
+
+            # the sync's precompile step produced caches, so the import below has nothing left to compile
+            after_sync = precomp_entries_settled()
+            isempty(after_sync) && @info "No precompile caches after the first sync of a notebook whose process started first.\n" * pkg_state_report(notebook)
+            @test !isempty(after_sync)
+
+            setcode!(notebook.cells[1], "import PlutoPkgTestA")
+            update_save_run!(🍭, notebook, notebook.cells[1])
+            @test noerror(notebook.cells[1])
+            @test precomp_entries_settled() == after_sync
+
+            cleanup(🍭, notebook)
+        end
     end
 
     @testset "Inherit load path" begin
