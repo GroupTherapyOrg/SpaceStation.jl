@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.6.4...v0.7.0) (2026-09-02)
+
+
+### Features
+
+* the launcher re-reads its folders and SSH hosts without a relaunch ([#89](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/89)) ([4a1eb42](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/4a1eb42ad6a3e90b1ddf60dd9ab3e2352a7f21e4))
+
 ## [0.6.4](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.6.3...v0.6.4) (2026-09-02)
 
 
