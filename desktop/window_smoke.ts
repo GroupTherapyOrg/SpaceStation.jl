@@ -43,15 +43,26 @@ if (BrowserWindow == null) fail("Deno.BrowserWindow is unavailable — run this 
 // and executed script — the whole chain that was silently dead on Windows.
 let saw_beacon: (ua: string) => void
 const beacon = new Promise<string>((resolve) => (saw_beacon = resolve))
+let initial_dpr = 1
+const zoom_reports: number[] = []
 
 const PAGE = `<!doctype html><meta charset="utf-8"><title>SpaceStation window smoke</title>
 <body style="font: 14px system-ui; padding: 2rem">opening…
-<script>fetch("/beacon?ua=" + encodeURIComponent(navigator.userAgent))</script>`
+<script>
+fetch("/beacon?ua=" + encodeURIComponent(navigator.userAgent) + "&dpr=" + devicePixelRatio)
+// The webview's own zoom (issue #66) changes devicePixelRatio and fires resize; report every change.
+addEventListener("resize", () => fetch("/zoom?dpr=" + devicePixelRatio))
+</script>`
 
 const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen: () => {} }, (req) => {
     const url = new URL(req.url)
     if (url.pathname === "/beacon") {
+        initial_dpr = Number(url.searchParams.get("dpr")) || 1
         saw_beacon(url.searchParams.get("ua") ?? "(no user-agent)")
+        return new Response("ok")
+    }
+    if (url.pathname === "/zoom") {
+        zoom_reports.push(Number(url.searchParams.get("dpr")) || 0)
         return new Response("ok")
     }
     return new Response(PAGE, { headers: { "content-type": "text/html; charset=utf-8" } })
@@ -124,6 +135,34 @@ if (Deno.build.os === "windows") {
     } catch (e) {
         fail(`the WebView2 directory ${beside} is not writable: ${e}. On an installed copy this is issue #55.`)
     }
+}
+
+// Zoom on Windows is WebView2's own (issue #66): Ctrl+= / Ctrl+- / Ctrl+0 and Ctrl+wheel are
+// handled by the browser engine as long as nothing in the app swallows them — the pages no longer
+// do, and the host sets nothing on the WebView2 settings object. Prove it with a real keystroke:
+// SendKeys delivers Ctrl+= to the focused window, and a zoom shows up in the page as a changed
+// devicePixelRatio. No change within the budget means the built-in zoom is off or intercepted.
+if (Deno.build.os === "windows") {
+    try {
+        win.focus()
+    } catch {
+        // focus is best-effort; SendKeys goes to the foreground window, which this should already be
+    }
+    await new Promise((r) => setTimeout(r, 1500))
+    const send = new Deno.Command("powershell", {
+        args: ["-NoProfile", "-Command", "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('^=')"],
+        stdout: "null",
+        stderr: "piped",
+    })
+    const sent = await send.output()
+    if (!sent.success) fail(`could not send Ctrl+= to the window: ${new TextDecoder().decode(sent.stderr)}`)
+    const deadline = Date.now() + 15_000
+    while (Date.now() < deadline && !zoom_reports.some((d) => d > initial_dpr * 1.05)) await new Promise((r) => setTimeout(r, 250))
+    const zoomed = zoom_reports.find((d) => d > initial_dpr * 1.05)
+    if (zoomed == null) {
+        fail(`Ctrl+= did not zoom the webview (devicePixelRatio stayed at ${initial_dpr}; reports: ${JSON.stringify(zoom_reports)}) — WebView2's built-in zoom is disabled or intercepted (issue #66).`)
+    }
+    say(`[window-smoke] Ctrl+= zoomed the webview natively: devicePixelRatio ${initial_dpr} → ${zoomed}`)
 }
 
 say("[window-smoke] PASS")

@@ -24,6 +24,8 @@ const objc = (): any | null => {
             msg_ptr_parg: { name: "objc_msgSend", parameters: ["pointer", "pointer", "pointer"], result: "pointer" },
             msg_ptr_u64arg: { name: "objc_msgSend", parameters: ["pointer", "pointer", "u64"], result: "pointer" },
             msg_ptr_i64arg: { name: "objc_msgSend", parameters: ["pointer", "pointer", "i64"], result: "pointer" },
+            msg_ptr_f64arg: { name: "objc_msgSend", parameters: ["pointer", "pointer", "f64"], result: "pointer" },
+            msg_f64: { name: "objc_msgSend", parameters: ["pointer", "pointer"], result: "f64" },
             msg_u64: { name: "objc_msgSend", parameters: ["pointer", "pointer"], result: "u64" },
             msg_void_pp: { name: "objc_msgSend", parameters: ["pointer", "pointer", "pointer", "pointer"], result: "void" },
             msg_void_ppi8: { name: "objc_msgSend", parameters: ["pointer", "pointer", "pointer", "pointer", "i8"], result: "void" },
@@ -179,3 +181,86 @@ export const main_screen_size = (): { width: number; height: number } | null => 
 // fullscreen chrome) was implemented here and deliberately removed: between notch geometry, the
 // overlay stealing the mouse, and unrelated helper windows fooling the detection, it broke more
 // ways than it worked. The deck keeps its strip always visible instead. See git history.
+
+// ---- Native zoom (issue #66) ----
+// The WKWebView is the window's contentView. Its `pageZoom` is WebKit's own page zoom — the
+// engine reflows the whole page, exactly what ⌘= does in Safari — and `allowsMagnification` turns
+// on the native trackpad pinch (a compositor-side magnification WebKit handles itself, so it is
+// smooth on any notebook). Both are plain KVC-settable properties, so they ride the same
+// main-thread trampoline as the title bar tweaks. Whole-window by nature: the deck strip, the hub
+// and the notebook zoom together, like a VS Code or Slack window does.
+
+/** The window's web view, or null when AppKit is unreachable or the view is not a WKWebView. */
+const web_view = (): any | null => {
+    const S = objc()
+    if (S == null) return null
+    const cls = (n: string) => S.objc_getClass(cstr(n))
+    const sel = (n: string) => S.sel_registerName(cstr(n))
+    let found: any = null
+    each_titled_window((S2, w) => {
+        if (found != null) return
+        const view = S2.msg_ptr(w, sel("contentView"))
+        if (view === null) return
+        found = view
+    })
+    if (found === null) return null
+    // `isKindOfClass:` takes a class argument; check by name instead, which needs no extra symbol
+    const name_ptr = S.msg_ptr(S.msg_ptr(found, sel("class")), sel("description"))
+    const utf8 = name_ptr === null ? null : S.msg_ptr(name_ptr, sel("UTF8String"))
+    const name = utf8 === null ? "" : new Deno.UnsafePointerView(utf8).getCString()
+    return name.includes("WKWebView") ? found : null
+}
+
+/** Set WebKit's page zoom (1 = 100%). Also drops any trackpad magnification, so ⌘0 and the
+ *  zoom steps always land on a plain, reflowed page. Returns false when unavailable. */
+export const set_page_zoom = (factor: number): boolean => {
+    try {
+        const S = objc()
+        const view = web_view()
+        if (S == null || view == null || !Number.isFinite(factor) || factor <= 0) return false
+        const cls = (n: string) => S.objc_getClass(cstr(n))
+        const sel = (n: string) => S.sel_registerName(cstr(n))
+        const nsstr = (str: string) => S.msg_ptr_buf(cls("NSString"), sel("stringWithUTF8String:"), cstr(str))
+        const dict = S.msg_ptr(cls("NSMutableDictionary"), sel("dictionary"))
+        const put = (num: unknown, key: string) => S.msg_void_pp(dict, sel("setObject:forKey:"), num, nsstr(key))
+        put(S.msg_ptr_f64arg(cls("NSNumber"), sel("numberWithDouble:"), factor), "pageZoom")
+        put(S.msg_ptr_f64arg(cls("NSNumber"), sel("numberWithDouble:"), 1), "magnification")
+        S.msg_void_ppi8(view, sel("performSelectorOnMainThread:withObject:waitUntilDone:"), sel("setValuesForKeysWithDictionary:"), dict, 1)
+        return true
+    } catch (e) {
+        console.warn("could not set the page zoom:", e)
+        return false
+    }
+}
+
+/** WebKit's current page zoom, or null when unavailable. */
+export const get_page_zoom = (): number | null => {
+    try {
+        const S = objc()
+        const view = web_view()
+        if (S == null || view == null) return null
+        const sel = (n: string) => S.sel_registerName(cstr(n))
+        return S.msg_f64(view, sel("pageZoom"))
+    } catch {
+        return null
+    }
+}
+
+/** Let the trackpad pinch magnify the page natively (WebKit handles the gesture itself). */
+export const enable_magnification = (): boolean => {
+    try {
+        const S = objc()
+        const view = web_view()
+        if (S == null || view == null) return false
+        const cls = (n: string) => S.objc_getClass(cstr(n))
+        const sel = (n: string) => S.sel_registerName(cstr(n))
+        const nsstr = (str: string) => S.msg_ptr_buf(cls("NSString"), sel("stringWithUTF8String:"), cstr(str))
+        const dict = S.msg_ptr(cls("NSMutableDictionary"), sel("dictionary"))
+        S.msg_void_pp(dict, sel("setObject:forKey:"), S.msg_ptr_i64arg(cls("NSNumber"), sel("numberWithLongLong:"), 1n), nsstr("allowsMagnification"))
+        S.msg_void_ppi8(view, sel("performSelectorOnMainThread:withObject:waitUntilDone:"), sel("setValuesForKeysWithDictionary:"), dict, 1)
+        return true
+    } catch (e) {
+        console.warn("could not enable trackpad magnification:", e)
+        return false
+    }
+}
