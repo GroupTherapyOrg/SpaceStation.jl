@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.6.1...v0.6.2) (2026-09-02)
+
+
+### Bug Fixes
+
+* a short label for the notebook-environment terminal menu item, with the detail on hover ([#83](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/83)) ([c37a4f3](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/c37a4f3d7e6ec72570e52adf86025668615ace5d))
+
 ## [0.6.1](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.6.0...v0.6.1) (2026-09-02)
 
 
