@@ -152,12 +152,37 @@ if (Deno.build.os === "windows") {
 // to change. The keys the page saw are printed either way, so a failure says whether the keystroke
 // arrived and was ignored, or never arrived.
 if (Deno.build.os === "windows") {
+    // The window handle, the way the icon setter gets it: the runtime's native handle when it
+    // answers, else FindWindowW by the title we set. Passed to the script as a number — a title
+    // lookup from inside PowerShell did not find the window on the runner.
+    let hwnd = 0n
+    try {
+        const raw = (win as any)?.getNativeWindow?.()
+        if (typeof raw === "bigint" || typeof raw === "number") hwnd = BigInt(raw)
+    } catch {
+        // fall through
+    }
+    if (hwnd === 0n) {
+        const user32 = Deno.dlopen("user32.dll", { FindWindowW: { parameters: ["buffer", "buffer"], result: "pointer" } })
+        const wide = (str: string) => {
+            const buf = new Uint16Array(str.length + 1)
+            for (let i = 0; i < str.length; i++) buf[i] = str.charCodeAt(i)
+            return new Uint8Array(buf.buffer)
+        }
+        for (let attempt = 0; attempt < 4 && hwnd === 0n; attempt++) {
+            if (attempt > 0) await new Promise((r) => setTimeout(r, 1000))
+            const p = user32.symbols.FindWindowW(null, wide("SpaceStation window smoke"))
+            if (p != null) hwnd = BigInt(Deno.UnsafePointer.value(p))
+        }
+        user32.close()
+    }
+    say(`[window-smoke] window handle: ${hwnd}`)
+    if (hwnd === 0n) fail("no window handle to send the zoom keystroke to")
     const script = `
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type @"
 using System; using System.Runtime.InteropServices;
 public static class Native {
-  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindowW(string cls, string title);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
@@ -165,8 +190,8 @@ public static class Native {
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L; public int T; public int R; public int B; }
 }
 "@
-$h = [Native]::FindWindowW($null, "SpaceStation window smoke")
-if ($h -eq [IntPtr]::Zero) { Write-Error "window not found by title"; exit 2 }
+$h = [IntPtr]::new([Int64]${hwnd})
+if ($h -eq [IntPtr]::Zero) { Write-Error "no window handle"; exit 2 }
 [Native]::SetForegroundWindow($h) | Out-Null
 Start-Sleep -Milliseconds 300
 $r = New-Object Native+RECT
