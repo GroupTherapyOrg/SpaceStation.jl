@@ -21,6 +21,16 @@
 '    FindRelatedProducts / RemoveExistingProducts makes it a proper major upgrade. UpgradeCode is
 '    left alone: it is the stable identity tying releases together.
 '
+' 3. PACKAGE CODE (issue #57). Every build also ships the SAME Package Code - the summary stream's
+'    Revision Number (PID_REVNUMBER, property 9). Windows Installer identifies an .msi FILE by that
+'    GUID and caches the file under %WINDIR%\Installer: a package whose code matches an installed
+'    product's cached package is assumed to BE that file, so installing the newer .msi ran the OLD
+'    cached package - maintenance mode on the old ProductCode, "Windows Installer reconfigured the
+'    product ... version 0.4.7", failing 1603 in the rollback registry. The fresh ProductCode and
+'    the Upgrade table never got a chance to matter. A fresh Package Code per stamp makes each
+'    release a distinct file, which is when FindRelatedProducts / RemoveExistingProducts run and the
+'    major upgrade actually replaces the old install.
+'
 '   cscript //nologo stamp_msi.vbs dist\SpaceStation.msi 0.4.8 icons\spacestation.ico
 '
 ' VBScript, not PowerShell, on purpose. This drives the WindowsInstaller COM automation layer, whose
@@ -33,7 +43,7 @@ Option Explicit
 
 Const msiOpenDatabaseModeTransact = 1
 
-Dim installer, db, msiPath, versionArg, productVersion, productCode, upgradeCode
+Dim installer, db, msiPath, versionArg, productVersion, productCode, packageCode, upgradeCode
 
 If WScript.Arguments.Count < 2 Then
     WScript.Echo "usage: cscript //nologo stamp_msi.vbs <path-to-msi> <version>"
@@ -63,7 +73,8 @@ If upgradeCode = "" Then
     WScript.Echo "this .msi has no UpgradeCode - refusing to stamp an installer with no stable identity"
     WScript.Quit 1
 End If
-productCode = "{" & UCase(Mid(CreateObject("Scriptlet.TypeLib").Guid, 2, 36)) & "}"
+productCode = NewGuid()
+packageCode = NewGuid()
 
 RunSQL "UPDATE `Property` SET `Value`='" & productVersion & "' WHERE `Property`='ProductVersion'"
 RunSQL "UPDATE `Property` SET `Value`='" & productCode & "' WHERE `Property`='ProductCode'"
@@ -118,16 +129,25 @@ RunSQL "INSERT INTO `Property` (`Property`, `Value`) VALUES ('MSIINSTALLPERUSER'
 ' Word Count bit 3 (value 8) in the summary stream declares that elevated privileges are not
 ' required. Without it Windows Installer still treats the package as one that may need machine-wide
 ' access, which is the other half of the HKLM rollback failure above.
-Dim sumInfo, wordCount
+' The summary stream is opened with room for two property updates (the count is the maximum
+' number of properties that may be changed before Persist). Both go in here; the object is
+' released right after, because a live SummaryInformation keeps the .msi open in transact mode
+' and the read-back verification below could not open the file while it was alive - the verify
+' stage had been dying on OpenDatabase for exactly that reason, silently, with its checks unrun.
+Dim sumInfo, wordCount, oldPackageCode
 Set sumInfo = db.SummaryInformation(2)
 wordCount = sumInfo.Property(15)
 If (wordCount And 8) = 0 Then
     sumInfo.Property(15) = wordCount Or 8
-    sumInfo.Persist
     WScript.Echo "summary: set 'elevated privileges not required' (word count " & wordCount & " -> " & (wordCount Or 8) & ")"
 Else
     WScript.Echo "summary: 'elevated privileges not required' already set"
 End If
+oldPackageCode = sumInfo.Property(9)
+sumInfo.Property(9) = packageCode
+sumInfo.Persist
+Set sumInfo = Nothing
+WScript.Echo "summary: PackageCode " & oldPackageCode & " -> " & packageCode
 
 ' ---- Shortcut + Add/Remove Programs icon (issue #63) ----
 ' The packager embeds no icon in the exe, so the Start Menu shortcut and the Programs list show
@@ -153,6 +173,8 @@ If WScript.Arguments.Count >= 3 Then
     iview.Close
     CheckError "Icon table stream insert (" & icoPath & ")"
     On Error GoTo 0
+    Set irec = Nothing
+    Set iview = Nothing
     RunSQL "UPDATE `Shortcut` SET `Icon_`='spacestation.ico'"
     TryRunSQL "DELETE FROM `Property` WHERE `Property`='ARPPRODUCTICON'"
     RunSQL "INSERT INTO `Property` (`Property`, `Value`) VALUES ('ARPPRODUCTICON', 'spacestation.ico')"
@@ -166,20 +188,37 @@ Set installer = Nothing
 ' shipped an .msi still declaring 0.1.0 and still installing into Program Files. So reopen the file
 ' read-only and read the values back. If they did not persist, fail here, where the reason is
 ' visible, rather than three steps later in an install test.
-Dim verifier, vdb, gotVersion, gotAllUsers, gotParent
+Dim verifier, vdb, vsum, gotVersion, gotAllUsers, gotParent, gotIcon, gotProductCode, gotPackageCode
 Set verifier = CreateObject("WindowsInstaller.Installer")
+On Error Resume Next
 Set vdb = verifier.OpenDatabase(msiPath, 0)  ' 0 = read-only
+If Err <> 0 Then
+    WScript.Echo "FAILED: could not reopen " & msiPath & " to verify the stamp: " & Err.Description
+    WScript.Quit 1
+End If
+On Error GoTo 0
 gotVersion = ReadOne(vdb, "SELECT `Value` FROM `Property` WHERE `Property`='ProductVersion'")
+gotProductCode = ReadOne(vdb, "SELECT `Value` FROM `Property` WHERE `Property`='ProductCode'")
 gotAllUsers = ReadOne(vdb, "SELECT `Value` FROM `Property` WHERE `Property`='ALLUSERS'")
 gotParent = ReadOne(vdb, "SELECT `Directory_Parent` FROM `Directory` WHERE `Directory`='INSTALLDIR'")
+gotIcon = ReadOne(vdb, "SELECT `Icon_` FROM `Shortcut`")
+Set vsum = vdb.SummaryInformation(0)
+gotPackageCode = vsum.Property(9)
+Set vsum = Nothing
 Set vdb = Nothing
 Set verifier = Nothing
 
-Dim gotIcon
-gotIcon = ReadOne(vdb, "SELECT `Icon_` FROM `Shortcut`")
-WScript.Echo "verify: ProductVersion=" & gotVersion & " ALLUSERS=[" & gotAllUsers & "] (2 = per-user) INSTALLDIR parent=" & gotParent & " shortcut icon=[" & gotIcon & "]"
+WScript.Echo "verify: ProductVersion=" & gotVersion & " ProductCode=" & gotProductCode & " PackageCode=" & gotPackageCode & " ALLUSERS=[" & gotAllUsers & "] (2 = per-user) INSTALLDIR parent=" & gotParent & " shortcut icon=[" & gotIcon & "]"
 If gotVersion <> productVersion Then
     WScript.Echo "FAILED: ProductVersion did not persist (wanted " & productVersion & ", file says " & gotVersion & ")"
+    WScript.Quit 1
+End If
+If gotProductCode <> productCode Then
+    WScript.Echo "FAILED: ProductCode did not persist (wanted " & productCode & ", file says " & gotProductCode & ")"
+    WScript.Quit 1
+End If
+If gotPackageCode <> packageCode Then
+    WScript.Echo "FAILED: PackageCode did not persist (wanted " & packageCode & ", file says " & gotPackageCode & ") - Windows would keep treating this file as the cached old package (#57)"
     WScript.Quit 1
 End If
 If WScript.Arguments.Count >= 3 And gotIcon <> "spacestation.ico" Then
@@ -190,8 +229,13 @@ If gotParent <> "LocalAppDataFolder" Then
     WScript.Echo "FAILED: INSTALLDIR still parented to " & gotParent & " - the per-user retarget did not persist"
     WScript.Quit 1
 End If
-WScript.Echo "stamped: ProductVersion=" & productVersion & " ProductCode=" & productCode & " UpgradeCode=" & upgradeCode
+WScript.Echo "stamped: ProductVersion=" & productVersion & " ProductCode=" & productCode & " PackageCode=" & packageCode & " UpgradeCode=" & upgradeCode
 WScript.Echo "retargeted: per-user install under LocalAppDataFolder (was per-machine Program Files)"
+
+' A fresh, braced, upper-case GUID - the form every MSI identity column expects.
+Function NewGuid()
+    NewGuid = "{" & UCase(Mid(CreateObject("Scriptlet.TypeLib").Guid, 2, 36)) & "}"
+End Function
 
 Function ReadOne(database, sql)
     Dim view, rec
