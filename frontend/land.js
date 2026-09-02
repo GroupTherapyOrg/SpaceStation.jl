@@ -1913,12 +1913,12 @@ const Land = () => {
                                                   if (active_notebook_tab) new_terminal({ label: `env: ${basename(active_notebook_tab.path)}`, notebook_env: active_notebook_tab.id })
                                               }}
                                           >
-                                              ⌨ Open env in terminal
+                                              <span class="menu-icon terminal"></span>Open env in terminal
                                           </button>
                                           <button class="header-menu-item danger" role="menuitem" onClick=${() => {
                                               set_menu_open(false)
                                               shutdown_server()
-                                          }}>⏻ Shut down server</button>
+                                          }}><span class="menu-icon power"></span>Shut down server</button>
                                       </div>`
                                     : null}
                             </div>
