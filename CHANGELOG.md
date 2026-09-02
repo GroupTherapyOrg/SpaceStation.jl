@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.4](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.6.3...v0.6.4) (2026-09-02)
+
+
+### Bug Fixes
+
+* take the server's access secret from the server itself, never from a stale connection file ([#87](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/87)) ([8c829d3](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/8c829d3360ab3430acd9f22b7044f4e0d91a71ed))
+
 ## [0.6.3](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.6.2...v0.6.3) (2026-09-02)
 
 
