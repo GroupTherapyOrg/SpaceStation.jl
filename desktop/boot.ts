@@ -33,6 +33,9 @@ export class SpaceStationServer {
     state: BootState = { phase: "idle", detail: "", log: [], url: null, port: null }
     private child: Running | null = null
     private stopping = false
+    /** This server's access secret, once known. Set from the server's own startup line (the
+     *  "Go to http://…?secret=…" it prints) — the one source that cannot belong to another process. */
+    private secret: string | null = null
     onchange: (() => void) | null = null
 
     private set(phase: Phase, detail: string) {
@@ -43,6 +46,13 @@ export class SpaceStationServer {
 
     private log_line(line: string) {
         if (line.trim() === "") return
+        // The server announces its own address, secret included, once it is listening. Take the
+        // secret from there: it is printed by the very process we spawned, so unlike a scan of the
+        // connection-file directory it can never be another run's (see resolve_secret).
+        if (this.secret == null && this.state.port != null) {
+            const m = line.match(new RegExp(`:${this.state.port}/[^\\s]*[?&]secret=([A-Za-z0-9_-]+)`))
+            if (m?.[1]) this.secret = m[1]
+        }
         this.state.log.push(line)
         if (this.state.log.length > LOG_LINES) this.state.log.splice(0, this.state.log.length - LOG_LINES)
         // First-run `Pkg.add`/precompile is the long pole; surface it as its own phase so the
@@ -161,19 +171,71 @@ export class SpaceStationServer {
         return port
     }
 
-    /** SpaceStation writes a connection file per server (port + access secret) exactly so external
-     *  tools can find it — flat JSON in the state dir, keyed `<node>-<port>.json`. */
-    read_secret(port: number): string | null {
+    /** The connection files that claim this port, best first. SpaceStation writes one per server —
+     *  flat JSON in the state dir, keyed `<node>-<port>.json`, carrying the writer's pid and secret —
+     *  and never learns to clean up after a crash, while a Mac's hostname changes with the network
+     *  (VPN, LAN, home), so the same port collects files under several hostnames, each holding a
+     *  dead secret. The old lookup took whichever sorted first; a stale one won and the Launcher
+     *  landed on "Not yet authenticated" (issue #66's thread), and no reinstall could clear it since
+     *  the files live in ~/.local/state. Order now: the file our own child wrote (matching pid), then
+     *  the current hostname's file, then everything else newest first — and the caller verifies. */
+    registry_candidates(port: number, pid: number | null): string[] {
         const home = home_dir()
         const dir = `${Deno.env.get("XDG_STATE_HOME") ?? `${home}/.local/state`}/pluto/servers`
+        // the server tags files with gethostname(), sanitized the same way (CollabAPI._registry_node);
+        // reading the hostname is a permission the packaged app may not hold — then no file gets that rank
+        const node = (() => {
+            try {
+                return Deno.hostname().replace(/[^A-Za-z0-9._-]/g, "_")
+            } catch {
+                return null
+            }
+        })()
+        const found: { secret: string; rank: number; mtime: number }[] = []
         try {
             for (const entry of Deno.readDirSync(dir)) {
                 if (!entry.name.endsWith(`-${port}.json`)) continue
-                const parsed = JSON.parse(Deno.readTextFileSync(`${dir}/${entry.name}`))
-                if (typeof parsed.secret === "string") return parsed.secret
+                try {
+                    const path = `${dir}/${entry.name}`
+                    const parsed = JSON.parse(Deno.readTextFileSync(path))
+                    if (typeof parsed.secret !== "string") continue
+                    const rank = pid != null && parsed.pid === pid ? 0 : node != null && entry.name === `${node}-${port}.json` ? 1 : 2
+                    found.push({ secret: parsed.secret, rank, mtime: Deno.statSync(path).mtime?.getTime() ?? 0 })
+                } catch {
+                    // unreadable or half-written — skip it
+                }
             }
         } catch {
-            // no registry (yet) — the caller falls back to an unauthenticated URL check
+            // no registry (yet)
+        }
+        found.sort((a, b) => a.rank - b.rank || b.mtime - a.mtime)
+        return [...new Set(found.map((f) => f.secret))]
+    }
+
+    /** Does this secret open this server? One authenticated request, so the app never navigates
+     *  the window to a secret it has not seen work. */
+    async secret_works(port: number, secret: string): Promise<boolean> {
+        try {
+            const res = await fetch(`http://127.0.0.1:${port}/api/v1/config?secret=${encodeURIComponent(secret)}`, { signal: AbortSignal.timeout(2000) })
+            await res.body?.cancel()
+            return res.ok
+        } catch {
+            return false
+        }
+    }
+
+    /** The secret to use for `port`: the one the server printed, else the first connection-file
+     *  candidate that actually works. Null when nothing does (the caller then navigates without one,
+     *  which the server may allow when it does not require a secret). */
+    async resolve_secret(port: number): Promise<string | null> {
+        // the announcement is printed right after the server starts answering /ping — give it a beat
+        for (let i = 0; i < 30 && this.secret == null; i++) await new Promise((r) => setTimeout(r, 100))
+        if (this.secret != null && (await this.secret_works(port, this.secret))) return this.secret
+        for (const candidate of this.registry_candidates(port, this.child?.pid ?? null)) {
+            if (await this.secret_works(port, candidate)) {
+                this.secret = candidate
+                return candidate
+            }
         }
         return null
     }
@@ -240,6 +302,7 @@ export class SpaceStationServer {
         const { project, managed } = this.resolve_project()
         const port = this.pick_port()
         this.state.port = port
+        this.secret = null
         // `julia +channel` is juliaup's version selector — it only means something to the shim
         // (the user's ~/.juliaup launcher, or our vendored portable one).
         const use_channel = channel != null && (julia.includes(".juliaup") || julia.includes("juliaup-portable"))
@@ -306,7 +369,8 @@ export class SpaceStationServer {
                 const res = await fetch(`http://127.0.0.1:${port}/ping`, { signal: AbortSignal.timeout(1000) })
                 await res.body?.cancel()
                 if (res.ok) {
-                    const secret = this.read_secret(port)
+                    const secret = await this.resolve_secret(port)
+                    if (secret == null) this.log_line("warning: no working access secret found for this server — the Launcher may ask for one")
                     // ?desktop=1 tells the hub SYNCHRONOUSLY that it's inside the desktop shell
                     // (the server env flag arrives too, but only after an async config fetch)
                     this.state.url = `http://127.0.0.1:${port}/?${secret ? `secret=${secret}&` : ""}desktop=1`
@@ -342,7 +406,7 @@ export class SpaceStationServer {
 
         const port = this.state.port
         if (port != null) {
-            const secret = this.read_secret(port)
+            const secret = this.secret ?? this.registry_candidates(port, child.pid)[0] ?? null
             try {
                 const res = await fetch(`http://127.0.0.1:${port}/api/v1/shutdown${secret == null ? "" : `?secret=${encodeURIComponent(secret)}`}`, {
                     method: "POST",

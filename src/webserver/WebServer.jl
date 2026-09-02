@@ -172,8 +172,10 @@ function run!(session::ServerSession)
     # remember the actual port (it may have been auto-chosen) so e.g. the connection file can be rewritten when the workspace changes at runtime
     session.options.server.port = port
 
-    # connection file: lets external tools (e.g. coding agents) discover this server's port and secret
-    write_collab_registry_file(session, port)
+    # connection file: lets external tools (e.g. coding agents) discover this server's port and secret.
+    # Keep the path: the name carries the hostname, which can change while we run (VPN on/off), and
+    # shutdown must remove the file we wrote, not the one today's hostname would name.
+    registry_file = write_collab_registry_file(session, port)
     # agent surface: put `pluto-collab` on PATH next to the app, and (opt-in) seed the workspace's AGENTS.md
     ensure_pluto_collab_installed()
     maybe_write_agents_md(session)
@@ -181,6 +183,10 @@ function run!(session::ServerSession)
     on_shutdown() = @sync begin
         # Triggered by HTTP.jl
         @info("\nClosing SpaceStation... Restart Julia for a fresh session. \n\nHave a nice day! 🎈🏝\n\n")
+        try
+            isfile(registry_file) && rm(registry_file)
+        catch
+        end
         remove_collab_registry_file(port)
         # tear down any SSH remote tunnels so the `ssh -N -L` children don't orphan onto the terminal
         try
