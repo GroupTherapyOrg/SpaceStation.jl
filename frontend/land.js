@@ -296,11 +296,16 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
     const cancelled_hosts = useRef(/** @type {Set<String>} */ (new Set()))
     const cancelled_paths = useRef(/** @type {Set<String>} */ (new Set()))
 
+    // The lists on this page come from things that change underneath a running app: ~/.ssh/config
+    // (a cluster launcher adding hosts), folders appearing on disk, servers starting elsewhere. They
+    // used to be read once at load, so a new host or folder meant relaunching the app. Now every
+    // source is re-read when the window regains focus or becomes visible again — the moment after
+    // you did something in another app — on a slow interval while the page is shown, and on demand
+    // from the refresh buttons in the section headers. (Running workspaces have their own 3s poll.)
+    const load_ssh_hosts = useCallback(() => get_json("./api/v1/ssh_hosts").then(set_ssh_hosts).catch(() => {}), [])
     useEffect(() => {
-        get_json("./api/v1/ssh_hosts")
-            .then(set_ssh_hosts)
-            .catch(() => {})
-    }, [])
+        load_ssh_hosts()
+    }, [load_ssh_hosts])
 
     // The SSH connect timeout is a homebase setting. The server resets it to its default on restart, so
     // push our stored value on load and whenever it changes (and persist it locally for next time).
@@ -458,7 +463,9 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
         }
     }, [])
 
+    const browsed_path = useRef(/** @type {String?} */ (null))
     const browse = useCallback(async (path) => {
+        browsed_path.current = path
         try {
             set_listing(await get_json(path == null ? "./api/v1/browse" : `./api/v1/browse?path=${encodeURIComponent(path)}`))
             set_error(null)
@@ -470,6 +477,40 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
     useEffect(() => {
         browse(null)
     }, [])
+
+    const [refreshing, set_refreshing] = useState(false)
+    const refresh_sources = useCallback(async () => {
+        set_refreshing(true)
+        try {
+            await Promise.all([load_ssh_hosts(), browse(browsed_path.current)])
+        } finally {
+            // keep the spin visible long enough to register as feedback
+            setTimeout(() => set_refreshing(false), 400)
+        }
+    }, [load_ssh_hosts, browse])
+    useEffect(() => {
+        const on_focus = () => {
+            if (document.visibilityState === "visible") void refresh_sources()
+        }
+        window.addEventListener("focus", on_focus)
+        document.addEventListener("visibilitychange", on_focus)
+        const iv = setInterval(() => {
+            if (document.visibilityState === "visible") void refresh_sources()
+        }, 10_000)
+        return () => {
+            window.removeEventListener("focus", on_focus)
+            document.removeEventListener("visibilitychange", on_focus)
+            clearInterval(iv)
+        }
+    }, [refresh_sources])
+    const refresh_button = html`<button
+        class="row-action h2-action refresh ${refreshing ? "spinning" : ""}"
+        title="Refresh: re-read the folders on disk and the hosts in ~/.ssh/config"
+        aria-label="Refresh"
+        onClick=${() => void refresh_sources()}
+    >
+        <span class="refresh-icon"></span>
+    </button>`
 
     const recent = get_recent_workspaces()
 
@@ -545,7 +586,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
                 : null}
 
             <section>
-                <h2>Browse</h2>
+                <h2>Browse ${refresh_button}</h2>
                 ${listing == null
                     ? html`<p class="subtitle">loading…</p>`
                     : html`
@@ -587,7 +628,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
             </section>
             ${!tunneled && ssh_hosts.length > 0
                 ? html`<section>
-                      <h2>SSH Remotes</h2>
+                      <h2>SSH Remotes ${refresh_button}</h2>
                       <p class="subtitle small">
                           Click a host: the whole Land (files, kernels, terminal) runs on that machine over an SSH tunnel. First contact installs the
                           server there; after that it reconnects instantly.
