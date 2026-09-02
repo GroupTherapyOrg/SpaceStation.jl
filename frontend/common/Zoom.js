@@ -1,20 +1,30 @@
-// Notebook zoom for the desktop app (issue #66), take two.
+// Notebook zoom for the desktop app (issue #66).
 //
-// The first version applied page zoom to EVERY document, which scaled the hub chrome, the
-// sidebar and the terminal along with the notebook — in a browser those live in other tabs, so
-// real browser zoom never feels like that — and it did nothing about scroll position, so the
-// view lurched on every step. This version matches what zooming a standalone notebook tab in a
-// real browser gives you:
+// The desktop shell is a bare webview: no browser chrome, so none of Cmd/Ctrl+`=`/`-`/`0`,
+// Ctrl+wheel or trackpad pinch existed. This module gives the NOTEBOOK document (the editor page,
+// which is its own frame inside the workspace) the zoom a standalone notebook tab gets in a
+// browser, and nothing else: the hub — sidebar, tabs, terminal — stays at 100%, like browser
+// chrome does. Zoom.js is imported by editor.js only.
 //
-//   * SCOPED: only the notebook (editor) document zooms. The hub — sidebar, tabs, terminal —
-//     stays at 100%, like browser chrome does. Zoom.js is imported by editor.js only.
-//   * ENGINE LAYOUT, NOT REINVENTED SCALING: the CSS `zoom` property on the notebook root is the
-//     engine's own zoom implementation — lengths scale, the content reflows to the viewport.
-//   * ANCHORED: browsers keep the visible content stable when zoom changes; CSS `zoom` alone
-//     does not, so the scroll position is corrected to keep the viewport CENTER on the same
-//     content, every step, exactly the anchoring a browser does.
-//   * PER ORIGIN: remembered per workspace (each workspace is its own origin), like per-site
-//     zoom in a browser; same-origin editor frames follow live through `storage` events.
+//   * ENGINE LAYOUT, NOT REINVENTED SCALING. The CSS `zoom` property (CSS Viewport Module Level 1;
+//     Chromium, WebKit and Gecko all ship it) is the engine's own layout-affecting zoom: every
+//     absolute length is pre-multiplied, the content reflows to the viewport. The property lives
+//     on <body>, whose `width: auto` still fills the viewport at every factor, so the page reflows
+//     to the window exactly like browser zoom does. (The spec: "The zoom property has no effect on
+//     <length> property values with computed values that are auto or <percentage>." That is also
+//     why earlier versions' `width: calc(100% / z)` compensation was wrong — a percentage is NOT
+//     scaled back up by zoom, so the compensated body only ever covered 1/z of the window,
+//     leaving a growing empty band on the right when zooming in and an over-wide, clipped page
+//     that shifted sideways when zooming out.)
+//   * NOT THE DOCUMENT ROOT. Zooming <html> puts the scrolling element itself under zoom, and
+//     WebKit then reports scroll offsets and rects in different coordinate spaces; with the zoom on
+//     <body> the scroller stays unzoomed and every scroll primitive keeps working.
+//   * ANCHORED. Browsers keep the content you were looking at in place when zoom changes; CSS
+//     `zoom` alone does not. The cell under the viewport's center is kept under the center through
+//     every step, using the engine's own hit-testing and rect reporting so it holds in both WebKit
+//     and Chromium, whose rect conventions under zoom differ.
+//   * PER ORIGIN: remembered per workspace (each workspace is its own origin), like per-site zoom
+//     in a browser; same-origin editor frames follow live through `storage` events.
 //
 // Desktop-only by the server signal (/api/v1/config desktop:true): in a real browser this module
 // applies a stored zoom and otherwise stays inert, so it never fights the browser's own zoom.
@@ -36,34 +46,68 @@ export const get_zoom = () => {
     }
 }
 
-/** Apply the zoom AND keep the content at the viewport's center where it was.
- *
- *  The zoom goes on the notebook's <main> container, NOT the document root. Root-level zoom is
- *  the cursed path in WebKit: scroll coordinates and even the engine's own scrollIntoView
- *  mis-compute under it (both were measured drifting ~6000px in the key-event probe). Zooming a
- *  container with compensated width — zoom: z; width: calc(100%/z) — reflows the content to the
- *  viewport exactly like browser zoom, while the document scroller stays unzoomed and every
- *  scroll primitive keeps working. It also scopes tighter: the editor's own header stays 100%.
- */
-// BODY, not <main>: main is a flex item with its own max-width and centering, and compensating a
-// capped, centered element re-centers the shrunken layout box and clips the visual overflow behind
-// body's overflow-x:hidden — v0.5.1 shipped exactly that (content shoved sideways, right side
-// unreachable). body has margin:0 and is the page container: compensated body reflows the whole
-// page to the viewport at every step, header included — which is precisely what browser zoom does
-// to a standalone notebook tab.
+/** The zoom currently applied to the page (what the DOM says, not what storage says). */
+const applied_zoom = () => {
+    const z = Number(document.body?.style.zoom)
+    return Number.isFinite(z) && z > 0 ? z : 1
+}
+
 const apply = (z) => {
     const el = document.body
     if (!(el instanceof HTMLElement)) return
     el.style.zoom = z === 1 ? "" : String(z)
-    el.style.width = z === 1 ? "" : `calc(100% / ${z})`
+    // width stays `auto` — see the header: auto fills the viewport at every factor, percentages do not
+    el.style.width = ""
 }
 
+/** Document-space rect of `el` (top relative to the document, in the unzoomed scroller's pixels),
+ *  whichever convention the engine uses for rects under `zoom`. The spec says getBoundingClientRect
+ *  returns scaled lengths (Chromium: plain viewport pixels); WebKit divides sizes AND the document
+ *  position by the element's zoom while the scroll offset it subtracts stays unzoomed, so its client
+ *  `top` is `doc_top / z - scrollTop`. Working in document space (`top + scrollTop`) makes both a
+ *  single scale factor away from the truth, and the body calibrates that factor: its layout width IS
+ *  the viewport width, so the width it reports tells us what the engine divides by. */
+const doc_rect = (el) => {
+    const scroll_top = document.scrollingElement?.scrollTop ?? 0
+    const bw = document.body.getBoundingClientRect().width
+    const k = bw > 0 ? bw / window.innerWidth : 1
+    const r = el.getBoundingClientRect()
+    return { top: (r.top + scroll_top) / k, height: r.height / k }
+}
+
+/** The cell under the viewport's center row (a few x positions, so a narrow or off-center layout
+ *  still finds one); never a page-level container, whose "center" is meaningless. */
+const anchor_cell = () => {
+    const y = window.innerHeight / 2
+    for (const fx of [0.5, 0.35, 0.65, 0.2, 0.8]) {
+        const hit = document.elementFromPoint(window.innerWidth * fx, y)
+        const cell = hit?.closest?.("pluto-cell")
+        if (cell != null) return cell
+    }
+    return null
+}
+
+/** Apply the zoom AND keep the content at the viewport's center where it was. */
 const apply_anchored = (z) => {
-    // remember the element at the viewport center, let the engine re-center it afterwards
-    let anchor = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2)
-    if (anchor != null && (anchor === document.documentElement || anchor === document.body || anchor.closest?.("#zoom-indicator") != null)) anchor = null
+    const previous = applied_zoom()
+    const se = document.scrollingElement
+    const cy = window.innerHeight / 2
+    const anchor = anchor_cell()
+    // where inside the anchor the center line falls, as a fraction, so a tall cell stays put too
+    let fraction = 0
+    if (anchor != null && se != null) {
+        const r0 = doc_rect(anchor)
+        fraction = r0.height > 0 ? (se.scrollTop + cy - r0.top) / r0.height : 0
+    }
     apply(z)
-    anchor?.scrollIntoView({ block: "center", inline: "nearest" })
+    if (se == null) return
+    if (anchor != null) {
+        const r1 = doc_rect(anchor)
+        se.scrollTop = r1.top + fraction * r1.height - cy
+    } else if (previous !== z) {
+        // nothing anchorable under the center (the header, an empty page): scale the scroll offset
+        se.scrollTop = (se.scrollTop + cy) * (z / previous) - cy
+    }
 }
 
 // ---- the indicator, which doubles as the mouse-only control (− % +), browser-style ----
@@ -94,6 +138,8 @@ const update_indicator = (z, flash) => {
         document.body.appendChild(made)
         el = made
     }
+    // the control is chrome, not content: nested zoom multiplies, so 1/z keeps it at 100%
+    el.style.zoom = z === 1 ? "" : String(1 / z)
     const reset = el.querySelector(".zoom-reset")
     if (reset != null) reset.textContent = `${Math.round(z * 100)}%`
     clearTimeout(indicator_timer)
