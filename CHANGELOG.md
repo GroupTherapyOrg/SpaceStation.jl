@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.1](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.7.0...v0.7.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* a notebook tab whose session ended no longer opens the whole workspace inside itself ([887d581](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/887d581215a3f4a977203955a484638b4d68f1a0))
+* a remote tunnel no longer fails against a healthy host because its local port was taken ([acac767](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/acac76709e501ac126e1102161037c80dfb5250f))
+* desktop PDF export on Windows opens the notebook authenticated ([daa43b2](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/daa43b2ec5517dba13cc85327fab988f4004ec1b))
+* saved notebooks keep the upstream Pluto version line instead of SpaceStation's ([5e0a2a0](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/5e0a2a0ec54148f4b8f2a2106491c4e714767bc1))
+* support Julia 1.13 ([4bb6e9f](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/4bb6e9f178c0ef4aba943356f9bda5895b525624))
+* the desktop Julia picker can follow juliaup's default channel ([7989ad0](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/7989ad0c3e456277582cf8e451c30a2e2888568d))
+
 ## [0.7.0](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.6.4...v0.7.0) (2026-09-02)
 
 
