@@ -845,6 +845,43 @@ import Memoize: @memoize
         cleanup(🍭, notebook)
     end
 
+    # Julia 1.13 made `@doc` return the documented value instead of a `Docs.Binding`; PlutoRunner
+    # re-derives the binding from the cell's expression. The detection runs on every version, so it
+    # is pinned here on every version — the rendering itself is covered by "Doc strings" below.
+    @testset "Doc binding from a @doc expression" begin
+        name(code) = PlutoRunner.doc_macrocall_binding_name(Meta.parse(code))
+        @test name("\"d\"\nf(x) = 1") === :f
+        @test name("\"d\"\nfunction g(x::Int) where {T} end") === :g
+        @test name("\"d\"\nstruct S end") === :S
+        @test name("\"d\"\nmutable struct M{T} <: Any end") === :M
+        @test name("\"d\"\nabstract type A{T} <: Any end") === :A
+        @test name("\"d\"\nprimitive type P 8 end") === :P
+        @test name("\"d\"\nconst c = 1") === :c
+        @test name("\"d\"\nmodule Mod end") === :Mod
+        @test name("\"d\"\nBase.conj() = 1") === :conj   # qualified: the rightmost name
+        @test name("\"d\"\nmacro foo() end") === Symbol("@foo") # a macro's binding is `@foo`, not `foo`
+        # Pluto wraps cell code in a :toplevel/:block; the wrapper is peeled
+        @test PlutoRunner.doc_macrocall_binding_name(Expr(:toplevel, LineNumberNode(1), Meta.parse("\"d\"\nh() = 1"))) === :h
+        # anything that is not a lone @doc call is left alone
+        @test name("f(x) = 1") === nothing
+        @test name("\"d\"\nf(x) = 1; g() = 2") === nothing
+        @test name("@doc") === nothing
+
+        # the rewrap: a Binding comes back as-is; on 1.13+ the documented name is re-wrapped, an
+        # exception or an unknown name is not
+        m = Module()
+        Core.eval(m, :(f(x) = 1))
+        expr = Meta.parse("\"d\"\nf(x) = 1")
+        b = Docs.Binding(m, :f)
+        @test PlutoRunner.maybe_rewrap_as_doc_binding(b, expr, m) === b
+        ex = CapturedException(ErrorException("x"), [])
+        @test PlutoRunner.maybe_rewrap_as_doc_binding(ex, expr, m) === ex
+        @test PlutoRunner.maybe_rewrap_as_doc_binding(getfield(m, :f), Meta.parse("\"d\"\nnope(x) = 1"), m) === getfield(m, :f)
+        if VERSION >= v"1.13.0-DEV"
+            @test PlutoRunner.maybe_rewrap_as_doc_binding(getfield(m, :f), expr, m) == b
+        end
+    end
+
     @testset "Doc strings" begin
         notebook = Notebook(Cell.([
             "x = 1",
