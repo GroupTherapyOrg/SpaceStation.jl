@@ -989,12 +989,34 @@ all patches: ${JSON.stringify(patches, null, 1)}
             if (hopeless) {
                 // https://github.com/fonsp/Pluto.jl/issues/55
                 // https://github.com/fonsp/Pluto.jl/issues/2398
+                // Inside the SpaceStation workspace this editor is a tab's iframe, and "./" serves the Land
+                // hub — "Go back" rendered the whole workspace nested inside the tab (the logo below
+                // guards against the same thing). Embedded, the way back is closing the tab.
+                // `frameElement` is non-null only for a SAME-origin parent, i.e. a Land of this server;
+                // a foreign page embedding the editor keeps the plain link (a message to it would go nowhere).
+                const embedded = (() => {
+                    try {
+                        return window.frameElement != null
+                    } catch (e) {
+                        return false
+                    }
+                })()
                 open_pluto_popup({
                     type: "warn",
                     body: html`<p>A new server was started - this notebook session is no longer running.</p>
-                        <p>Would you like to go back to the main menu?</p>
+                        <p>${embedded ? t("t_notebook_session_gone_close_tab") : "Would you like to go back to the main menu?"}</p>
                         <br />
-                        <a href="./">Go back</a>
+                        ${embedded
+                            ? html`<a
+                                  href="javascript:;"
+                                  target="_self"
+                                  onClick=${(e) => {
+                                      e.preventDefault()
+                                      window.parent.postMessage({ type: "spacestation:close-notebook-tab" }, location.origin)
+                                  }}
+                                  >${t("t_close_notebook_tab")}</a
+                              >`
+                            : html`<a href="./">Go back</a>`}
                         <br />
                         <a
                             href="javascript:;"
