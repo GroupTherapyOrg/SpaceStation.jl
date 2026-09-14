@@ -2,7 +2,7 @@
 // this to a Deno.BrowserWindow, smoke.ts drives it from a plain `deno run` for headless testing.
 
 import * as buildinfo from "./buildinfo.ts"
-import { data_dir, ensure_cli_on_path, home_dir, juliaup_bin, load_settings, save_settings, vendored_bin_dir } from "./julia.ts"
+import { data_dir, ensure_cli_on_path, home_dir, juliaup_bin, juliaup_info, load_settings, save_settings, vendored_bin_dir } from "./julia.ts"
 import { run_captured, spawn_logged, type Running } from "./spawn.ts"
 
 export type Phase = "idle" | "installing-julia" | "finding-julia" | "installing" | "starting" | "ready" | "error"
@@ -305,9 +305,13 @@ export class SpaceStationServer {
         this.secret = null
         // `julia +channel` is juliaup's version selector — it only means something to the shim
         // (the user's ~/.juliaup launcher, or our vendored portable one).
-        const use_channel = channel != null && (julia.includes(".juliaup") || julia.includes("juliaup-portable"))
+        const juliaup_launcher = julia.includes(".juliaup") || julia.includes("juliaup-portable")
+        const use_channel = channel != null && juliaup_launcher
         if (use_channel) this.log_line(`using Julia channel ${channel}`)
-        const via = use_channel ? ` (Julia ${channel})` : ""
+        // no channel through the shim = juliaup's default, whatever `juliaup default` says right now
+        const juliaup_default = channel == null && juliaup_launcher ? juliaup_info()?.default : null
+        if (juliaup_default) this.log_line(`using juliaup's default channel (${juliaup_default})`)
+        const via = use_channel ? ` (Julia ${channel})` : juliaup_default ? ` (juliaup default: ${juliaup_default})` : ""
         this.set("starting", managed ? `starting SpaceStation${via} (managed environment)` : `starting SpaceStation${via} from ${project}`)
 
         // One -e script per mode. A managed env installs SpaceStation on first run — pinned to the

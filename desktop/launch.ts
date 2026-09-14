@@ -10,7 +10,8 @@
 // confirm button: a row that says "1.12.6" plus a chip that says "update to 1.12.7" are two
 // different one-click actions, not a selection waiting for a second decision below the fold.
 // The "always use this" checkbox is the VS Code-style don't-ask-again: it applies to whichever
-// action you click (SpaceStation menu → "Julia Version…" brings the picker back).
+// action you click ("Julia version…" in the launcher, or the macOS SpaceStation menu, brings the
+// picker back).
 
 import { base_css, logo_svg } from "./theme.ts"
 
@@ -136,6 +137,16 @@ ${base_css}
             if (info.juliaup) {
                 const catalog = info.catalog ?? { aliases: [], minors: [], versions: [], updates: {} }
                 const installed = rows("Installed Julias", "click to launch")
+                // Not a channel: { channel: null } launches plain \`julia\`, so juliaup itself resolves its
+                // default on EVERY launch. Remembered, SpaceStation follows \`juliaup default <channel>\`
+                // from then on, where a remembered channel row would stay pinned to that name.
+                const juliaup_default = info.juliaup.channels.find((ch) => ch.name === info.juliaup.default)
+                if (juliaup_default) {
+                    const el = row("Juliaup default", juliaup_default.name + " · " + juliaup_default.version, "follows juliaup", { channel: null }, "launching…")
+                    el.title = "Launch whatever juliaup's default is at the time — change it any time with: juliaup default <channel>"
+                    installed.appendChild(el)
+                    if (info.settings.channel == null) preferred = el
+                }
                 for (const ch of info.juliaup.channels) {
                     const is_default = ch.name === info.juliaup.default
                     const latest = catalog.updates[ch.name]

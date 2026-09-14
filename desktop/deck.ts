@@ -224,6 +224,9 @@ export const deck_html = (launcher_url: string) => /* html */ `<!doctype html>
             if (d == null || typeof d !== "object") return
             if (d.type === "spacestation:open-workspace" && typeof d.url === "string") open_tab(d.url, d.title)
             if (d.type === "spacestation:focus-launcher") activate("launcher")
+            // the launcher's "Julia version…": the only way back to the picker outside macOS, which
+            // has no app menu (its Cancel returns here)
+            if (d.type === "spacestation:julia-version") location.href = "/launch?change=1"
             if (d.type === "spacestation:zoom" && (d.action === "in" || d.action === "out" || d.action === "reset")) zoom_action(d.action)
             if (d.type === "spacestation:color-scheme" && typeof d.scheme === "string") {
                 scheme = d.scheme
