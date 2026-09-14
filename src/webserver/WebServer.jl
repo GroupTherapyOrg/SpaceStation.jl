@@ -4,20 +4,40 @@ import HTTP
 import Sockets
 import .PkgCompat
 
-function open_in_default_browser(url::AbstractString)::Bool
+_browser_os() = Sys.isapple() ? :apple : (Sys.iswindows() || detectwsl()) ? :windows : Sys.islinux() ? :linux : :unknown
+
+"""
+The command that opens `url` in the default browser, or `nothing` where we know of none.
+
+Never `cmd /c start` on Windows: cmd.exe splits a command line at `&`, and Julia only quotes arguments
+that contain spaces, so `cmd /c start "" http://…/edit?id=…&secret=…` opened the page WITHOUT its
+secret (and ran `secret=…` as a command). PowerShell gets the URL as one single-quoted string, where
+`&` is literal and a `'` is written `''`.
+"""
+function default_browser_cmd(url::AbstractString; os::Symbol=_browser_os())
+    if os === :apple
+        `open $url`
+    elseif os === :windows
+        quoted = "'" * replace(url, "'" => "''") * "'"
+        `powershell.exe Start $quoted`
+    elseif os === :linux
+        `xdg-open $url`
+    else
+        nothing
+    end
+end
+
+"""
+Open `url` in the default browser; `false` when there is no opener for this OS or it could not be
+started. With `wait=false` the opener is only spawned: some `xdg-open` backends run the browser in
+the foreground and return when it closes, which must not hold up a caller like an HTTP handler.
+"""
+function open_in_default_browser(url::AbstractString; wait::Bool=true)::Bool
+    cmd = default_browser_cmd(url)
+    cmd === nothing && return false
     try
-        if Sys.isapple()
-            Base.run(`open $url`)
-            true
-        elseif Sys.iswindows() || detectwsl()
-            Base.run(`powershell.exe Start "'$url'"`)
-            true
-        elseif Sys.islinux()
-            Base.run(`xdg-open $url`, devnull, devnull, devnull)
-            true
-        else
-            false
-        end
+        Base.run(pipeline(cmd; stdin=devnull, stdout=devnull, stderr=devnull); wait)
+        true
     catch ex
         false
     end

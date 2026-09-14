@@ -34,6 +34,27 @@ using SpaceStation.WorkspaceManager: WorkspaceManager, poll
     @test Pluto.secret_cookie_name(session, req("Host" => "localhost:45200")) == "pluto_secret_45200"
 end
 
+# Desktop PDF export opens `/edit?id=…&secret=…&pluto_print=1` in the system browser. On Windows it went
+# through `cmd /c start`, and cmd.exe splits a command line at `&`: the browser got `/edit?id=…` alone
+# and showed "Not yet authenticated".
+@testset "the default-browser command keeps the whole URL" begin
+    url = "http://127.0.0.1:1234/edit?id=abc&secret=S3cr3t&pluto_print=1"
+
+    # What Windows actually receives is this one command-line string. The URL must sit inside a single
+    # PowerShell-quoted token, so no `&` is ever exposed to a shell.
+    line = sprint(Base.escape_microsoft_c_args, Pluto.default_browser_cmd(url; os=:windows).exec...)
+    @test startswith(line, "powershell.exe ")
+    @test occursin(" '$(url)'", line)
+    @test !occursin("cmd", line)
+    # a quote in the URL cannot end the string early
+    @test occursin("'http://h/?q=it''s'", sprint(Base.escape_microsoft_c_args, Pluto.default_browser_cmd("http://h/?q=it's"; os=:windows).exec...))
+
+    # elsewhere there is no shell in between: the URL is one intact argument
+    @test Pluto.default_browser_cmd(url; os=:apple).exec == ["open", url]
+    @test Pluto.default_browser_cmd(url; os=:linux).exec == ["xdg-open", url]
+    @test Pluto.default_browser_cmd(url; os=:unknown) === nothing
+end
+
 @testset "base_url" begin
     port = 13433
     host = "localhost"
