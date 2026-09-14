@@ -30,17 +30,18 @@ jobs:
     test:
         runs-on: ${{ matrix.os }}
         timeout-minutes: 50
-        # Prerelease Julia is informational: its stdlib/docsystem changes under us (e.g. the
-        # 1.13-DEV docstring changes breaking test/MacroAnalysis.jl "Doc strings"), and a moving
-        # target must not block releases of the package itself.
-        continue-on-error: ${{ matrix.julia-version == '~1.13.0-0' }}
+        # Unreleased Julia is informational: its stdlib/docsystem changes under us (as the 1.13-DEV
+        # docstring change did before 1.13 was released and supported), and a moving target must
+        # not block releases of the package itself. (nightly rather than "~1.14.0-0": setup-julia
+        # fails outright while no 1.14 prerelease binaries exist — switch once they do.)
+        continue-on-error: ${{ matrix.julia-version == 'nightly' }}
 
         strategy:
             # Without setting this, a failing test cancels all others
             fail-fast: false
             matrix:
                 # We test quite a lot of versions because we do some OS and version specific things unfortunately
-                julia-version: ["1.10", "1.12", "~1.13.0-0"] #, "nightly"] # "~1.14.0-0"]
+                julia-version: ["1.10", "1.12", "1.13", "nightly"] # "~1.14.0-0" once prereleases exist
                 os: [ubuntu-latest, macOS-latest, windows-latest]
 
         steps:
