@@ -43,6 +43,11 @@ import Scratch
 include_dependency("../Project.toml")
 const PLUTO_VERSION = pkgversion(@__MODULE__)
 const PLUTO_VERSION_STR = "v$(string(PLUTO_VERSION))"
+# The upstream Pluto.jl release whose notebook file format SpaceStation writes. It goes on the version
+# line of every saved notebook instead of SpaceStation's own version: nothing reads that line back, and
+# writing ours made a notebook shared with plain Pluto flip it (`# v1.0.3` ⇄ `# v0.6.1`) on every save,
+# a diff in git that meant nothing. Bump it when merging a newer upstream release.
+const PLUTO_UPSTREAM_VERSION_STR = "v1.0.3"
 const JULIA_VERSION_STR = "v$(string(VERSION))"
 
 import PlutoDependencyExplorer: PlutoDependencyExplorer, TopologicalOrder, NotebookTopology, ExprAnalysisCache, ImmutableVector, ExpressionExplorerExtras, topological_order, all_cells, disjoint, where_assigned, where_referenced

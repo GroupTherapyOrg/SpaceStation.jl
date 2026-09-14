@@ -33,7 +33,7 @@ Have a look at our [JuliaCon 2020 presentation](https://youtu.be/IAF8DjrQSSk?t=1
 """
 function save_notebook(io::IO, notebook::Notebook)
     println(io, _notebook_header)
-    println(io, "# ", PLUTO_VERSION_STR)
+    println(io, "# ", PLUTO_UPSTREAM_VERSION_STR)
     
     # Notebook metadata
     let nb_metadata_toml = strip(sprint(TOML.print, get_metadata_no_default(notebook)))
@@ -235,8 +235,8 @@ function _read_notebook_metadata!(@nospecialize(io::IO))
     end
 
     file_VERSION_STR = readline(io)[3:end]
-    if file_VERSION_STR != PLUTO_VERSION_STR
-        # @info "Loading a notebook saved with Pluto $(file_VERSION_STR). This is Pluto $(PLUTO_VERSION_STR)."
+    if file_VERSION_STR != PLUTO_UPSTREAM_VERSION_STR
+        # @info "Loading a notebook saved with Pluto $(file_VERSION_STR). This is Pluto $(PLUTO_UPSTREAM_VERSION_STR)."
     end
 
     # Read all remaining file contents before the first cell delimiter.
