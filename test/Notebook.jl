@@ -196,6 +196,21 @@ end
         end
     end
 
+    # The version line names the upstream Pluto format, not SpaceStation's release: a notebook that is
+    # also opened with plain Pluto must not have that line rewritten by every save.
+    @testset "Version line is the upstream Pluto version" begin
+        nb = basic_notebook()
+        nb.path = tempname() * ".jl"
+        save_notebook(nb)
+        header = readlines(nb.path)[1:2]
+        @test header == ["### A Pluto.jl notebook ###", "# $(Pluto.PLUTO_UPSTREAM_VERSION_STR)"]
+        @test occursin(r"^v\d+\.\d+\.\d+$", Pluto.PLUTO_UPSTREAM_VERSION_STR)
+        # so a load/save round trip of a file written by that Pluto release leaves it byte-identical
+        pluto_file = read(nb.path, String)
+        save_notebook(load_notebook_nobackup(nb.path))
+        @test read(nb.path, String) == pluto_file
+    end
+
     @testset "Cell Metadata" begin
         🍭 = ServerSession()
         🍭.options.evaluation.workspace_use_distributed = false
