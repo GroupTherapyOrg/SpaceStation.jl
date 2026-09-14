@@ -8,7 +8,7 @@
 #   2. bootstrap (first contact only): clone the fork to ~/.spacestation/Pluto.jl on the
 #      remote and instantiate it.
 #   3. start: launch the remote server headless, read its connection file for port+secret.
-#   4. tunnel: ssh -N -L <local>:127.0.0.1:<remote>, probe /ping, hand the browser
+#   4. tunnel: ssh -N -L 127.0.0.1:<local>:127.0.0.1:<remote>, probe /ping, hand the browser
 #      http://localhost:<local>/?secret=… — the ENTIRE Land (files, kernels, terminal,
 #      agent API) then runs on the remote with zero further changes.
 #
@@ -287,6 +287,22 @@ function _stop_placeholder!(host::AbstractString)
     nothing
 end
 
+"""
+Is `r` still the session for its host? The UI's ✕ and a reconnect both replace the session, but a
+connect task cannot be interrupted mid-SSH-call, so the old one can still be running long after it
+was dropped. It must not touch the host's port any more: the new session owns it now.
+"""
+_is_current_session(r::RemoteSession) =
+    !r.cancelled && lock(() -> get(REMOTE_SESSIONS, r.host, nothing) === r, REMOTE_SESSIONS_LOCK)
+
+"""
+Put the placeholder on `port` — but only for the session that owns the host. A superseded session
+re-taking the port between the new session's `_stop_placeholder!` and its `ssh -L` binding it is how a
+tunnel to a perfectly healthy host came up "did not come up": ssh lost the bind, and every probe
+reached the placeholder's 503.
+"""
+_hold_port!(r::RemoteSession, port::Integer) = _is_current_session(r) && _start_placeholder!(r.host, port)
+
 "Can we bind this local port right now? (The tunnel binds it a moment later — same small race the old `listenany` had.)"
 function _port_bindable(port::Integer)::Bool
     try
@@ -407,6 +423,68 @@ function _local_ping_ok(port::Int)::Bool
     end
 end
 
+# The forward is bound to 127.0.0.1 EXPLICITLY. With no bind address ssh listens on every loopback
+# address `localhost` resolves to (::1 and 127.0.0.1), and ExitOnForwardFailure only fires when all of
+# them fail. So when something already held 127.0.0.1:<port>, ssh carried on bound to ::1 alone, while
+# everything on our side — `_local_ping_ok`, the placeholder, the hub itself — speaks 127.0.0.1. The
+# probe reached whatever held the port, the connect reported "tunnel did not come up", and the live
+# ssh stayed behind on ::1. With one address a conflict makes ssh exit at once, visibly.
+#
+# `-n` + stdin=devnull keep the tunnel ssh OFF the launching terminal's stdin: a backgrounded `ssh -N`
+# otherwise fights the shell for the terminal, so quitting the server (or just having a remote open)
+# can leave that terminal "disconnected".
+_tunnel_command(host::AbstractString, local_port::Integer, remote_port::Integer) =
+    `ssh -n -o BatchMode=yes -o ConnectTimeout=$(SSH_CONNECT_TIMEOUT[]) -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o LogLevel=ERROR -o ExitOnForwardFailure=yes -N -L 127.0.0.1:$(local_port):127.0.0.1:$(remote_port) $(host)`
+
+"Stop `r`'s ssh and wait (briefly) until it is gone, so the port is really free for whoever binds it next."
+function _kill_tunnel!(r::RemoteSession)
+    t = r.tunnel
+    t === nothing && return
+    try
+        process_exited(t) || kill(t)
+        timedwait(() -> process_exited(t), 2.0; pollint=0.05)
+    catch
+    end
+    nothing
+end
+
+"""
+Open `r`'s tunnel on its stable local port and wait for the remote to answer through it. Returns
+`(outcome, local_port)` with outcome `:ok`, `:cancelled` or `:failed`; for anything but `:ok` the ssh
+child is already gone, so it cannot sit on the port and break the next attempt.
+
+When ssh exits on its own and the port is no longer free, something took the port between our pick
+and ssh's bind. That is a race on this machine, not a problem with the host, so it is retried
+instead of being reported — on the SAME port once the holder is gone (a process still tearing
+down), because the port is the host's identity to its open tabs and must not move over a blip;
+only a port that stays taken makes the host move. `command` exists for the tests.
+"""
+function _open_tunnel!(r::RemoteSession, remote_port::Integer; command=_tunnel_command, polls::Integer=20, attempts::Integer=3, settle::Real=1.5)
+    local_port = 0
+    for attempt in 1:attempts
+        if local_port == 0 || !_port_bindable(local_port)
+            # Hand the port back before picking it: while the tunnel was down we were holding it
+            # ourselves, and `stable_tunnel_port` would otherwise see it as occupied and move this host
+            # somewhere else — losing the very stability the tab depends on.
+            _stop_placeholder!(r.host)
+            local_port = stable_tunnel_port(r.host)
+        end
+        # stdout→devnull too — we only watch process_exited and the /ping probe, never the tunnel's streams.
+        r.tunnel = Base.run(pipeline(command(r.host, local_port, remote_port); stdin=devnull, stdout=devnull, stderr=devnull); wait=false)
+        for _ in 1:polls
+            sleep(1)
+            _remote_bail(r) && return (:cancelled, local_port)
+            _local_ping_ok(local_port) && return (:ok, local_port)
+            process_exited(r.tunnel) && break
+        end
+        exited_by_itself = process_exited(r.tunnel)
+        _kill_tunnel!(r)
+        (exited_by_itself && !_port_bindable(local_port) && attempt < attempts) || break
+        sleep(settle) # give a transient holder time to let go, so the retry can keep this port
+    end
+    (:failed, local_port)
+end
+
 # A registry file can outlive the server that wrote it: HPC jobs end, nodes reboot, and a
 # SIGKILL'd server never gets to delete its own connection file. Reusing such a stale file
 # tunnels forever to a dead port ("tunnel did not come up"). So before trusting a registry,
@@ -473,12 +551,9 @@ end
 # checks this between phases and inside its poll loops — so a cancel lands within a couple seconds, tears
 # down any half-open tunnel, and stops the remote from being marked ready.
 function _remote_bail(r::RemoteSession)::Bool
-    r.cancelled || return false
-    t = r.tunnel
-    t === nothing || try
-        process_exited(t) || kill(t)
-    catch
-    end
+    # superseded counts as cancelled: another session owns this host now (see _is_current_session)
+    _is_current_session(r) && return false
+    _kill_tunnel!(r)
     r.state = "error"
     r.detail = "canceled"
     true
@@ -678,30 +753,12 @@ function _remote_connect_task!(r::RemoteSession)
 
         r.state = "tunneling"
         r.detail = "opening the SSH tunnel"
-        # Hand the port back before picking it: while the tunnel was down we were holding it
-        # ourselves, and `stable_tunnel_port` would otherwise see it as occupied and move this host
-        # somewhere else — losing the very stability the tab depends on.
-        _stop_placeholder!(r.host)
-        local_port = stable_tunnel_port(r.host)
-        # `-n` + stdin=devnull keep the tunnel ssh OFF the launching terminal's stdin: a backgrounded
-        # `ssh -N` otherwise fights the shell for the terminal, so quitting the server (or just having a
-        # remote open) can leave that terminal "disconnected". stdout→devnull too — we only watch
-        # process_exited and the /ping probe, never the tunnel's streams.
-        r.tunnel = Base.run(pipeline(`ssh -n -o BatchMode=yes -o ConnectTimeout=$(SSH_CONNECT_TIMEOUT[]) -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o LogLevel=ERROR -o ExitOnForwardFailure=yes -N -L $local_port:127.0.0.1:$(remote.port) $(r.host)`; stdin=devnull, stdout=devnull, stderr=devnull); wait=false)
-        ok = false
-        for _ in 1:20
-            sleep(1)
-            _remote_bail(r) && return
-            if _local_ping_ok(local_port)
-                ok = true
-                break
-            end
-            process_exited(r.tunnel) && break
-        end
-        if !ok
+        outcome, local_port = _open_tunnel!(r, remote.port)
+        outcome == :cancelled && return
+        if outcome != :ok
             r.state = "error"
             r.detail = "tunnel did not come up (local port $local_port → $(r.host):$(remote.port))"
-            _start_placeholder!(r.host, local_port) # keep answering, so a reload is not a dead end
+            _hold_port!(r, local_port) # keep answering, so a reload is not a dead end
             return
         end
         _remote_bail(r) && return
@@ -726,7 +783,7 @@ function _remote_connect_task!(r::RemoteSession)
     catch e
         r.state = "error"
         r.detail = sprint(showerror, e)
-        r.local_port > 0 && _start_placeholder!(r.host, r.local_port)
+        r.local_port > 0 && _hold_port!(r, r.local_port)
     end
 end
 
@@ -783,11 +840,7 @@ function cancel_remote_session!(host::String)
     _set_active_remote!(host, false) # an explicit disconnect must not come back on the next start
     if r !== nothing
         r.cancelled = true
-        t = r.tunnel
-        t === nothing || try
-            process_exited(t) || kill(t)
-        catch
-        end
+        _kill_tunnel!(r) # and wait for it: a Connect right after ✕ must find the port free, not moving
         # see close_all_remote_tunnels: the tunnel's connection file outlives its dead port otherwise
         r.local_port > 0 && remove_collab_registry_file(r.local_port)
         _stop_placeholder!(host) # disconnecting means the port goes quiet, not that we keep waiting
@@ -842,6 +895,9 @@ function _supervise_tunnels_once()
             end
             continue
         end
+        # That ping can take seconds. If the user reconnected meanwhile, this snapshot is stale, and
+        # rebuilding it would race the new session for the port.
+        _is_current_session(r) || continue
 
         now = time()
         due = lock(REMOTE_SESSIONS_LOCK) do
@@ -864,7 +920,7 @@ function _supervise_tunnels_once()
         end
         # Take the port over straight away: between here and the tunnel coming back is exactly the
         # window in which a reload would otherwise hit the browser's own error page.
-        r.local_port > 0 && _start_placeholder!(host, r.local_port)
+        r.local_port > 0 && _hold_port!(r, r.local_port)
         lock(REMOTE_SESSIONS_LOCK) do
             # only start a rebuild if one is not already running for this host
             if r.task === nothing || istaskdone(r.task)

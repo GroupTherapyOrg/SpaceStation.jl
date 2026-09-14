@@ -7,6 +7,34 @@ import HTTP
 # workspace's identity to an open tab, a bookmark or a reload. It used to be handed out by
 # `listenany(45200)` — "first free port right now" — which made it depend on arrival order.
 
+# A socket that answers /ping stands in for a live tunnel. `Connection: close` keeps HTTP.jl from
+# pooling the socket and reusing one we already hung up on.
+function answer_ping(port; status="200 OK")
+    srv = Sockets.listen(Sockets.localhost, UInt16(port))
+    @async while isopen(srv)
+        try
+            conn = Sockets.accept(srv)
+            @async try
+                readavailable(conn)
+                write(conn, "HTTP/1.1 $(status)\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                close(conn)
+            catch
+            end
+        catch
+            break
+        end
+    end
+    srv
+end
+
+function add_session!(r)
+    lock(Pluto.REMOTE_SESSIONS_LOCK) do
+        Pluto.REMOTE_SESSIONS[r.host] = r
+    end
+    r
+end
+drop_session!(host) = lock(() -> delete!(Pluto.REMOTE_SESSIONS, host), Pluto.REMOTE_SESSIONS_LOCK)
+
 @testset "Stable tunnel ports" begin
     # keep the port map out of the real ~/.local/state
     state = mktempdir()
@@ -158,22 +186,7 @@ import HTTP
         # every request through it failed, until you reconnected by hand from homebase.
         @testset "the watchdog notices a dead tunnel and schedules a retry" begin
             port = Pluto.stable_tunnel_port("watchdog-node")
-            # a socket that answers /ping stands in for a live tunnel. `Connection: close` keeps
-            # HTTP.jl from pooling the socket and reusing one we already hung up on.
-            srv = Sockets.listen(Sockets.localhost, UInt16(port))
-            @async while isopen(srv)
-                try
-                    conn = Sockets.accept(srv)
-                    @async try
-                        readavailable(conn)
-                        write(conn, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
-                        close(conn)
-                    catch
-                    end
-                catch
-                    break
-                end
-            end
+            srv = answer_ping(port)
             proc = run(`sleep 600`; wait=false) # stands in for the ssh child
             session = Pluto.RemoteSession("watchdog-node", "ready", "", port, "s", "julia", proc, nothing, false)
             # A task that never finishes, so the supervisor sees "a rebuild is already running" and
@@ -211,6 +224,124 @@ import HTTP
                     delete!(Pluto.REMOTE_SESSIONS, "watchdog-node")
                     delete!(Pluto.TUNNEL_RETRY, "watchdog-node")
                 end
+            end
+        end
+
+        # With no bind address ssh also listens on ::1, and ExitOnForwardFailure only fires when EVERY
+        # address fails — so a taken 127.0.0.1 left ssh running on ::1 alone while all our probes
+        # (127.0.0.1) hit whatever held the port. One address makes the conflict fatal to ssh.
+        @testset "the tunnel binds 127.0.0.1 only, so a taken port makes ssh exit" begin
+            argv = Pluto._tunnel_command("gpu-a", 45210, 1234).exec
+            @test "127.0.0.1:45210:127.0.0.1:1234" in argv
+            @test "ExitOnForwardFailure=yes" in argv
+            @test last(argv) == "gpu-a"
+        end
+
+        # A failed tunnel used to leave its ssh running. It kept the port, so the next attempt's ssh
+        # could not bind it and failed the same way, however healthy the host was.
+        @testset "a tunnel that never answers does not leave ssh behind" begin
+            r = add_session!(Pluto.RemoteSession("silent-node", "tunneling", "", 0, "", "", nothing, nothing, false))
+            try
+                outcome, port = Pluto._open_tunnel!(r, 1234; command=(h, l, rp) -> `sleep 600`, polls=2)
+                @test outcome == :failed
+                @test process_exited(r.tunnel)
+                @test Pluto._port_bindable(port)
+            finally
+                Pluto._kill_tunnel!(r)
+                drop_session!("silent-node")
+            end
+        end
+
+        # The port is the host's identity to its open tabs, so a holder that lets go (a process still
+        # tearing down) must not move the host: the retry keeps the same port.
+        @testset "a port taken only briefly is retried on the same port" begin
+            r = add_session!(Pluto.RemoteSession("blip-node", "tunneling", "", 0, "", "", nothing, nothing, false))
+            srv = nothing
+            tried = Int[]
+            function fake_ssh(h, l, rp)
+                push!(tried, l)
+                if length(tried) == 1
+                    # answers at once (a bare socket would make the /ping probe hang until it
+                    # closed); still holding the port when the exit is noticed (~1s), gone before
+                    # the retry (after `settle`) — a port that is ALREADY free when ssh dies means
+                    # ssh failed for some other reason, and that is rightly not retried
+                    thief = answer_ping(l; status="503 Service Unavailable")
+                    @async (sleep(1.6); close(thief))
+                    `false`
+                else
+                    srv = answer_ping(l)
+                    `sleep 600`
+                end
+            end
+            try
+                outcome, port = Pluto._open_tunnel!(r, 1234; command=fake_ssh, polls=5, settle=2.0)
+                @test outcome == :ok
+                @test tried == [port, port]
+                @test Pluto._read_tunnel_ports()["blip-node"] == port
+            finally
+                Pluto._kill_tunnel!(r)
+                srv === nothing || close(srv)
+                drop_session!("blip-node")
+            end
+        end
+
+        @testset "a port that stays taken is retried on another port" begin
+            r = add_session!(Pluto.RemoteSession("raced-node", "tunneling", "", 0, "", "", nothing, nothing, false))
+            thief = srv = nothing
+            tried = Int[]
+            # attempt 1: something grabs the port right after we picked it, and ssh exits (as with
+            # ExitOnForwardFailure). attempt 2: the tunnel comes up.
+            function fake_ssh(h, l, rp)
+                push!(tried, l)
+                if length(tried) == 1
+                    thief = Sockets.listen(Sockets.localhost, UInt16(l))
+                    `false`
+                else
+                    srv = answer_ping(l)
+                    `sleep 600`
+                end
+            end
+            try
+                outcome, port = Pluto._open_tunnel!(r, 1234; command=fake_ssh, polls=5, settle=0.2)
+                @test outcome == :ok
+                @test length(tried) == 2
+                @test port == tried[2] != tried[1]
+            finally
+                Pluto._kill_tunnel!(r)
+                thief === nothing || close(thief)
+                srv === nothing || close(srv)
+                drop_session!("raced-node")
+            end
+        end
+
+        # A connect task cannot be interrupted mid-SSH-call, so a session the user cancelled or
+        # replaced can still be running. If it put the placeholder back after the new session had
+        # released the port, the new tunnel lost the bind and the connect failed for no visible reason.
+        @testset "only the host's current session may hold its port" begin
+            port = Pluto.stable_tunnel_port("race-node")
+            old = Pluto.RemoteSession("race-node", "tunneling", "", 0, "", "", nothing, nothing, false)
+            new = add_session!(Pluto.RemoteSession("race-node", "tunneling", "", 0, "", "", nothing, nothing, false))
+            try
+                @test !Pluto._is_current_session(old)
+                @test Pluto._remote_bail(old)              # a superseded task stops at its next check
+                @test !Pluto._remote_bail(new)
+
+                Pluto._hold_port!(old, port)
+                sleep(0.3)
+                @test Pluto._port_bindable(port)           # superseded: the port stays free
+
+                new.cancelled = true
+                Pluto._hold_port!(new, port)
+                sleep(0.3)
+                @test Pluto._port_bindable(port)           # cancelled: likewise
+
+                new.cancelled = false
+                Pluto._hold_port!(new, port)
+                sleep(0.3)
+                @test !Pluto._port_bindable(port)          # the owner still gets its placeholder
+            finally
+                Pluto._stop_placeholder!("race-node")
+                drop_session!("race-node")
             end
         end
     end
