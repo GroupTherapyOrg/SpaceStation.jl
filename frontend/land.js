@@ -1756,6 +1756,20 @@ const Land = () => {
         })
     }, [])
 
+    // A notebook frame asks to be closed: its session is gone (the editor's "Close tab"), or it
+    // navigated to this hub and would otherwise render a whole Land inside the tab (see the bottom
+    // of this file). Only our own origin, and only the frame that sent it.
+    useEffect(() => {
+        const on_message = (/** @type {MessageEvent} */ e) => {
+            if (e.origin !== location.origin || e.data?.type !== "spacestation:close-notebook-tab") return
+            const frame = [...document.querySelectorAll("#frames iframe")].find((f) => /** @type {HTMLIFrameElement} */ (f).contentWindow === e.source)
+            const id = frame == null ? undefined : /** @type {HTMLIFrameElement} */ (frame).dataset.tabId
+            if (id != null) close_tab(id)
+        }
+        window.addEventListener("message", on_message)
+        return () => window.removeEventListener("message", on_message)
+    }, [close_tab])
+
     const create_in = useCallback(
         async (dir) => {
             const name = prompt(`New file in ${basename(dir)}/ — a name ending in .jl or .plutojl becomes a Pluto notebook:`, "notebook.jl")
@@ -2076,6 +2090,7 @@ const Land = () => {
                                     : // every notebook tab is the stock Pluto editor; iframes stay mounted so switching tabs never loses state
                                       html`<iframe
                                           key=${t.id}
+                                          data-tab-id=${t.id}
                                           src=${`./edit?id=${t.id}`}
                                           class=${t.id === active ? "active" : ""}
                                           onLoad=${(/** @type {Event} */ e) => attach_tab_keys(/** @type {HTMLIFrameElement} */ (e.target).contentWindow)}
@@ -2121,4 +2136,16 @@ const Land = () => {
     `
 }
 
-render(html`<${Land} />`, document.querySelector("#land-app"))
+// Loaded inside one of a Land's own notebook frames — any relative "./" followed from an editor lands
+// here — this page would render the whole workspace nested in that tab, with its own polling, sockets
+// and terminals. A same-origin parent that is itself a Land means exactly that (the desktop deck is
+// another origin, so its frames never match): ask the parent to close the tab instead of rendering.
+const framed_by_land = (() => {
+    try {
+        return window.frameElement != null && window.parent.document.getElementById("land-app") != null
+    } catch (e) {
+        return false
+    }
+})()
+if (framed_by_land) window.parent.postMessage({ type: "spacestation:close-notebook-tab" }, location.origin)
+else render(html`<${Land} />`, document.querySelector("#land-app"))

@@ -398,5 +398,7 @@
     "t_project_toml_editor_sync_failed": "Project TOML synchronization failed: {{error}}",
     "t_project_toml_editor_start_notebook_first": "You need to start the notebook before you can edit the Project.toml. This might be supported in the future.",
     "t_project_toml_editor_version_latest": "Latest",
-    "t_project_toml_editor_version_latest_compatible": "Latest compatible"
+    "t_project_toml_editor_version_latest_compatible": "Latest compatible",
+    "t_notebook_session_gone_close_tab": "Would you like to close this tab?",
+    "t_close_notebook_tab": "Close tab"
 }
