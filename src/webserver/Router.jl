@@ -221,8 +221,11 @@ function http_router_for(session::ServerSession)
                 # The Host header carries the port this request actually arrived on — no plumbing.
                 host = HTTP.header(request, "Host", "127.0.0.1")
                 url = "http://$(host)/edit?id=$(notebook.notebook_id)&secret=$(session.secret)&pluto_print=1"
-                cmd = Sys.isapple() ? `open $url` : Sys.iswindows() ? `cmd /c start "" $url` : `xdg-open $url`
-                Base.run(cmd; wait=false) # Base.: inside this module, bare `run` is the server entrypoint
+                # the shared opener: a hand-rolled `cmd /c start` here dropped everything after the first
+                # `&` on Windows — the secret included — so the browser landed on "Not yet authenticated"
+                # wait=false: answer the request once the opener is spawned, not once the browser exits
+                open_in_default_browser(url; wait=false) ||
+                    return error_response(500, "Export failed", "Could not open your default browser.", "")
                 return HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], """{"opened":true}""")
             end
             downloads = joinpath(homedir(), "Downloads")
