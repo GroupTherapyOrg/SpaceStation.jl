@@ -18,6 +18,8 @@ export const data_dir = () =>
           ? `${Deno.env.get("APPDATA") ?? home_dir()}/SpaceStation`
           : `${Deno.env.get("XDG_DATA_HOME") ?? `${home_dir()}/.local/share`}/spacestation`
 
+// channel null = launch plain `julia` (no `+channel`): with juliaup that is juliaup's own default,
+// resolved at every launch — the picker's "Juliaup default" row.
 export type JuliaSettings = { channel: string | null; ask: boolean }
 
 const settings_path = () => `${data_dir()}/settings.json`

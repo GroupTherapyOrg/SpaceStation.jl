@@ -524,6 +524,15 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
                 <img class="land-logo opener-logo" src=${logo_url} alt="SpaceStation" />
                 <h1>Space<span class="land-accent">Station</span></h1>
                 <p class="subtitle">Open a folder as your workspace — notebooks inside it open as tabs.</p>
+                ${desktop
+                    ? html`<button
+                          class="opener-julia-version"
+                          title="Pick which Julia the app runs on (restarts the SpaceStation server)"
+                          onClick=${() => post_to_deck({ type: "spacestation:julia-version" })}
+                      >
+                          Julia version…
+                      </button>`
+                    : null}
                 <${AppSchemeToggle} classname=${on_cancel == null ? "opener-corner" : "opener-corner beside-cancel"} />
                 ${on_cancel == null ? null : html`<button class="opener-cancel" title="Close — back to your workspace" onClick=${on_cancel}><span class="opener-cancel-icon"></span></button>`}
             </header>
