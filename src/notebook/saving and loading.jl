@@ -157,7 +157,12 @@ test/LazyMode.jl on CI). Brief retries let transient holds clear; if the destina
 fall back to a plain in-place write — non-atomic (the pre-atomic status quo), but a save must
 never fail.
 """
-function write_atomic(path::String, content::AbstractString)
+write_atomic(path::String, content::AbstractString) = offload_blocking(() -> _write_atomic_now(path, content))
+
+# The write itself runs through `offload_blocking`: a notebook save is a synchronous write to what is,
+# on a cluster, a networked home directory, and a slow one holds the serving thread — the whole server —
+# until it returns. Off that thread it holds only the save.
+function _write_atomic_now(path::String, content::AbstractString)
     tmp = path * ".writing." * string(rand(UInt32), base=16) * ".tmp"
     try
         write(tmp, content)

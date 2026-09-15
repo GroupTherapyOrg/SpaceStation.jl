@@ -56,7 +56,9 @@ function _find_local_server(path::String)
         secret_m = match(r"\"secret\": \"([^\"]+)\"", txt)
         (port_m === nothing || secret_m === nothing) && continue
         port = parse(Int, port_m.captures[1])
-        _local_ping_ok(port) || continue   # don't adopt a corpse (stale file → tunnel/redirect to a dead port)
+        # don't adopt a corpse (stale file → tunnel/redirect to a dead port); a server that is merely busy
+        # (accepts, answers late) IS the workspace's server — spawning next to it would make two
+        _probe_port(port) != :dead || continue
         return (port=port, secret=String(secret_m.captures[1]))
     end
     nothing
@@ -92,7 +94,8 @@ function _local_spawn_task!(s::LocalSession)
         delete!(env, "SPACESTATION_TUNNELED")
         delete!(env, "PLUTOSPACE_TUNNELED")  # legacy alias; a local child is never tunneled
         code = "import SpaceStation; SpaceStation.run(workspace=ENV[\"SPACESTATION_CHILD_WORKSPACE\"], launch_browser=false)"
-        cmd = setenv(`$(Base.julia_cmd()) --project=$(projdir) -e $(code)`, env)
+        # SERVER_THREAD_FLAGS last, so it wins over any --threads julia_cmd() copied from the hub: see Offload.jl.
+        cmd = setenv(`$(Base.julia_cmd()) $(SERVER_THREAD_FLAGS) --project=$(projdir) -e $(code)`, env)
         s.proc = Base.run(pipeline(cmd; stdin=devnull, stdout=logfile, stderr=logfile); wait=false)
         # Cancelled in the window before/just-after spawn? Don't leave the child orphaned.
         if s.cancelled
@@ -138,8 +141,8 @@ function open_local_session!(path::String)::LocalSession
     lock(LOCAL_SESSIONS_LOCK) do
         s = get(LOCAL_SESSIONS, path, nothing)
         if s !== nothing
-            if s.state == "ready" && _local_ping_ok(s.port)
-                return s # alive: reuse
+            if s.state == "ready" && _probe_port(s.port) != :dead
+                return s # alive (answering, or busy behind a live port): reuse, never respawn beside it
             end
             if s.state ∉ ("ready", "error") && s.task !== nothing && !istaskdone(s.task)
                 return s # already starting

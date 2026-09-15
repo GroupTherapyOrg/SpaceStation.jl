@@ -76,45 +76,67 @@ end
 Write the output cache sidecar for this notebook (atomic). Includes, per cell: the execution key and result hash (for verification on load), agent-readable text, and a MsgPack+Base64 packed copy of the full output for exact restore.
 """
 function save_output_cache(notebook::Notebook)
-    cells_dict = Dict{String,Any}()
-    for cell in notebook.cells
-        # only cells that have produced output are worth caching
-        cell.execution_key_produced == 0 && continue
-        packed = try
-            base64encode(pack(Dict{String,Any}(
-                "output" => _output_to_dict(cell.output),
-                "published_objects" => cell.published_objects,
-            )))
-        catch e
-            @debug "Could not pack cell output for cache" cell.cell_id exception = e
-            nothing
-        end
-        entry = Dict{String,Any}(
-            "execution_key" => string(cell.execution_key_produced, base=16),
-            "result_hash" => string(cell.result_hash, base=16),
-            "errored" => cell.errored,
-            "mime" => string(cell.output.mime),
-            "text_representation" => _text_representation(cell),
-        )
-        cell.runtime === nothing || (entry["runtime_ns"] = Int64(min(cell.runtime, typemax(Int64) % UInt64)))
-        packed === nothing || (entry["output_packed"] = packed)
-        cells_dict[string(cell.cell_id)] = entry
-    end
-
-    content_dict = Dict{String,Any}(
-        "format" => OUTPUT_CACHE_FORMAT,
-        "pluto_version" => PLUTO_VERSION_STR,
-        "julia_version" => JULIA_VERSION_STR,
-        "cell_order" => string.(notebook.cell_order),
-        "cells" => cells_dict,
-    )
-
+    # Snapshot on the calling thread — references only, plus the short text digest — so that the
+    # serialisation and the write below can run on another thread (see `offload_blocking`) without
+    # reading cells that the next run may already be changing. Only cells that have produced output
+    # are worth caching.
+    snapshot = [
+        (
+            id = string(cell.cell_id),
+            execution_key = cell.execution_key_produced,
+            result_hash = cell.result_hash,
+            errored = cell.errored,
+            output = cell.output,
+            published_objects = copy(cell.published_objects),
+            runtime = cell.runtime,
+            text = _text_representation(cell),
+        ) for cell in notebook.cells if cell.execution_key_produced != 0
+    ]
+    cell_order = string.(notebook.cell_order)
     path = output_cache_path(notebook)
-    tmp = path * ".tmp"
-    Base.open(tmp, "w") do io
-        TOML.print(io, content_dict; sorted=true)
+
+    # A sidecar can be hundreds of MB (every output, packed and base64'd): encoding it is seconds of CPU
+    # and writing it to a networked home directory is seconds more, or minutes on a slow day. Neither
+    # may hold the thread that answers the browser and the hub.
+    offload_blocking() do
+        cells_dict = Dict{String,Any}()
+        for c in snapshot
+            packed = try
+                base64encode(pack(Dict{String,Any}(
+                    "output" => _output_to_dict(c.output),
+                    "published_objects" => c.published_objects,
+                )))
+            catch e
+                @debug "Could not pack cell output for cache" c.id exception = e
+                nothing
+            end
+            entry = Dict{String,Any}(
+                "execution_key" => string(c.execution_key, base=16),
+                "result_hash" => string(c.result_hash, base=16),
+                "errored" => c.errored,
+                "mime" => string(c.output.mime),
+                "text_representation" => c.text,
+            )
+            c.runtime === nothing || (entry["runtime_ns"] = Int64(min(c.runtime, typemax(Int64) % UInt64)))
+            packed === nothing || (entry["output_packed"] = packed)
+            cells_dict[c.id] = entry
+        end
+
+        content_dict = Dict{String,Any}(
+            "format" => OUTPUT_CACHE_FORMAT,
+            "pluto_version" => PLUTO_VERSION_STR,
+            "julia_version" => JULIA_VERSION_STR,
+            "cell_order" => cell_order,
+            "cells" => cells_dict,
+        )
+
+        tmp = path * ".tmp"
+        Base.open(tmp, "w") do io
+            TOML.print(io, content_dict; sorted=true)
+        end
+        mv(tmp, path; force=true)
     end
-    mv(tmp, path; force=true)
+    nothing
 end
 
 """
@@ -123,35 +145,55 @@ Restore cell outputs, execution keys and result hashes from the output cache sid
 function load_output_cache!(notebook::Notebook)::Bool
     path = output_cache_path(notebook)
     isfile(path) || return false
-    data = try
-        TOML.parsefile(path)
+    wanted = Set(string(cell.cell_id) for cell in notebook.cells)
+    # Reading and decoding (TOML, base64, MsgPack — seconds for a large sidecar, off a networked
+    # disk) happens off the serving thread; only the cheap assignment into the cells happens on it.
+    decoded = try
+        offload_blocking() do
+            data = TOML.parsefile(path)
+            get(data, "format", 0) == OUTPUT_CACHE_FORMAT || return nothing
+            cells_data = get(data, "cells", Dict{String,Any}())
+            out = Dict{String,Any}()
+            for (id, entry) in cells_data
+                id ∈ wanted || continue
+                try
+                    unpacked = haskey(entry, "output_packed") ? unpack(base64decode(entry["output_packed"])) : nothing
+                    out[id] = (
+                        execution_key = parse(UInt64, entry["execution_key"], base=16),
+                        result_hash = parse(UInt64, entry["result_hash"], base=16),
+                        errored = get(entry, "errored", false),
+                        runtime = haskey(entry, "runtime_ns") ? UInt64(entry["runtime_ns"]) : nothing,
+                        output = unpacked === nothing ? nothing : _output_from_dict(unpacked["output"]),
+                        published_objects = unpacked === nothing ? nothing : let po = get(unpacked, "published_objects", nothing)
+                            po isa Dict ? Dict{String,Any}(po) : Dict{String,Any}()
+                        end,
+                        text = get(entry, "text_representation", nothing),
+                    )
+                catch e
+                    @debug "Skipping unreadable cache entry" id exception = e
+                end
+            end
+            out
+        end
     catch e
         @warn "Output cache exists but could not be read — ignoring it. (It is a cache: you can safely delete it.)" path exception = e
         return false
     end
-    get(data, "format", 0) == OUTPUT_CACHE_FORMAT || return false
+    decoded === nothing && return false
 
-    cells_data = get(data, "cells", Dict{String,Any}())
     for cell in notebook.cells
-        entry = get(cells_data, string(cell.cell_id), nothing)
-        entry === nothing && continue
-        try
-            cell.execution_key_produced = parse(UInt64, entry["execution_key"], base=16)
-            cell.result_hash = parse(UInt64, entry["result_hash"], base=16)
-            cell.errored = get(entry, "errored", false)
-            haskey(entry, "runtime_ns") && (cell.runtime = UInt64(entry["runtime_ns"]))
-            if haskey(entry, "output_packed")
-                unpacked = unpack(base64decode(entry["output_packed"]))
-                cell.output = _output_from_dict(unpacked["output"])
-                cell.published_objects = let po = get(unpacked, "published_objects", nothing)
-                    po isa Dict ? Dict{String,Any}(po) : Dict{String,Any}()
-                end
-            end
-            haskey(entry, "text_representation") && isempty(cell.output_text) && (cell.output_text = entry["text_representation"])
-            cell.workspace_cold = true
-        catch e
-            @debug "Skipping unreadable cache entry" cell.cell_id exception = e
+        d = get(decoded, string(cell.cell_id), nothing)
+        d === nothing && continue
+        cell.execution_key_produced = d.execution_key
+        cell.result_hash = d.result_hash
+        cell.errored = d.errored
+        d.runtime === nothing || (cell.runtime = d.runtime)
+        if d.output !== nothing
+            cell.output = d.output
+            cell.published_objects = d.published_objects
         end
+        d.text === nothing || !isempty(cell.output_text) || (cell.output_text = d.text)
+        cell.workspace_cold = true
     end
     return true
 end
