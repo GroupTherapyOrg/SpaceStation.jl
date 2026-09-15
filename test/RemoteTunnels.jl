@@ -38,6 +38,11 @@ drop_session!(host) = lock(() -> delete!(Pluto.REMOTE_SESSIONS, host), Pluto.REM
 @testset "Stable tunnel ports" begin
     # keep the port map out of the real ~/.local/state
     state = mktempdir()
+    # A server started by an earlier test file leaves its tunnel watchdog running for the rest of
+    # the process. The watchdog tests below call `_supervise_tunnels_once` by hand and count its
+    # verdicts, and a background pass landing between two of those calls adds a strike they did not
+    # make — which is exactly what happened on one CI runner. Park it for the duration.
+    Pluto.TUNNEL_WATCHDOG_PAUSED[] = true
     withenv("XDG_STATE_HOME" => state) do
         @testset "a host keeps its port" begin
             a = Pluto.stable_tunnel_port("gpu-node-1")
@@ -529,4 +534,5 @@ drop_session!(host) = lock(() -> delete!(Pluto.REMOTE_SESSIONS, host), Pluto.REM
             end
         end
     end
+    Pluto.TUNNEL_WATCHDOG_PAUSED[] = false
 end
