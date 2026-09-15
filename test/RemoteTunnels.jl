@@ -349,7 +349,20 @@ drop_session!(host) = lock(() -> delete!(Pluto.REMOTE_SESSIONS, host), Pluto.REM
 
         @testset "the watchdog leaves a busy tunnel alone and needs two strikes for a dead one" begin
             port = Pluto.stable_tunnel_port("busy-node")
+            # What the tunnel to a stalled server looks like from here: ssh accepts and forwards, the
+            # far end reads the request and then says nothing. Accept-and-hold rather than a bare
+            # listener, whose never-accepted connections mean different things to different kernels.
             mute = Sockets.listen(Sockets.localhost, UInt16(port))
+            held = Sockets.TCPSocket[]
+            @async while isopen(mute)
+                try
+                    conn = Sockets.accept(mute)
+                    push!(held, conn)
+                    @async try readavailable(conn) catch end
+                catch
+                    break
+                end
+            end
             proc = run(`sleep 600`; wait=false)
             session = Pluto.RemoteSession("busy-node", "ready", "", port, "s", "julia", proc, nothing, false)
             session.task = @async sleep(600)
@@ -362,13 +375,15 @@ drop_session!(host) = lock(() -> delete!(Pluto.REMOTE_SESSIONS, host), Pluto.REM
                 Pluto._supervise_tunnels_once()
                 @test session.state == "ready"                # busy: nothing to fix
                 @test !haskey(Pluto.TUNNEL_RETRY, "busy-node")
+                @test !haskey(Pluto.TUNNEL_DEAD_STREAK, "busy-node") # and not a strike, either
 
                 close(mute)                                   # now connections are refused, ssh still alive
+                foreach(c -> (try close(c) catch end), held)
                 sleep(0.3)
                 @test Pluto._tunnel_verdict(session) == :dead
                 Pluto._supervise_tunnels_once()
                 @test session.state == "ready"                # one refusal is not a verdict
-                @test Pluto.TUNNEL_DEAD_STREAK["busy-node"] == 1
+                @test get(Pluto.TUNNEL_DEAD_STREAK, "busy-node", 0) == 1
                 Pluto._supervise_tunnels_once()
                 @test session.state == "tunneling"            # two in a row is
                 @test haskey(Pluto.TUNNEL_RETRY, "busy-node")
@@ -376,6 +391,7 @@ drop_session!(host) = lock(() -> delete!(Pluto.REMOTE_SESSIONS, host), Pluto.REM
             finally
                 try kill(proc) catch end
                 try close(mute) catch end
+                foreach(c -> (try close(c) catch end), held)
                 Pluto._stop_placeholder!("busy-node")
                 lock(Pluto.REMOTE_SESSIONS_LOCK) do
                     delete!(Pluto.REMOTE_SESSIONS, "busy-node")
