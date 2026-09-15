@@ -1110,11 +1110,16 @@ function restore_remote_sessions!()
     nothing
 end
 
+# The tests drive `_supervise_tunnels_once` by hand and count its verdicts; a watchdog started by an
+# earlier test file's server would race those counts (it did, on one CI runner). They pause it.
+const TUNNEL_WATCHDOG_PAUSED = Ref(false)
+
 "Start the tunnel watchdog once per server process."
 function start_tunnel_watchdog!()
     TUNNEL_WATCHDOG[] === nothing || return
     TUNNEL_WATCHDOG[] = @asynclog while true
         sleep(TUNNEL_WATCHDOG_PERIOD)
+        TUNNEL_WATCHDOG_PAUSED[] && continue
         try
             _supervise_tunnels_once()
         catch e
