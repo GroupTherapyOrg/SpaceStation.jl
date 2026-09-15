@@ -134,3 +134,28 @@ import SpaceStation: Pluto, Notebook, ServerSession, SessionActions, Cell, updat
 
     isfile(cache_path) && rm(cache_path)
 end
+
+# Blocking file work (a sidecar of hundreds of MB, a notebook save to a slow NFS home) must not hold
+# the thread that answers the browser and the hub. With a thread to spare it runs there; without one,
+# inline — and either way the caller sees the plain result or the plain exception.
+@testset "offload_blocking" begin
+    @test Pluto.offload_blocking(() -> 21 * 2) == 42
+    @test_throws ArgumentError Pluto.offload_blocking(() -> throw(ArgumentError("plain")))
+    @test Pluto.SERVER_THREAD_FLAGS == "--threads=1,1"
+    if Threads.nthreads(:interactive) > 0
+        # launched like a server (`julia --threads=1,1`): work called from the interactive (serving)
+        # thread lands on the default thread, and an error still comes back as itself, not wrapped
+        @test fetch(Threads.@spawn :interactive Pluto.offload_blocking(Threads.threadpool)) === :default
+        caught = fetch(Threads.@spawn :interactive begin
+            try
+                Pluto.offload_blocking(() -> throw(ArgumentError("plain")))
+                nothing
+            catch e
+                e
+            end
+        end)
+        @test caught isa ArgumentError
+    else
+        @test Pluto.offload_blocking(Threads.threadpool) === Threads.threadpool()
+    end
+end

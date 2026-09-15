@@ -71,10 +71,13 @@ read the secret in that create→chmod race. Passing the mode to the create clos
 file is born 0o600 (umask only clears bits, and 0o600 has none to clear). libuv normalizes the
 open flags across platforms; on Windows the mode maps to owner read/write (best effort).
 """
-function _write_private_file(path::String, contents::AbstractString)
+_write_private_file(path::String, contents::AbstractString) = offload_blocking(() -> _write_private_file_now(path, contents))
+
+function _write_private_file_now(path::String, contents::AbstractString)
     # Write a sibling temp file (born 0o600), then rename over the target: readers (discovering
     # CLIs, possibly over NFS on the shared-$HOME clusters this targets) never see a partial or
     # momentarily-absent file, and the rename replaces any stale wider-permission file whole.
+    # (Runs off the serving thread — see Offload.jl — because that NFS can also be slow to write.)
     tmp = path * "." * string(rand(UInt32), base=16) * ".tmp"
     flags = Base.Filesystem.JL_O_WRONLY | Base.Filesystem.JL_O_CREAT | Base.Filesystem.JL_O_TRUNC
     f = Base.Filesystem.open(tmp, flags, 0o600)
@@ -130,7 +133,9 @@ newline) — the sidebar walks whatever is on disk, so failure means "not a note
 function _is_pluto_notebook_file(path::String)::Bool
     endswith_pluto_file_extension(path) || return false
     try
-        Base.open(io -> startswith(readline(io), _notebook_header), path, "r")
+        # The sidebar asks this for every .jl file in every open folder, every poll — on a networked
+        # home a single slow open would otherwise stall the serving thread. See Offload.jl.
+        offload_blocking(() -> Base.open(io -> startswith(readline(io), _notebook_header), path, "r"))
     catch
         false
     end
@@ -798,7 +803,7 @@ function register_collab_api!(router, session::ServerSession)
         isfile(path) || return _api_error(404, "not a file: $path", false)
         filesize(path) > 2_000_000 && return _api_error(413, "file too large to edit here (> 2 MB)", false)
         content = try
-            read(path, String)
+            offload_blocking(() -> read(path, String))
         catch
             return _api_error(500, "could not read file", false)
         end

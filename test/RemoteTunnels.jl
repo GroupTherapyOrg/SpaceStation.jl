@@ -314,6 +314,174 @@ drop_session!(host) = lock(() -> delete!(Pluto.REMOTE_SESSIONS, host), Pluto.REM
             end
         end
 
+        # A Pluto server runs its notebooks on the thread that answers HTTP, so a notebook handing it a
+        # large output stalls /ping for ten, twenty seconds while nothing is wrong with the tunnel. The
+        # probe used to fold that into "unhealthy": the watchdog killed a working tunnel, and the
+        # reconnect then failed to find the (still stalled) server and started a SECOND one on the
+        # node, orphaning the notebooks on the first. Silence and refusal are different verdicts.
+        @testset "a busy server is told apart from a dead one" begin
+            port = Pluto.stable_tunnel_port("probe-node")
+            @test Pluto._probe_port(port) == :dead            # nothing listening: refused
+
+            srv = answer_ping(port)
+            sleep(0.3)
+            @test Pluto._probe_port(port) == :ok
+            @test Pluto._local_ping_ok(port)
+            close(srv)
+            sleep(0.3)
+
+            srv = answer_ping(port; status="503 Service Unavailable") # the placeholder
+            sleep(0.3)
+            @test Pluto._probe_port(port) == :dead            # anything but 200 is not a server
+            @test !Pluto._local_ping_ok(port)
+            close(srv)
+            sleep(0.3)
+
+            # accepts, never answers: what a stalled server (or a tunnel to one) looks like
+            mute = Sockets.listen(Sockets.localhost, UInt16(port))
+            try
+                @test Pluto._probe_port(port; wait=0.5) == :busy
+                @test !Pluto._local_ping_ok(port)           # busy is not "answering", either
+            finally
+                close(mute)
+            end
+        end
+
+        @testset "the watchdog leaves a busy tunnel alone and needs two strikes for a dead one" begin
+            port = Pluto.stable_tunnel_port("busy-node")
+            mute = Sockets.listen(Sockets.localhost, UInt16(port))
+            proc = run(`sleep 600`; wait=false)
+            session = Pluto.RemoteSession("busy-node", "ready", "", port, "s", "julia", proc, nothing, false)
+            session.task = @async sleep(600)
+            lock(Pluto.REMOTE_SESSIONS_LOCK) do
+                Pluto.REMOTE_SESSIONS["busy-node"] = session
+            end
+            try
+                @test Pluto._tunnel_verdict(session) == :busy
+                @test Pluto._tunnel_healthy(session)
+                Pluto._supervise_tunnels_once()
+                @test session.state == "ready"                # busy: nothing to fix
+                @test !haskey(Pluto.TUNNEL_RETRY, "busy-node")
+
+                close(mute)                                   # now connections are refused, ssh still alive
+                sleep(0.3)
+                @test Pluto._tunnel_verdict(session) == :dead
+                Pluto._supervise_tunnels_once()
+                @test session.state == "ready"                # one refusal is not a verdict
+                @test Pluto.TUNNEL_DEAD_STREAK["busy-node"] == 1
+                Pluto._supervise_tunnels_once()
+                @test session.state == "tunneling"            # two in a row is
+                @test haskey(Pluto.TUNNEL_RETRY, "busy-node")
+                @test !haskey(Pluto.TUNNEL_DEAD_STREAK, "busy-node")
+            finally
+                try kill(proc) catch end
+                try close(mute) catch end
+                Pluto._stop_placeholder!("busy-node")
+                lock(Pluto.REMOTE_SESSIONS_LOCK) do
+                    delete!(Pluto.REMOTE_SESSIONS, "busy-node")
+                    delete!(Pluto.TUNNEL_RETRY, "busy-node")
+                    delete!(Pluto.TUNNEL_DEAD_STREAK, "busy-node")
+                end
+            end
+        end
+
+        # A rebuild that ended in an error (a scan that failed, a host that was off) used to stay
+        # "error" until somebody clicked Connect. A session that was connected once is worth retrying.
+        @testset "a session that was connected before is retried after an error" begin
+            was = Pluto.RemoteSession("errored-node", "error", "scan failed", 45299, "s3cr3t", "julia", nothing, nothing, false)
+            never = Pluto.RemoteSession("fresh-node", "error", "bad keys", 0, "", "", nothing, nothing, false)
+            was.task = @async sleep(600) # "a rebuild is already running": keeps the test off real SSH
+            never.task = @async sleep(600)
+            lock(Pluto.REMOTE_SESSIONS_LOCK) do
+                Pluto.REMOTE_SESSIONS["errored-node"] = was
+                Pluto.REMOTE_SESSIONS["fresh-node"] = never
+            end
+            try
+                Pluto._supervise_tunnels_once()
+                @test was.state == "tunneling"
+                @test haskey(Pluto.TUNNEL_RETRY, "errored-node")
+                @test never.state == "error"                 # never connected: the user's call
+                @test !haskey(Pluto.TUNNEL_RETRY, "fresh-node")
+            finally
+                Pluto._stop_placeholder!("errored-node")
+                lock(Pluto.REMOTE_SESSIONS_LOCK) do
+                    delete!(Pluto.REMOTE_SESSIONS, "errored-node")
+                    delete!(Pluto.REMOTE_SESSIONS, "fresh-node")
+                    delete!(Pluto.TUNNEL_RETRY, "errored-node")
+                end
+            end
+        end
+
+        # Through the tunnel the same stall looks like "accepted, no answer". That used to exhaust the
+        # poll budget and report "tunnel did not come up" — for a tunnel that was up.
+        @testset "a tunnel to a busy server waits instead of failing" begin
+            r = add_session!(Pluto.RemoteSession("slow-node", "tunneling", "", 0, "", "", nothing, nothing, false))
+            srv = nothing
+            function fake_ssh(h, l, rp)
+                # answers nothing for the first ~3s, then 200 — like a server finishing a big cell
+                srv = Sockets.listen(Sockets.localhost, UInt16(l))
+                wake = time() + 3.0
+                @async while isopen(srv)
+                    try
+                        conn = Sockets.accept(srv)
+                        @async try
+                            readavailable(conn)
+                            time() < wake && sleep(wake - time())
+                            write(conn, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                            close(conn)
+                        catch
+                        end
+                    catch
+                        break
+                    end
+                end
+                `sleep 600`
+            end
+            try
+                # polls=1: a single dead probe would fail it. Only busy probes happen, and they do not count.
+                outcome, port = Pluto._open_tunnel!(r, 1234; command=fake_ssh, polls=1, busy_polls=20)
+                @test outcome == :ok
+            finally
+                Pluto._kill_tunnel!(r)
+                srv === nothing || close(srv)
+                drop_session!("slow-node")
+            end
+        end
+
+        # What the hub concludes from a scan of the node's registry: never "start a server" while a
+        # server process exists there, and a reconnect goes back to the SAME server its tabs know.
+        @testset "choosing the server on a node" begin
+            file(port, secret, pid; ws=nothing) = """{"pid": $(pid), "host": "127.0.0.1", "port": $(port), "node": "gpu-a", "secret": "$(secret)", "workspace": $(ws === nothing ? "null" : "\"$(ws)\""), "started_at": 1.7e9}"""
+            scan = join([
+                "__CANDIDATE__ LIVE 100\n" * file(1234, "empty1", 100),
+                "__CANDIDATE__ BUSY 200\n" * file(1235, "busy22", 200; ws="/home/u/proj"),
+                "__CANDIDATE__ DEAD 300\n" * file(1236, "corpse", 300; ws="/home/u/old"),
+                "__CANDIDATE__ LIVE 400\n" * file(1237, "live44", 400; ws="/home/u/proj2"),
+                "__SCAN_DONE__\n",
+            ], "\n")
+            cands = Pluto._parse_remote_candidates(scan)
+            @test cands !== nothing
+            @test [c.status for c in cands] == [:live, :busy, :dead, :live]
+            @test [c.port for c in cands] == [1234, 1235, 1236, 1237]
+            @test [c.pid for c in cands] == [100, 200, 300, 400]
+            @test [c.has_workspace for c in cands] == [false, true, true, true]
+
+            # the session's own server first — even while it is busy: its tabs carry that secret
+            @test Pluto._choose_remote_server(cands, "busy22").port == 1235
+            # a corpse is never chosen, whatever its secret was
+            @test Pluto._choose_remote_server(cands, "corpse").port != 1236
+            # no history: a live server with a workspace open beats an idle one, which beats a busy one
+            @test Pluto._choose_remote_server(cands, "").port == 1237
+            @test Pluto._choose_remote_server(cands[1:1], "").port == 1234
+            @test Pluto._choose_remote_server(cands[2:3], "").port == 1235   # busy still means "exists"
+            @test Pluto._choose_remote_server(cands[3:3], "") === nothing   # only a corpse: start one
+
+            # a scan that did not finish is not a verdict — an SSH hiccup must not read as "no server"
+            @test Pluto._parse_remote_candidates("") === nothing
+            @test Pluto._parse_remote_candidates("__CANDIDATE__ LIVE 100\n" * file(1234, "x", 100)) === nothing
+            @test Pluto._parse_remote_candidates("__SCAN_DONE__\n") == Pluto.RemoteCandidate[]
+        end
+
         # A connect task cannot be interrupted mid-SSH-call, so a session the user cancelled or
         # replaced can still be running. If it put the placeholder back after the new session had
         # released the port, the new tunnel lost the bind and the connect failed for no visible reason.

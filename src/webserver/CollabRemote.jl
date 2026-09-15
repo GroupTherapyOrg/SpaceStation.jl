@@ -414,14 +414,55 @@ end
 
 _remote_url(r::RemoteSession) = "http://localhost:$(r.local_port)/?secret=$(r.secret)"
 
-function _local_ping_ok(port::Int)::Bool
-    try
-        resp = HTTP.get("http://127.0.0.1:$port/ping"; connect_timeout=2, readtimeout=4, retry=false, status_exception=false)
-        resp.status == 200
+"""
+One probe of `127.0.0.1:<port>/ping`, classified by WHAT went wrong rather than whether anything
+did: `:ok` (answered 200), `:busy` (accepted the connection, then said nothing for `wait` seconds)
+or `:dead` (refused, reset, closed without answering, or answered anything but 200).
+
+The distinction is the whole point. A Pluto server runs its notebooks on the same single thread that
+answers HTTP, so a notebook that hands it a large output — or a cache to write — stalls its `/ping`
+for ten, twenty seconds while nothing whatsoever is wrong with the tunnel. A probe that folded that
+into "unhealthy" made the watchdog kill a working tunnel, and the reconnect it triggered then failed
+to find the (still stalled) server and started a SECOND one on the same node, orphaning the
+notebooks on the first. Only a connection that is refused or torn down says the path is gone;
+silence says the far end is working.
+
+A raw socket rather than HTTP.jl on purpose: the verdict must not depend on which exception type a
+given HTTP.jl version wraps a timeout in.
+"""
+function _probe_port(port::Integer; wait::Real=4.0)::Symbol
+    sock = try
+        Sockets.connect(Sockets.localhost, UInt16(port))
     catch
-        false
+        return :dead
+    end
+    try
+        try
+            write(sock, "GET /ping HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        catch
+            return :dead
+        end
+        status = Ref{Union{String,Nothing}}(nothing)
+        reader = @async try
+            status[] = readline(sock) # "" at EOF: closed without a word
+        catch
+            status[] = ""
+        end
+        timedwait(() -> istaskdone(reader), Float64(wait); pollint=0.05)
+        istaskdone(reader) || return :busy
+        line = status[]
+        (line === nothing || isempty(line)) && return :dead
+        occursin(r"^HTTP/1\.[01] 200\b", line) ? :ok : :dead
+    finally
+        try
+            close(sock) # also unblocks the reader, if it is still waiting
+        catch
+        end
     end
 end
+
+"Answering 200 right now. `:busy` is deliberately NOT ok here: a caller that needs a working server (adopting a registry file, declaring a tunnel up) must see it answer."
+_local_ping_ok(port::Integer)::Bool = _probe_port(port) == :ok
 
 # The forward is bound to 127.0.0.1 EXPLICITLY. With no bind address ssh listens on every loopback
 # address `localhost` resolves to (::1 and 127.0.0.1), and ExitOnForwardFailure only fires when all of
@@ -458,8 +499,14 @@ and ssh's bind. That is a race on this machine, not a problem with the host, so 
 instead of being reported — on the SAME port once the holder is gone (a process still tearing
 down), because the port is the host's identity to its open tabs and must not move over a blip;
 only a port that stays taken makes the host move. `command` exists for the tests.
+
+`polls` bounds the probes that come back dead (nothing behind the tunnel); `busy_polls` bounds the
+ones that come back busy — the tunnel accepted and nothing hung up, so the path exists and the server
+behind it is just not answering yet, typically because a notebook has its thread. A busy server
+is not a failed tunnel and must not be reported as one: that report is what used to make the hub
+hold the port and, on its next pass, start a duplicate server.
 """
-function _open_tunnel!(r::RemoteSession, remote_port::Integer; command=_tunnel_command, polls::Integer=20, attempts::Integer=3, settle::Real=1.5)
+function _open_tunnel!(r::RemoteSession, remote_port::Integer; command=_tunnel_command, polls::Integer=20, busy_polls::Integer=600, attempts::Integer=3, settle::Real=1.5)
     local_port = 0
     for attempt in 1:attempts
         if local_port == 0 || !_port_bindable(local_port)
@@ -471,11 +518,23 @@ function _open_tunnel!(r::RemoteSession, remote_port::Integer; command=_tunnel_c
         end
         # stdout→devnull too — we only watch process_exited and the /ping probe, never the tunnel's streams.
         r.tunnel = Base.run(pipeline(command(r.host, local_port, remote_port); stdin=devnull, stdout=devnull, stderr=devnull); wait=false)
-        for _ in 1:polls
+        dead = busy = 0
+        busy_since = nothing
+        while true
             sleep(1)
             _remote_bail(r) && return (:cancelled, local_port)
-            _local_ping_ok(local_port) && return (:ok, local_port)
+            verdict = _probe_port(local_port)
+            verdict == :ok && return (:ok, local_port)
             process_exited(r.tunnel) && break
+            if verdict == :busy
+                busy += 1
+                busy_since === nothing && (busy_since = time())
+                r.detail = "the SpaceStation server on $(r.host) is busy — waiting for it to answer ($(round(Int, time() - busy_since))s)"
+                busy < busy_polls || break
+            else
+                dead += 1
+                dead < polls || break
+            end
         end
         exited_by_itself = process_exited(r.tunnel)
         _kill_tunnel!(r)
@@ -485,34 +544,27 @@ function _open_tunnel!(r::RemoteSession, remote_port::Integer; command=_tunnel_c
     (:failed, local_port)
 end
 
-# A registry file can outlive the server that wrote it: HPC jobs end, nodes reboot, and a
-# SIGKILL'd server never gets to delete its own connection file. Reusing such a stale file
-# tunnels forever to a dead port ("tunnel did not come up"). So before trusting a registry,
-# confirm something is actually answering on the remote loopback port — curl /ping when
-# available (truest: confirms a live Pluto), else a dependency-free bash /dev/tcp probe.
-function _remote_server_alive(host::String, port::Int)::Bool
-    probe = """
-    if command -v curl >/dev/null 2>&1; then
-      curl -fsS -m 4 -o /dev/null http://127.0.0.1:$(port)/ping && echo __LIVE__ || echo __DEAD__
-    else
-      (exec 3<>/dev/tcp/127.0.0.1/$(port)) 2>/dev/null && echo __LIVE__ || echo __DEAD__
-    fi
-    """
-    _, out = _ssh_try(host, probe)
-    occursin("__LIVE__", out)
-end
-
-# Discover the SpaceStation server running ON THIS node: scan every connection file in the (possibly NFS-
-# shared) registry dir and print the first that belongs to THIS node AND is actually answering on 127.0.0.1.
-# Two discriminators, both needed on a shared $HOME:
-#   - node match: a "<host>-<port>.json" file records its node, so skip any whose node isn't us. WITHOUT
-#     this, two nodes that both grabbed port 1234 each write a file saying "port":1234; curling 127.0.0.1:1234
-#     here answers (OUR server) for EITHER file, so we'd hand back a sibling node's file — and its secret —
-#     and the tunnel would auth-fail ("secret does not exist"). A bare "<port>.json" from a remote still on
-#     the published code has no node field; fall back to the liveness probe alone for those (best effort).
-#   - liveness: confirms a real, reachable Pluto (not a stale registry left by a dead server).
-# (curl when present — truest — else a dependency-free /dev/tcp probe.)
-const _FIND_REMOTE_SERVER_SNIPPET = raw"""
+# Everything the hub decides about a node's servers starts from ONE scan of the registry dir on the
+# remote: every connection file that belongs to THIS node, each tagged with what it is right now:
+#   LIVE — its port answers /ping on the node's loopback
+#   BUSY — no answer within 3s, but the pid the file names is alive and is a SpaceStation process: the
+#          server exists and is stalled (a notebook run has its thread), not gone
+#   DEAD — neither: a corpse left by a SIGKILL'd server, an ended HPC job, a rebooted node
+#
+# BUSY is the state that used to be invisible. A registry file can outlive its server (jobs end, nodes
+# reboot, SIGKILL never deletes a file), so a file was only trusted if its port answered — and a server
+# too busy to answer within 3s was therefore "not there", which started a second server on the same
+# node. The pid check tells the two apart; it inspects the process's argv so a pid recycled after a
+# reboot is not mistaken for a busy server.
+#
+# The trailing marker separates "scanned, found nothing" from "ssh never ran the scan": the two used
+# to be the same empty string, so an SSH hiccup during discovery also counted as "no server here".
+#
+# Node matching: a "<host>-<port>.json" records its node; files from other nodes are skipped. Without
+# this, two nodes that both took port 1234 each write a file saying "port": 1234, curling 127.0.0.1:1234
+# here answers (OUR server) for either file, and the tunnel would inherit a sibling's secret and
+# auth-fail. Old bare "<port>.json" files (no node field) are judged by liveness alone.
+const _SCAN_REMOTE_SERVERS_SNIPPET = raw"""
 me=$(hostname)
 for f in "$HOME"/.local/state/pluto/servers/*.json; do
     [ -e "$f" ] || continue
@@ -520,13 +572,80 @@ for f in "$HOME"/.local/state/pluto/servers/*.json; do
     [ -n "$p" ] || continue
     node=$(sed -n 's/.*"node": *"\([^"]*\)".*/\1/p' "$f")
     [ -n "$node" ] && [ "$node" != "$me" ] && continue
+    pid=$(sed -n 's/.*"pid": *\([0-9]*\).*/\1/p' "$f")
+    status=DEAD
     if command -v curl >/dev/null 2>&1; then
-        curl -fsS -m 3 -o /dev/null "http://127.0.0.1:$p/ping" 2>/dev/null && { cat "$f"; exit 0; }
+        curl -fsS -m 3 -o /dev/null "http://127.0.0.1:$p/ping" 2>/dev/null && status=LIVE
     else
-        (exec 3<>/dev/tcp/127.0.0.1/"$p") 2>/dev/null && { cat "$f"; exit 0; }
+        (exec 3<>/dev/tcp/127.0.0.1/"$p") 2>/dev/null && status=LIVE
     fi
+    if [ "$status" = DEAD ] && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && ps -o args= -p "$pid" 2>/dev/null | grep -q SpaceStation; then
+        status=BUSY
+    fi
+    echo "__CANDIDATE__ $status $pid"
+    cat "$f"; echo
 done
+echo __SCAN_DONE__
 """
+
+struct RemoteCandidate
+    status::Symbol      # :live | :busy | :dead
+    port::Int
+    secret::String
+    pid::Int
+    has_workspace::Bool # a folder is open in it: the one somebody is working in, given a choice
+end
+
+"Parse a scan's output. `nothing` when the scan did not run to completion — an SSH failure is not a verdict about the node."
+function _parse_remote_candidates(out::AbstractString)::Union{Vector{RemoteCandidate},Nothing}
+    occursin("__SCAN_DONE__", out) || return nothing
+    cands = RemoteCandidate[]
+    for block in split(out, "__CANDIDATE__")[2:end]
+        i = findfirst('\n', block)
+        head = i === nothing ? block : block[1:prevind(block, i)]
+        rest = i === nothing ? "" : String(block[nextind(block, i):end])
+        words = split(strip(head))
+        isempty(words) && continue
+        status = words[1] == "LIVE" ? :live : words[1] == "BUSY" ? :busy : :dead
+        pid = length(words) >= 2 ? something(tryparse(Int, words[2]), 0) : 0
+        reg = _parse_remote_registry(rest)
+        reg === nothing && continue
+        push!(cands, RemoteCandidate(status, reg.port, reg.secret, pid, occursin(r"\"workspace\": \"", rest)))
+    end
+    cands
+end
+
+"""
+Which server to attach to. The one this session was attached to before (`secret`) wins, live OR
+busy, so a reconnect lands the open tabs — whose URLs carry that secret — back on their own
+notebooks; otherwise a live server with a workspace open, then any live one, then a busy one.
+`nothing` only when no server process exists on the node: that, and nothing else, is the case for
+starting one.
+"""
+function _choose_remote_server(cands::Vector{RemoteCandidate}, secret::AbstractString)
+    usable = [c for c in cands if c.status != :dead]
+    if !isempty(secret)
+        i = findfirst(c -> c.secret == secret, usable)
+        i === nothing || return usable[i]
+    end
+    for pick in (c -> c.status == :live && c.has_workspace, c -> c.status == :live, c -> c.status == :busy)
+        i = findfirst(pick, usable)
+        i === nothing || return usable[i]
+    end
+    nothing
+end
+
+"Scan `host`. Returns `(scanned, chosen)`: `scanned == false` means the scan itself failed and nothing can be concluded from it."
+function _find_remote_server(host::String, secret::AbstractString)
+    out = try
+        _ssh_run(host, _SCAN_REMOTE_SERVERS_SNIPPET)
+    catch
+        ""
+    end
+    cands = _parse_remote_candidates(out)
+    cands === nothing && return (false, nothing)
+    (true, _choose_remote_server(cands, secret))
+end
 
 # Keep the remote install in lockstep with `main`: fast-forward the existing clone and report whether
 # anything actually changed. This is what makes "the remote always matches your local SpaceStation" —
@@ -584,15 +703,15 @@ function _remote_connect_task!(r::RemoteSession)
 
         r.state = "checking"
         r.detail = "looking for a running SpaceStation on $(r.host)"
-        reg = try
-            _ssh_run(r.host, _FIND_REMOTE_SERVER_SNIPPET)
-        catch
-            ""
+        scanned, remote = _find_remote_server(r.host, r.secret)
+        if !scanned
+            # The scan is an SSH round trip through whatever ProxyJump the node sits behind. When it
+            # fails we know nothing about the node — and "nothing" must not become "no server", or the
+            # node ends up running two. Say so; the watchdog retries a session that was connected before.
+            r.state = "error"
+            r.detail = "could not check $(r.host) for a running SpaceStation server (the SSH hop stalled) — retrying"
+            return
         end
-        # The snippet only prints a server that's actually answering on this node, so there's no stale
-        # corpse to clear and no foreign-node file to mistake for ours — a dead/other registry is simply
-        # never returned, and we fall through to a fresh bootstrap/start.
-        remote = _parse_remote_registry(reg)
 
         # Auto-update: if the clone is behind main, fast-forward it, then retire the running server +
         # its install marker so a fresh, UPDATED server boots below. No-op when already current, not
@@ -600,31 +719,39 @@ function _remote_connect_task!(r::RemoteSession)
         if _maybe_update_remote_clone!(r.host)
             r.state = "checking"
             r.detail = "updating SpaceStation on $(r.host) to the latest version"
-            # Retire only THIS node's server(s): match the node field (skip a sibling node's same-port file
-            # on a shared $HOME — see the discovery snippet), then confirm it's actually alive here. kill hits
-            # a real pid because a node-matched, answering port is a process on this very node. Bare
-            # "<port>.json" files (no node field) fall back to the liveness probe alone.
+            # Retire only THIS node's IDLE server(s): match the node field (skip a sibling node's same-port
+            # file on a shared $HOME — see the scan snippet), then ask the server what it has open. One
+            # with notebooks open is left running, on the older code, and is attached to as usual: this
+            # path runs on every automatic reconnect (a laptop waking up), and a reconnect must never cost
+            # someone the notebook that has been computing on the node all night. It picks up the update
+            # the next time it is idle. A server too busy to answer is, by the same rule, left alone.
+            # kill hits a real pid because a node-matched server is a process on this very node. The secret
+            # travels to curl through a config on stdin, never through argv (visible in `ps` on a shared node).
             _ssh_try(r.host, raw"""
             me=$(hostname)
             rm -f "$HOME/.spacestation/.install_ok"
+            command -v curl >/dev/null 2>&1 || exit 0
             for f in "$HOME"/.local/state/pluto/servers/*.json; do
                 [ -e "$f" ] || continue
                 p=$(sed -n 's/.*"port": *\([0-9]*\).*/\1/p' "$f")
                 pid=$(sed -n 's/.*"pid": *\([0-9]*\).*/\1/p' "$f")
                 node=$(sed -n 's/.*"node": *"\([^"]*\)".*/\1/p' "$f")
+                s=$(sed -n 's/.*"secret": *"\([^"]*\)".*/\1/p' "$f")
                 [ -n "$node" ] && [ "$node" != "$me" ] && continue
-                alive=0
-                if command -v curl >/dev/null 2>&1; then
-                    curl -fsS -m 3 -o /dev/null "http://127.0.0.1:$p/ping" 2>/dev/null && alive=1
-                else
-                    (exec 3<>/dev/tcp/127.0.0.1/"$p") 2>/dev/null && alive=1
-                fi
-                [ "$alive" = 1 ] || continue
+                curl -fsS -m 3 -o /dev/null "http://127.0.0.1:$p/ping" 2>/dev/null || continue
+                open=$(printf 'url = "http://127.0.0.1:%s/api/v1/notebooks?secret=%s"\n' "$p" "$s" | curl -fsS -m 5 -K - 2>/dev/null) || continue
+                [ "$open" = "[]" ] || continue
                 [ -n "$pid" ] && kill "$pid" 2>/dev/null
                 rm -f "$f"
             done
             """)
-            remote = nothing
+            # Whatever survived the retirement (busy, or with notebooks open) is still the server to use.
+            scanned, remote = _find_remote_server(r.host, r.secret)
+            if !scanned
+                r.state = "error"
+                r.detail = "could not check $(r.host) for a running SpaceStation server (the SSH hop stalled) — retrying"
+                return
+            end
         end
 
         if remote === nothing
@@ -731,18 +858,16 @@ function _remote_connect_task!(r::RemoteSession)
             # SPACESTATION_TUNNELED marks this server as reached over an SSH tunnel: its child workspace
             # ports aren't forwarded to the browser, so its frontend opens workspaces IN-PLACE instead of
             # spawning unreachable children (see serve_api_config + land.js).
-            _ssh_run(r.host, "export SPACESTATION_TUNNELED=1; nohup $(r.julia) --project=$(REMOTE_BOOTSTRAP_DIR) -e 'import SpaceStation; SpaceStation.run(launch_browser=false)' > ~/.spacestation/server.log 2>&1 < /dev/null & disown; true")
+            _ssh_run(r.host, "export SPACESTATION_TUNNELED=1; nohup $(r.julia) $(SERVER_THREAD_FLAGS) --project=$(REMOTE_BOOTSTRAP_DIR) -e 'import SpaceStation; SpaceStation.run(launch_browser=false)' > ~/.spacestation/server.log 2>&1 < /dev/null & disown; true")
             for _ in 1:90
                 sleep(2)
                 _remote_bail(r) && return
-                reg = try
-                    # the server we just launched announces itself by answering /ping on this node (see snippet)
-                    _ssh_run(r.host, _FIND_REMOTE_SERVER_SNIPPET)
-                catch
-                    ""
+                # the server we just launched announces itself by answering /ping on this node
+                scanned, found = _find_remote_server(r.host, "")
+                if scanned && found !== nothing && found.status == :live
+                    remote = found
+                    break
                 end
-                remote = _parse_remote_registry(reg)
-                remote === nothing || break
             end
             if remote === nothing
                 r.state = "error"
@@ -814,7 +939,9 @@ function open_remote_session!(host::String)::RemoteSession
     lock(REMOTE_SESSIONS_LOCK) do
         r = get(REMOTE_SESSIONS, host, nothing)
         if r !== nothing
-            if r.state == "ready" && r.tunnel !== nothing && !process_exited(r.tunnel) && _local_ping_ok(r.local_port)
+            # `:busy` counts as alive: a stalled server behind a working tunnel is not a reason to
+            # rebuild anything (see _probe_port), least of all from a Connect click during the stall.
+            if r.state == "ready" && r.tunnel !== nothing && !process_exited(r.tunnel) && _probe_port(r.local_port) != :dead
                 return r # alive: nothing to repeat
             end
             if r.state ∉ ("ready", "error") && r.task !== nothing && !istaskdone(r.task)
@@ -874,28 +1001,54 @@ const TUNNEL_WATCHDOG_PERIOD = 2.0
 const TUNNEL_RETRY_MIN = 5.0
 const TUNNEL_RETRY_MAX = 120.0
 const TUNNEL_RETRY = Dict{String,Tuple{Float64,Float64}}() # host => (next attempt at, current delay)
+# A tunnel whose ssh is alive is only torn down after this many CONSECUTIVE dead probes — a single
+# refused or reset connection can be ssh re-establishing something, and a rebuild is far more
+# disruptive (every websocket drops) than one more 2s look. An ssh that has exited needs no second look.
+const TUNNEL_DEAD_STRIKES = 2
+const TUNNEL_DEAD_STREAK = Dict{String,Int}()
 const TUNNEL_WATCHDOG = Ref{Union{Task,Nothing}}(nothing)
 const MAX_RESTORED_REMOTES = 8
 
-"Is this session's path to the remote actually usable right now?"
-function _tunnel_healthy(r::RemoteSession)::Bool
-    r.tunnel === nothing && return false
-    process_exited(r.tunnel) && return false
-    _local_ping_ok(r.local_port)
+"""
+What this session's path to the remote looks like right now: `:ok`, `:busy` (the tunnel is up and
+the server behind it is not answering — a notebook has its thread), `:dead` (connections through it
+are refused or torn down) or `:gone` (no ssh process). Only the last two mean there is anything to fix.
+"""
+function _tunnel_verdict(r::RemoteSession)::Symbol
+    r.tunnel === nothing && return :gone
+    process_exited(r.tunnel) && return :gone
+    _probe_port(r.local_port)
 end
 
+"Is this session's path to the remote usable — or at least intact — right now?"
+_tunnel_healthy(r::RemoteSession)::Bool = _tunnel_verdict(r) ∈ (:ok, :busy)
+
 function _supervise_tunnels_once()
-    ready = lock(REMOTE_SESSIONS_LOCK) do
-        [(h, r) for (h, r) in REMOTE_SESSIONS if r.state == "ready" && !r.cancelled]
+    # Sessions worth looking after: the ones that are up, and the ones that WERE up (they have a port
+    # and a secret) but whose last rebuild ended in an error — a scan that failed, a tunnel that did not
+    # come up, a host that is off for the weekend. Those used to stay "error" until someone clicked
+    # Connect; now they are retried with the same backoff as any dead tunnel.
+    watched = lock(REMOTE_SESSIONS_LOCK) do
+        [(h, r) for (h, r) in REMOTE_SESSIONS if !r.cancelled && (r.state == "ready" || (r.state == "error" && r.local_port > 0 && !isempty(r.secret)))]
     end
-    for (host, r) in ready
-        if _tunnel_healthy(r)
-            lock(REMOTE_SESSIONS_LOCK) do
-                delete!(TUNNEL_RETRY, host) # healthy again: forget the backoff
+    for (host, r) in watched
+        if r.state == "ready"
+            verdict = _tunnel_verdict(r)
+            if verdict ∈ (:ok, :busy)
+                lock(REMOTE_SESSIONS_LOCK) do
+                    delete!(TUNNEL_RETRY, host) # healthy again: forget the backoff
+                    delete!(TUNNEL_DEAD_STREAK, host)
+                end
+                continue
             end
-            continue
+            if verdict == :dead
+                strikes = lock(REMOTE_SESSIONS_LOCK) do
+                    TUNNEL_DEAD_STREAK[host] = get(TUNNEL_DEAD_STREAK, host, 0) + 1
+                end
+                strikes < TUNNEL_DEAD_STRIKES && continue
+            end
         end
-        # That ping can take seconds. If the user reconnected meanwhile, this snapshot is stale, and
+        # That probe can take seconds. If the user reconnected meanwhile, this snapshot is stale, and
         # rebuilding it would race the new session for the port.
         _is_current_session(r) || continue
 
@@ -922,6 +1075,7 @@ function _supervise_tunnels_once()
         # window in which a reload would otherwise hit the browser's own error page.
         r.local_port > 0 && _hold_port!(r, r.local_port)
         lock(REMOTE_SESSIONS_LOCK) do
+            delete!(TUNNEL_DEAD_STREAK, host) # the rebuilt tunnel starts with a clean record
             # only start a rebuild if one is not already running for this host
             if r.task === nothing || istaskdone(r.task)
                 r.task = @asynclog _remote_connect_task!(r)

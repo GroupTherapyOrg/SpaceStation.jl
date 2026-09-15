@@ -157,7 +157,12 @@ test/LazyMode.jl on CI). Brief retries let transient holds clear; if the destina
 fall back to a plain in-place write — non-atomic (the pre-atomic status quo), but a save must
 never fail.
 """
-function write_atomic(path::String, content::AbstractString)
+write_atomic(path::String, content::AbstractString) = offload_blocking(() -> _write_atomic_now(path, content))
+
+# The write itself runs through `offload_blocking`: a notebook save is a synchronous write to what is,
+# on a cluster, a networked home directory, and a slow one holds the serving thread — the whole server —
+# until it returns. Off that thread it holds only the save.
+function _write_atomic_now(path::String, content::AbstractString)
     tmp = path * ".writing." * string(rand(UInt32), base=16) * ".tmp"
     try
         write(tmp, content)
@@ -200,7 +205,8 @@ function save_notebook(notebook::Notebook, path::String)
             # in-memory state is the merge target — but say so instead of losing it silently.
             if notebook.last_saved_file_hash != zero(UInt64) && isfile(path)
                 disk_hash = try
-                    hash(read(path, String))
+                    # off the serving thread: a read from a slow networked home stalls the thread just like a write
+                    offload_blocking(() -> hash(read(path, String)))
                 catch
                     nothing
                 end
@@ -418,9 +424,10 @@ end
 # UTILS
 
 function load_notebook_nobackup(path::String; kwargs...)::Notebook
-    open(path, "r") do io
-        load_notebook_nobackup(io, path; kwargs...)
-    end
+    # Read the whole file off the serving thread, then parse from memory: parsing straight from an
+    # IOStream would issue its reads on the serving thread, one slow networked-disk stall at a time.
+    content = offload_blocking(() -> read(path))
+    load_notebook_nobackup(IOBuffer(content), path; kwargs...)
 end
 
 # BACKUPS
@@ -434,7 +441,7 @@ function load_notebook(path::String; disable_writing_notebook_files::Bool=false)
     #     backup_path = path * ".backup" * string(backup_num)
     #     backup_num += 1
     # end
-    disable_writing_notebook_files || readwrite(path, backup_path)
+    disable_writing_notebook_files || offload_blocking(() -> readwrite(path, backup_path))
 
     loaded = load_notebook_nobackup(path)
     # Analyze cells so that the initial save is in topological order
@@ -447,8 +454,8 @@ function load_notebook(path::String; disable_writing_notebook_files::Bool=false)
     disable_writing_notebook_files || save_notebook(loaded)
     loaded.topology = NotebookTopology{Cell}(; cell_order=ImmutableVector(loaded.cells))
 
-    disable_writing_notebook_files || if only_versions_or_lineorder_differ(path, backup_path)
-        rm(backup_path)
+    disable_writing_notebook_files || if offload_blocking(() -> only_versions_or_lineorder_differ(path, backup_path))
+        offload_blocking(() -> rm(backup_path))
     else
         @warn "Old Pluto notebook might not have loaded correctly. Backup saved to: " backup_path
     end

@@ -202,7 +202,7 @@ function add(session::ServerSession, notebook::Notebook; run_async::Bool=true)
                     # @info "Notebook was saved by me very recently, not reloading from file."
                 # nothing if the file is temporarily unreadable (e.g. mid-rename) — treated as "changed"
                 disk_content_hash = try
-                    hash(read(notebook.path, String))
+                    offload_blocking(() -> hash(read(notebook.path, String))) # off the serving thread: see Offload.jl
                 catch
                     nothing
                 end

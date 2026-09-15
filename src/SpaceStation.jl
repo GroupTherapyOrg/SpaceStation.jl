@@ -59,6 +59,7 @@ include("./Configuration.jl")
 
 include("./evaluation/Tokens.jl")
 include("./evaluation/Throttled.jl")
+include("./evaluation/Offload.jl")
 include("./runner/PlutoRunner/src/PlutoRunner.jl")
 include("./packages/temp dir in scratch.jl")
 include("./packages/PkgCompat.jl")
