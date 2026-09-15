@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.2](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.7.1...v0.7.2) (2026-09-15)
+
+
+### Bug Fixes
+
+* a busy remote server no longer costs an SSH workspace its tunnel, or gets a duplicate ([#98](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/98)) ([fa96830](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/fa968301aa9cc514857ba74717e4a8717732ba54))
+
 ## [0.7.1](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.7.0...v0.7.1) (2026-09-14)
 
 
