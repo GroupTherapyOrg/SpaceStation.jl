@@ -372,7 +372,9 @@ drop_session!(host) = lock(() -> delete!(Pluto.REMOTE_SESSIONS, host), Pluto.REM
             try
                 @test Pluto._tunnel_verdict(session) == :busy
                 @test Pluto._tunnel_healthy(session)
+                @info "DIAG busy pass" verdict=Pluto._tunnel_verdict(session) exited=process_exited(proc) exitcode=proc.exitcode
                 Pluto._supervise_tunnels_once()
+                @info "DIAG after busy pass" exited=process_exited(proc) exitcode=proc.exitcode state=session.state streak=get(Pluto.TUNNEL_DEAD_STREAK, "busy-node", nothing)
                 @test session.state == "ready"                # busy: nothing to fix
                 @test !haskey(Pluto.TUNNEL_RETRY, "busy-node")
                 @test !haskey(Pluto.TUNNEL_DEAD_STREAK, "busy-node") # and not a strike, either
@@ -381,7 +383,9 @@ drop_session!(host) = lock(() -> delete!(Pluto.REMOTE_SESSIONS, host), Pluto.REM
                 foreach(c -> (try close(c) catch end), held)
                 sleep(0.3)
                 @test Pluto._tunnel_verdict(session) == :dead
+                @info "DIAG before supervise" verdict=Pluto._tunnel_verdict(session) exited=process_exited(proc) running=process_running(proc) exitcode=proc.exitcode state=session.state streak=get(Pluto.TUNNEL_DEAD_STREAK, "busy-node", nothing) retry=get(Pluto.TUNNEL_RETRY, "busy-node", nothing) sessions=collect(keys(Pluto.REMOTE_SESSIONS)) probe=Pluto._probe_port(port)
                 Pluto._supervise_tunnels_once()
+                @info "DIAG after supervise" exited=process_exited(proc) exitcode=proc.exitcode state=session.state detail=session.detail streak=get(Pluto.TUNNEL_DEAD_STREAK, "busy-node", nothing) retry=get(Pluto.TUNNEL_RETRY, "busy-node", nothing) probe=Pluto._probe_port(port)
                 @test session.state == "ready"                # one refusal is not a verdict
                 @test get(Pluto.TUNNEL_DEAD_STREAK, "busy-node", 0) == 1
                 Pluto._supervise_tunnels_once()
