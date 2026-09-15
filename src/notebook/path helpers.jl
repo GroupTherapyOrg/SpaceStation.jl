@@ -192,7 +192,7 @@ const tamepath = abspath ∘ tryexpanduser
 "Block until reading the file two times in a row gave the same result."
 function wait_until_file_unchanged(filename::String, timeout::Real, last_contents::String="-=-=-=-")::Nothing
 	new_contents = try
-        read(filename, String)
+        offload_blocking(() -> read(filename, String)) # off the serving thread: see Offload.jl
     catch
         ""
     end
