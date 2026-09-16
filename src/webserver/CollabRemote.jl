@@ -870,11 +870,34 @@ function _remote_connect_task!(r::RemoteSession)
             # spawning unreachable children (see serve_api_config + land.js).
             # A hub (SPACESTATION_HUB=1 before the import, hub=true for the run): it never opens a
             # notebook itself — each workspace gets a child on the node, relayed under /w/<id>/ — and
-            # it never parses the registries. Its log goes to a NODE-LOCAL directory, not $HOME: a
-            # redirected stdout is a plain file stream, so every log line would otherwise be a
-            # synchronous write to the networked home, on the hub's serving thread. `mktemp -d`, not a name
-            # anyone could pre-create in a shared /tmp; ~/.spacestation/server.log links to it.
-            _ssh_run(r.host, "export SPACESTATION_TUNNELED=1 SPACESTATION_HUB=1; d=\$(mktemp -d \"\${TMPDIR:-/tmp}/spacestation.XXXXXX\") || exit 1; ln -sfn \"\$d/server.log\" ~/.spacestation/server.log; nohup $(r.julia) $(SERVER_THREAD_FLAGS) --project=$(REMOTE_BOOTSTRAP_DIR) -e 'import SpaceStation; SpaceStation.run(launch_browser=false, hub=true)' > \"\$d/server.log\" 2>&1 < /dev/null & disown; true")
+            # it never parses the registries.
+            #
+            # Everything it and its children WRITE goes to a node-local directory, not to $HOME or the
+            # depot: on a cluster those are networked filesystems that stall for seconds to minutes,
+            # and Julia's file I/O blocks the calling thread while they do. Worse, Pkg's usage log
+            # takes a pidfile lock (a file watch) and the scratch spaces are walked with stat, and
+            # both happen under Julia's process-wide libuv lock — held across a stall, that stops the
+            # event loop of the whole process, sockets included, even on threads that have nothing
+            # to do. So: a writable depot on the node in FRONT of the shared one (Julia's depot stack
+            # is made for this — packages, registries and compiled caches are still read from the
+            # shared depot, nothing is recompiled; usage logs, scratch spaces and new caches land
+            # locally), and the log there too (a redirected stdout is a plain file stream). The
+            # directory is created once per node with mktemp (never a name someone else could
+            # pre-create in a shared /tmp), remembered per node in $HOME, and reused while it exists
+            # and is ours. ~/.spacestation/server.log links to the live log.
+            _ssh_run(r.host, raw"""
+            export SPACESTATION_TUNNELED=1 SPACESTATION_HUB=1
+            mkdir -p ~/.spacestation
+            marker=~/.spacestation/nodedir-$(hostname)
+            d=$(cat "$marker" 2>/dev/null)
+            if [ -z "$d" ] || [ ! -d "$d" ] || [ ! -O "$d" ]; then
+                d=$(mktemp -d "${TMPDIR:-/tmp}/spacestation.XXXXXX") || exit 1
+                echo "$d" > "$marker"
+            fi
+            mkdir -p "$d/depot"
+            export JULIA_DEPOT_PATH="$d/depot:${JULIA_DEPOT_PATH:-$HOME/.julia}"
+            ln -sfn "$d/server.log" ~/.spacestation/server.log
+            """ * "nohup $(r.julia) $(SERVER_THREAD_FLAGS) --project=$(REMOTE_BOOTSTRAP_DIR) -e 'import SpaceStation; SpaceStation.run(launch_browser=false, hub=true)' > \"\$d/server.log\" 2>&1 < /dev/null & disown; true")
             for _ in 1:90
                 sleep(2)
                 _remote_bail(r) && return
