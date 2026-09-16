@@ -8,13 +8,14 @@
 # the server from outside concludes it is gone. That is what a 160 MB output-cache sidecar, or a
 # notebook save, looked like from the hub's tunnel watchdog.
 #
-# The fix is to give the process a second thread and to put the blocking work there. Started with
-# `--threads=1,1`, a server has one default thread (thread 1, where the main task only waits) and one
-# interactive thread (where HTTP.jl and the notebooks live). `Threads.@spawn` from the interactive
-# thread lands on the idle default thread, deterministically, and the caller waits with a yield.
+# The fix is to give the process more threads and to put the blocking work there. Started with
+# `--threads=4,1`, a server has one interactive thread — thread 1, the main thread, where HTTP.jl and
+# the notebooks live (Julia puts the main thread in the interactive pool when one is requested) — and
+# four default threads that do nothing else. `Threads.@spawn` from the interactive thread lands on
+# one of those, and the caller waits with a yield instead of a stall.
 
-"Flags every SpaceStation server process is launched with: one interactive thread for serving, one default thread for `offload_blocking`."
-const SERVER_THREAD_FLAGS = "--threads=1,1"
+"Flags every SpaceStation server process is launched with: one interactive thread for serving, four default threads for `offload_blocking` — several, so one call stuck on a slow disk does not queue every other offloaded call behind it."
+const SERVER_THREAD_FLAGS = "--threads=4,1"
 
 """
 Run `f` off the serving thread — a blocking file operation, or a long CPU-bound one — when the

@@ -141,9 +141,9 @@ end
 @testset "offload_blocking" begin
     @test Pluto.offload_blocking(() -> 21 * 2) == 42
     @test_throws ArgumentError Pluto.offload_blocking(() -> throw(ArgumentError("plain")))
-    @test Pluto.SERVER_THREAD_FLAGS == "--threads=1,1"
+    @test Pluto.SERVER_THREAD_FLAGS == "--threads=4,1"
     if Threads.nthreads(:interactive) > 0
-        # launched like a server (`julia --threads=1,1`): work called from the interactive (serving)
+        # launched like a server (`julia --threads=4,1`): work called from the interactive (serving)
         # thread lands on the default thread, and an error still comes back as itself, not wrapped
         @test fetch(Threads.@spawn :interactive Pluto.offload_blocking(Threads.threadpool)) === :default
         caught = fetch(Threads.@spawn :interactive begin

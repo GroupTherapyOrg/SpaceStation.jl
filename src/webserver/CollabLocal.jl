@@ -182,6 +182,10 @@ function shutdown_local_session!(path::String)
             if !process_exited(t)
                 sleep(0.5)
                 process_exited(t) || kill(t)
+                # SIGTERM can leave a Julia 1.12 process spinning in its exit-time finalizers; do not
+                # let a child that ignores it outlive the hub with its port.
+                timedwait(() -> process_exited(t), 5.0; pollint=0.1)
+                process_exited(t) || kill(t, Base.SIGKILL)
             end
         catch
         end
