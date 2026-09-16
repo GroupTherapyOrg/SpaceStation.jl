@@ -275,10 +275,13 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
         const s = get_color_scheme()
         return s === "system" ? url : `${url}${url.includes("?") ? "&" : "?"}scheme=${s}`
     }
-    const open_href = (url) => with_homebase(desktop_url(scheme_url(url)))
+    // A workspace's URL is the hub's own page for it (`/w/<id>/`, relative to the hub — see
+    // src/webserver/Proxy.jl), so resolve it against this page before handing it to a tab or the deck.
+    const abs_url = (url) => new URL(url, window.location.href).href
+    const open_href = (url) => with_homebase(desktop_url(scheme_url(abs_url(url))))
     const open_target = desktop ? "_self" : "_blank"
-    // Desktop: workspaces open as DECK TABS — the deck dedupes by server, so reopening focuses.
-    const post_open_tab = (url, title) => post_to_deck({ type: "spacestation:open-workspace", url: desktop_url(url), title })
+    // Desktop: workspaces open as DECK TABS — the deck dedupes by workspace, so reopening focuses.
+    const post_open_tab = (url, title) => post_to_deck({ type: "spacestation:open-workspace", url: desktop_url(abs_url(url)), title })
     const [listing, set_listing] = useState(
         /** @type {{path: String, parent: String, entries: Array<{name: String, path: String}>, crumbs: Array<{name: String, path: String}>}?} */ (null)
     )
@@ -410,24 +413,11 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
         set_running((rs) => rs.filter((w) => !(w.kind === "local" && w.path === path)))
     }, [])
 
-    // Open a folder as a workspace. Local: spawn a child server in its own tab (connect_local) —
-    // the desktop shell does this too, just navigating its single window there instead of opening
-    // a tab, so the workspace stays a real running child this launcher lists and returns to. Over
-    // a tunnel (a remote server): switch THIS server's workspace in-place and reload — the child's
-    // port wouldn't be reachable from the browser, so a new tab would just fail to connect.
-    const open_workspace = useCallback(
-        async (path) => {
-            if (!tunneled) return connect_local(path)
-            try {
-                await get_json(`./api/v1/workspace/open?path=${encodeURIComponent(path)}`, { method: "POST" })
-                remember_workspace(path)
-                window.location.reload()
-            } catch (e) {
-                set_error(String(e))
-            }
-        },
-        [tunneled, connect_local]
-    )
+    // Open a folder as a workspace: spawn (or reattach to) its child server and open the hub's page
+    // for it (connect_local). The same over an SSH tunnel: the page is the hub's, under its one
+    // forwarded port, and the hub relays to the child on the node — nothing else is forwarded. The
+    // desktop shell does the same, as a deck tab instead of a browser tab.
+    const open_workspace = useCallback(async (path) => connect_local(path), [connect_local])
 
     // The ✕ on a Running Workspace card: cancel a connecting one, dismiss an errored one, disconnect a
     // ready remote, or shut down a ready local workspace (that one confirms — it has live notebooks).
@@ -978,7 +968,10 @@ const TerminalView = ({ tid, cwd, visible, scheme, notebook_env }) => {
             // A notebook-environment terminal (issue #29): the server types `julia --project=<env>`
             // into the shell it spawns for this tid — only on spawn, so reattaching never repeats it.
             const env_param = notebook_env ? `&notebook_env=${encodeURIComponent(notebook_env)}` : ""
-            socket = new WebSocket(`${proto}://${window.location.host}/terminal?tid=${tid}${cwd_param}${size_param}${env_param}`)
+            // Relative to this page: under a hub's /w/<id>/ the terminal is the hub's, at that prefix.
+            const terminal_url = new URL(`./terminal?tid=${tid}${cwd_param}${size_param}${env_param}`, window.location.href)
+            terminal_url.protocol = `${proto}:`
+            socket = new WebSocket(terminal_url.href)
             socket_ref.current = socket
             socket.binaryType = "arraybuffer"
             // Measure the panel and tell the pty (the server ignores a no-change resize). Called once
@@ -1339,6 +1332,10 @@ const Land = () => {
     // This server may be reached over an SSH tunnel (when it's a remote workspace). If so, its child
     // workspace ports aren't forwarded to the browser, so workspaces open IN-PLACE rather than in new tabs.
     const [tunneled, set_tunneled] = useState(false)
+    // This page is a workspace on a hub, under /w/<id>/ (src/webserver/Proxy.jl): the notebooks live
+    // in a child server the hub relays to; the hub itself never freezes with them. Known
+    // synchronously from the URL, so nothing waits on the config fetch to behave right.
+    const [hub, set_hub] = useState(/^\/w\/[^/]+\//.test(window.location.pathname))
     // The desktop shell (desktop/): one webview window, no browser tabs — workspaces open in-place
     // like tunneled ones, but the SSH sections stay (their tunnels come FROM this local server).
     const [desktop, set_desktop] = useState(desktop_boot_hint)
@@ -1355,6 +1352,7 @@ const Land = () => {
             .then((c) => {
                 set_tunneled(!!(c && c.tunneled))
                 set_desktop(desktop_boot_hint || !!(c && c.desktop))
+                set_hub(!!(c && c.hub && c.wid != null))
                 if (Array.isArray(c?.notebook_extensions) && c.notebook_extensions.length > 0) set_notebook_extensions(c.notebook_extensions)
             })
             .catch(() => {})
@@ -1390,7 +1388,7 @@ const Land = () => {
             window.location.href = homebase_url.current
             return
         }
-        if (tunneled || desktop) {
+        if (!hub && (tunneled || desktop)) {
             fetch("./api/v1/workspace/close", { method: "POST" }).finally(() => window.location.reload())
             return
         }
@@ -1404,6 +1402,8 @@ const Land = () => {
                 return
             }
         } catch (e) {}
+        // Under a hub the launcher is the hub's root, always: seed it when no homebase was recorded.
+        if (hub && homebase_url.current == null) homebase_url.current = new URL("../../", window.location.href).href
         // No live opener. If we know the homebase, switch to its tab: reuse it (never a duplicate) and
         // focus the returned handle, so an ALREADY-OPEN homebase actually gets raised to the front — plain
         // window.open(url, name) reuses the tab but only auto-focuses when it has to CREATE one.
@@ -1436,7 +1436,7 @@ const Land = () => {
             return
         }
         set_show_opener(true)
-    }, [tunneled, desktop])
+    }, [tunneled, desktop, hub])
 
     // Terminals are tabs INSIDE the terminal panel (like VS Code). Each is a persistent shell
     // keyed by tid; the list + active terminal are restored on reload. `terminal_seq` numbers them.
@@ -1604,12 +1604,26 @@ const Land = () => {
         [load_listing]
     )
 
+    // The relay's answers for this workspace's child: a 504 `workspace_busy` (no answer in time) or a
+    // 503 `workspace_down`. The page stays usable — the hub answered — and says which it is.
+    const [workspace_status, set_workspace_status] = useState(/** @type {{kind: "busy" | "down", since: number, detail: String}?} */ (null))
+    const refreshing = useRef(false)
     const refresh = useCallback(async () => {
+        // One poll in flight at a time, with a deadline: against a stalled child every poll would
+        // otherwise pile up on the one origin, and the browser's per-origin connection limit would
+        // then block the sidebar and the terminal handshake behind them.
+        if (refreshing.current) return
+        refreshing.current = true
+        const ctrl = new AbortController()
+        const deadline = setTimeout(() => ctrl.abort(), 15_000)
+        const signal = ctrl.signal
         try {
-            const ws_response = await fetch("./api/v1/workspace")
+            const ws_response = await fetch("./api/v1/workspace", { signal })
             if (ws_response.status === 404) {
                 set_no_workspace(true)
                 set_workspace(null)
+                set_error(null)
+                return // the launcher has no notebooks to list (a hub's root list would poll every workspace's child)
             } else if (ws_response.ok) {
                 set_no_workspace(false)
                 set_workspace(await ws_response.json())
@@ -1632,7 +1646,16 @@ const Land = () => {
                 // Any other status (e.g. 500) — don't silently leave stale workspace state on screen.
                 throw new Error(`workspace request failed: ${ws_response.status}`)
             }
-            const running_now = await get_json("./api/v1/notebooks")
+            const nb_response = await fetch("./api/v1/notebooks", { signal })
+            if (nb_response.status === 503 || nb_response.status === 504) {
+                const info = await nb_response.json().catch(() => ({}))
+                set_workspace_status((prev) => ({ kind: info.workspace_down ? "down" : "busy", since: prev?.since ?? Date.now(), detail: String(info.detail ?? "") }))
+                set_error(null)
+                return
+            }
+            if (!nb_response.ok) throw new Error(`notebooks request failed: ${nb_response.status}`)
+            const running_now = await nb_response.json()
+            set_workspace_status(null)
             set_running(running_now)
             // on first load, show already-running notebooks as tabs (e.g. one passed via Pluto.run(notebook=…))
             if (!auto_tabbed.current) {
@@ -1646,10 +1669,32 @@ const Land = () => {
             // like. That is not an error the user has to act on: the hub's watchdog is already
             // rebuilding the tunnel, on the same local port, so this tab's URL stays valid. Wait for
             // it instead. A response that arrives and is bad (a thrown status) is still a real error.
-            if (e instanceof TypeError) set_offline(true)
+            if (e?.name === "AbortError") set_workspace_status((prev) => ({ kind: "busy", since: prev?.since ?? Date.now(), detail: "no answer within 15 seconds" }))
+            else if (e instanceof TypeError) set_offline(true)
             else set_error(String(e))
+        } finally {
+            clearTimeout(deadline)
+            refreshing.current = false
         }
     }, [add_tab])
+
+    // Replace a dead child: the hub stops whatever is left of it and spawns a fresh one for this folder.
+    const restart_workspace = useCallback(async () => {
+        const root = workspace?.root
+        if (root == null) return
+        set_workspace_status((prev) => ({ kind: "busy", since: prev?.since ?? Date.now(), detail: "restarting the workspace server…" }))
+        try {
+            let status = await get_json(`./api/v1/local/restart?path=${encodeURIComponent(root)}`, { method: "POST" })
+            while (status.state !== "ready" && status.state !== "error") {
+                await new Promise((r) => setTimeout(r, 1000))
+                status = await get_json(`./api/v1/local/status?path=${encodeURIComponent(root)}`)
+            }
+            if (status.state === "ready") window.location.reload()
+            else set_error(String(status.detail ?? "the workspace server did not start"))
+        } catch (e) {
+            set_error(String(e))
+        }
+    }, [workspace])
 
     useEffect(() => {
         refresh()
@@ -1889,7 +1934,9 @@ const Land = () => {
     const shutdown_server = useCallback(async () => {
         if (
             !(await ask_confirm(
-                "Shut down the SpaceStation server?\n\nRunning notebooks and the integrated terminal will stop. SSH remote servers keep running and can be reattached later.",
+                hub
+                    ? `Shut down the server for this workspace?\n\nIts running notebooks stop; this terminal, the launcher and other workspaces keep running.`
+                    : "Shut down the SpaceStation server?\n\nRunning notebooks and the integrated terminal will stop. SSH remote servers keep running and can be reattached later.",
                 { action: "Shut down" }
             ))
         )
@@ -1899,25 +1946,37 @@ const Land = () => {
         // server is really gone by polling /ping — and only then declare it down. If it keeps
         // answering past the grace period, say so rather than lying that it shut down.
         fetch("./api/v1/shutdown", { method: "POST" }).catch(() => {})
+        // Under a hub only this workspace's child stops; the hub (and its /ping) stay up by design, so
+        // the proof is the relay reporting the workspace down — then the page offers a restart.
         const still_up = async () => {
             try {
+                if (hub) {
+                    // 503 down, 504 busy, 502 mid-teardown (a reset connection): all mean "not up"
+                    const r = await fetch("./api/v1/notebooks", { cache: "no-store" })
+                    return !(r.status === 502 || r.status === 503 || r.status === 504)
+                }
                 await fetch("./ping", { method: "GET", cache: "no-store" })
                 return true
             } catch {
                 return false
             }
         }
-        const deadline = Date.now() + 8000
+        // a child's teardown escalates to SIGKILL after ~6 s (shutdown_local_session!), so give a hub longer
+        const deadline = Date.now() + (hub ? 15000 : 8000)
         while (Date.now() < deadline) {
             await new Promise((r) => setTimeout(r, 400))
             if (!(await still_up())) {
+                if (hub) {
+                    set_workspace_status({ kind: "down", since: Date.now(), detail: "shut down from this page" })
+                    return
+                }
                 document.body.innerHTML =
                     '<div style="font: 15px/1.6 system-ui, sans-serif; padding: 3rem; text-align: center; color: #888">SpaceStation has shut down. You can close this tab.</div>'
                 return
             }
         }
         set_error("Shutdown was requested, but the server is still responding — it may not have shut down.")
-    }, [])
+    }, [hub])
 
     // The opener is "homebase": it shows on first launch (no workspace) and on demand (the "open another
     // workspace" button). Picking a folder spawns a child server in a new tab — it never takes over this
@@ -1940,6 +1999,14 @@ const Land = () => {
                               </p>
                           </div>
                       </div>
+                  </div>`
+                : null}
+            ${workspace_status != null && !offline
+                ? html`<div class="workspace-status ${workspace_status.kind}" role="status" aria-live="polite">
+                      ${workspace_status.kind === "down"
+                          ? html`<span>The server for this workspace stopped answering. Its notebooks are gone with it; the sidebar and terminal are fine.</span>
+                                <button onClick=${restart_workspace}>Restart workspace server</button>`
+                          : html`<span>The server for this workspace is busy (${Math.max(1, Math.round((Date.now() - workspace_status.since) / 1000))}s) — notebooks will catch up; the sidebar and terminal keep working.</span>`}
                   </div>`
                 : null}
             ${sidebar_hidden

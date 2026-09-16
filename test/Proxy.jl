@@ -20,6 +20,13 @@ function wait_for_server(port; timeout=30)
     false
 end
 
+@testset "JSON strings round-trip through the hub's writer and reader" begin
+    for str in ["plain", "with \"quotes\" and \\backslash", "tab\there", "new\nline", "café/ünïcode", "emoji 🧡"]
+        encoded = Pluto._json_string(str)
+        @test Pluto._json_unescape(chop(encoded; head=1, tail=1)) == str
+    end
+end
+
 @testset "Workspace hub proxy" begin
     state = mktempdir()
     ws = mktempdir()
@@ -192,6 +199,13 @@ end
                     @test count(==(503), got) >= 1                       # past the cap: refused at once
                     @test count(==(504), got) >= Pluto.PROXY_PARKED_MAX - 5 # the rest: the poll deadline
                     @test all(x -> x ∈ (503, 504), got)
+                    # the hub's root notebook list asks every child at once: one stalled child costs one
+                    # timeout, and the live child's notebooks are still listed, with no "busy" sentinel
+                    t = @elapsed r = hget("http://127.0.0.1:$hub_port/api/v1/notebooks?secret=$hub_secret")
+                    @test r.status == 200
+                    @test count("notebook_id", body(r)) == length(child_session.notebooks)
+                    @test !occursin("\"busy\"", body(r))
+                    @test t < 12
                     # …and none of that touched the hub's own thread
                     t = @elapsed r = hget("$sbase/ping")
                     @test r.status == 200 && t < 0.5
@@ -202,6 +216,27 @@ end
                     close(stub)
                     lock(() -> delete!(Pluto.LOCAL_SESSIONS, Pluto.tamepath(stalled_ws)), Pluto.LOCAL_SESSIONS_LOCK)
                 end
+            end
+
+            @testset "the hub's own surface: relative workspace URLs, the terminal's target, the root notebook list" begin
+                s = lock(() -> Pluto.LOCAL_SESSIONS[Pluto.tamepath(ws)], Pluto.LOCAL_SESSIONS_LOCK)
+                @test Pluto._local_session_url(s) == "/w/$wid/"                     # relative to the hub, no secret
+                @test Pluto._terminal_target(hub_session, ws) == (child_port, child_secret)  # a terminal in this workspace targets its child
+                @test Pluto._terminal_target(hub_session, mktempdir()) == (hub_port, hub_secret) # elsewhere: the hub itself
+                r = hget("http://127.0.0.1:$hub_port/api/v1/local/list?secret=$hub_secret")
+                @test occursin("\"wid\":\"$wid\"", body(r)) && occursin("\"url\":\"/w/$wid/\"", body(r))
+                @test !occursin(child_secret, body(r))                              # the child's secret stays in the hub
+                # the hub's root notebook list is the union of its children's — what "anything running here?" means for a hub
+                r = hget("http://127.0.0.1:$hub_port/api/v1/notebooks?secret=$hub_secret")
+                @test r.status == 200
+                @test count("notebook_id", body(r)) == length(child_session.notebooks)
+                @test isempty(hub_session.notebooks)
+                # and the hub says so in its connection file, so a reconnecting SSH hub picks it over its children
+                @test occursin("\"hub\": true", read(Pluto.collab_registry_path(hub_port), String))
+                @test occursin("\"hub\": false", read(Pluto.collab_registry_path(child_port), String))
+                # hub mode refuses to run a notebook itself
+                @test hpost("http://127.0.0.1:$hub_port/new?secret=$hub_secret").status == 409
+                @test hget("http://127.0.0.1:$hub_port/open?path=$(HTTP.escapeuri(joinpath(ws, "nb.jl")))&secret=$hub_secret").status == 409
             end
 
             @testset "a dead child is a 503 at once, and the hub keeps answering" begin

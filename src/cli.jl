@@ -94,10 +94,62 @@ function main(args)
         end
     end
 
-    run(; on_code_change, launch_browser,
-        (port === nothing ? () : (port=port,))...,
-        (workspace === nothing ? () : (workspace=workspace,))...,
-        (notebook === nothing ? () : (notebook=notebook,))...)
+    if notebook !== nothing
+        # a single notebook: a plain server, as always
+        run(; on_code_change, launch_browser, (port === nothing ? () : (port=port,))..., notebook=notebook)
+        return 0
+    end
+    # The launcher, and `spacestation <folder>`: a workspace HUB (src/webserver/Proxy.jl). It never
+    # runs a notebook itself; each folder gets a child server it relays to, at /w/<id>/.
+    #
+    # A hub is marked in its environment BEFORE `import SpaceStation` (SPACESTATION_HUB=1 skips the
+    # registry parse at import) and serves with `--threads=4,1`; this process is neither, so it
+    # starts one that is and waits for it, forwarding its exit code. Ctrl-C reaches the child
+    # through the terminal's process group.
+    if !PkgCompat.is_hub_process()
+        cmd = `$(Base.julia_cmd()) --startup-file=no $(SERVER_THREAD_FLAGS) --project=$(something(Base.active_project(), pkgdir(@__MODULE__))) -e "import SpaceStation; exit(SpaceStation.main(ARGS))" -- $(args)`
+        proc = Base.run(setenv(cmd, "SPACESTATION_HUB" => "1"); wait=false)
+        try
+            wait(proc)
+        catch e
+            e isa InterruptException || rethrow()
+            # The child sits in the terminal's foreground process group, so it got the same Ctrl-C and
+            # is shutting down (reaping its workspace children, up to a few seconds each). A second
+            # interrupt would abort that cleanup and orphan them: give it a grace period first.
+            timedwait(() -> process_exited(proc), 15.0; pollint=0.2)
+            process_exited(proc) || (try kill(proc, Base.SIGTERM) catch end)
+            wait(proc)
+        end
+        return proc.exitcode
+    end
+    session = ServerSession(; options=Configuration.from_flat_kwargs(; on_code_change, launch_browser=false, hub=true, (port === nothing ? () : (port=port,))...))
+    server = run!(session)
+    launcher_url = "http://localhost:$(session.options.server.port)/?secret=$(session.secret)"
+    try
+        if workspace !== nothing
+            s = open_local_session!(workspace)
+            deadline = time() + 240
+            while s.state ∉ ("ready", "error") && time() < deadline
+                sleep(0.5)
+            end
+            if s.state == "ready"
+                url = "http://localhost:$(session.options.server.port)$(_local_session_url(s))?secret=$(session.secret)"
+                @info "\nWorkspace $(workspace) is at $(url)\n"
+                launch_browser && open_in_default_browser(url; wait=false)
+            else
+                @warn "the workspace server for $(workspace) did not start: $(s.detail) — opening the launcher instead"
+                launch_browser && open_in_default_browser(launcher_url; wait=false)
+            end
+        elseif launch_browser
+            open_in_default_browser(launcher_url; wait=false)
+        end
+        Base.wait(server)
+    catch e
+        # Ctrl-C while the first workspace is still starting: stop the hub the ordinary way, which
+        # reaps the child it just spawned (on_shutdown → close_all_local_sessions)
+        e isa InterruptException || rethrow()
+        close(server)
+    end
     return 0
 end
 

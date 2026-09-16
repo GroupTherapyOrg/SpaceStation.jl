@@ -132,11 +132,44 @@ function _windows_shell_exe()::String
     "cmd.exe"
 end
 
+"""
+The server a terminal's agent surface should point at: the workspace's own child server when this
+process is a hub relaying that folder (Proxy.jl) — that is where its notebooks are — else this
+server. `pluto-collab` in that terminal then targets the right process without discovery.
+"""
+function _terminal_target(session::ServerSession, dir::String)
+    s = lock(() -> get(LOCAL_SESSIONS, tamepath(dir), nothing), LOCAL_SESSIONS_LOCK)
+    if s !== nothing && s.state == "ready" && s.port > 0
+        return (s.port, s.secret)
+    end
+    (session.options.server.port, session.secret)
+end
+
+# The `julia --project=<env>` line for a notebook that is open in this workspace's child server
+# (`/api/v1/notebook/env` there), or nothing when this process has no child for the folder, the
+# child does not know the notebook, or it has no managed environment.
+function _child_notebook_env_command(session::ServerSession, cwd::AbstractString, notebook_id::AbstractString)::Union{Nothing,String}
+    isempty(cwd) && return nothing
+    port, secret = _terminal_target(session, String(cwd))
+    port == session.options.server.port && return nothing # no child: this server is the notebook's home, and it did not know the id
+    try
+        r = HTTP.get("http://127.0.0.1:$(port)/api/v1/notebook/env?id=$(HTTP.escapeuri(notebook_id))&secret=$(HTTP.escapeuri(secret))"; connect_timeout=3, readtimeout=10, retry=false, status_exception=false)
+        r.status == 200 || return nothing
+        body = String(r.body)
+        occursin("\"managed\":true", body) || return nothing
+        m = match(r"\"command\":\"((?:[^\"\\\\]|\\\\.)*)\"", body)
+        m === nothing ? nothing : _json_unescape(String(m.captures[1]))
+    catch e
+        @debug "could not ask the workspace server for the notebook's environment" exception = e
+        nothing
+    end
+end
+
 function _spawn_workspace_shell(session::ServerSession, dir::String; rows::Int=24, cols::Int=80)
     # Make this terminal "just work" for any CLI coding agent: the live server's port + secret
-    # so tools target THIS session without discovery, and the apps bin (where `pluto-collab`
+    # so tools target the right session without discovery, and the apps bin (where `pluto-collab`
     # was installed) prepended to PATH defensively.
-    port = session.options.server.port
+    port, secret = _terminal_target(session, dir)
     banner = string(
         "\e[1m🟢🟣🔴 SpaceStation live session\e[0m — notebooks in this folder are collaborative.\r\n",
         "Edit a notebook .jl and its cells go stale in the browser; run exactly what changed:\r\n",
@@ -150,12 +183,12 @@ function _spawn_workspace_shell(session::ServerSession, dir::String; rows::Int=2
         env = Dict{String,String}(
             "SPACESTATION" => "1",
             "SPACESTATION_PORT" => (port === nothing ? "" : string(port)),
-            "SPACESTATION_SECRET" => session.secret,
+            "SPACESTATION_SECRET" => secret,
             "SPACESTATION_WORKSPACE" => dir,
             # Pre-release aliases retained so existing agent scripts keep working.
             "PLUTOSPACE" => "1",
             "PLUTOSPACE_PORT" => (port === nothing ? "" : string(port)),
-            "PLUTOSPACE_SECRET" => session.secret,
+            "PLUTOSPACE_SECRET" => secret,
             "PLUTOSPACE_WORKSPACE" => dir,
             "PATH" => string(apps_bin_dir(), ";", get(ENV, "PATH", "")),
         )
@@ -185,11 +218,11 @@ function _spawn_workspace_shell(session::ServerSession, dir::String; rows::Int=2
         exports = join([
             "export SPACESTATION=1",
             "export SPACESTATION_PORT=$(_shquote(port === nothing ? "" : string(port)))",
-            "export SPACESTATION_SECRET=$(_shquote(session.secret))",
+            "export SPACESTATION_SECRET=$(_shquote(secret))",
             "export SPACESTATION_WORKSPACE=$(_shquote(dir))",
             "export PLUTOSPACE=1",
             "export PLUTOSPACE_PORT=$(_shquote(port === nothing ? "" : string(port)))",
-            "export PLUTOSPACE_SECRET=$(_shquote(session.secret))",
+            "export PLUTOSPACE_SECRET=$(_shquote(secret))",
             "export PLUTOSPACE_WORKSPACE=$(_shquote(dir))",
             "export PATH=$(_shquote(apps_bin_dir())):\"\$PATH\"",
         ], "; ")
@@ -401,6 +434,11 @@ function handle_terminal_websocket(ws, session::ServerSession, query::Dict{Strin
         uuid = tryparse(UUID, nb_id)
         notebook = uuid === nothing ? nothing : get(session.notebooks, uuid, nothing)
         run = notebook === nothing ? nothing : notebook_env_command(notebook)
+        if run === nothing && uuid !== nothing
+            # Under a hub the notebook lives in the workspace's child (Proxy.jl): ask it for the
+            # command it would type — a loopback request, async, the same answer the page saw.
+            run = _child_notebook_env_command(session, cwd, string(uuid))
+        end
     end
     t = try
         _get_or_create_terminal(session, tid; requested_cwd=(isempty(cwd) ? nothing : cwd),

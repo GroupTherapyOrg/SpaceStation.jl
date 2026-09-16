@@ -29,7 +29,10 @@ end
 const LOCAL_SESSIONS = Dict{String,LocalSession}()
 const LOCAL_SESSIONS_LOCK = ReentrantLock()
 
-_local_session_url(s::LocalSession) = "http://localhost:$(s.port)/?secret=$(s.secret)"
+# Where the browser goes for this workspace: the hub's own page for it (Proxy.jl), relative to the
+# hub, so it is right on a Mac (`http://localhost:1234/w/…`) and through an SSH tunnel alike — and it
+# carries no secret: the browser holds the hub's, and the child's never leaves this process.
+_local_session_url(s::LocalSession) = "$(WORKSPACE_PREFIX)$(workspace_id(s.path))/"
 
 # Find a LIVE child server already serving `path` on THIS node, so a reopened tab reattaches (and a
 # crashed-and-restarted hub self-heals) instead of spawning a duplicate. Every server records its
@@ -249,6 +252,7 @@ function register_collab_local!(router, session::ServerSession)
             "state" => s.state,
             "detail" => s.detail,
             "url" => s.state == "ready" ? _local_session_url(s) : nothing,
+            "wid" => workspace_id(s.path),
         ]) * "\n"
     end
 
@@ -281,6 +285,7 @@ function register_collab_local!(router, session::ServerSession)
                     "path" => s.path,
                     "state" => s.state,
                     "url" => s.state == "ready" ? _local_session_url(s) : nothing,
+                    "wid" => workspace_id(s.path),
                 ]
                 for s in values(LOCAL_SESSIONS)
             ]
@@ -288,6 +293,22 @@ function register_collab_local!(router, session::ServerSession)
         HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], _json(items) * "\n")
     end
     HTTP.register!(router, "GET", "/api/v1/local/list", serve_local_list)
+
+    # The workspace page's answer to a dead or wedged child (a 503 `workspace_down` from the relay):
+    # stop whatever is left of it and spawn a fresh one for the same folder. Answers at once with the
+    # new session's status; the page polls /status until it is ready, as on a first open.
+    function serve_local_restart(request::HTTP.Request)
+        query = HTTP.queryparams(HTTP.URI(request.target))
+        haskey(query, "path") || return _api_error(400, "pass ?path=/abs/folder", false)
+        path = tamepath(query["path"])
+        try
+            shutdown_local_session!(path)
+        catch
+        end
+        s = open_local_session!(path)
+        HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], local_status_json(s))
+    end
+    HTTP.register!(router, "POST", "/api/v1/local/restart", serve_local_restart)
 
     function serve_local_shutdown(request::HTTP.Request)
         query = HTTP.queryparams(HTTP.URI(request.target))

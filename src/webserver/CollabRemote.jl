@@ -594,6 +594,7 @@ struct RemoteCandidate
     secret::String
     pid::Int
     has_workspace::Bool # a folder is open in it: the one somebody is working in, given a choice
+    is_hub::Bool        # a workspace hub (Proxy.jl): the one to tunnel to — its children are behind it
 end
 
 "Parse a scan's output. `nothing` when the scan did not run to completion — an SSH failure is not a verdict about the node."
@@ -610,7 +611,7 @@ function _parse_remote_candidates(out::AbstractString)::Union{Vector{RemoteCandi
         pid = length(words) >= 2 ? something(tryparse(Int, words[2]), 0) : 0
         reg = _parse_remote_registry(rest)
         reg === nothing && continue
-        push!(cands, RemoteCandidate(status, reg.port, reg.secret, pid, occursin(r"\"workspace\": \"", rest)))
+        push!(cands, RemoteCandidate(status, reg.port, reg.secret, pid, occursin(r"\"workspace\": \"", rest), occursin(r"\"hub\": true", rest)))
     end
     cands
 end
@@ -618,7 +619,8 @@ end
 """
 Which server to attach to. The one this session was attached to before (`secret`) wins, live OR
 busy, so a reconnect lands the open tabs — whose URLs carry that secret — back on their own
-notebooks; otherwise a live server with a workspace open, then any live one, then a busy one.
+notebooks; otherwise a live hub (every workspace on the node is behind it), then a live server with
+a workspace open (a leaf from before hubs), then any live one, then a busy one.
 `nothing` only when no server process exists on the node: that, and nothing else, is the case for
 starting one.
 """
@@ -628,7 +630,7 @@ function _choose_remote_server(cands::Vector{RemoteCandidate}, secret::AbstractS
         i = findfirst(c -> c.secret == secret, usable)
         i === nothing || return usable[i]
     end
-    for pick in (c -> c.status == :live && c.has_workspace, c -> c.status == :live, c -> c.status == :busy)
+    for pick in (c -> c.status == :live && c.is_hub, c -> c.status == :live && c.has_workspace, c -> c.status == :live, c -> c.status == :busy && c.is_hub, c -> c.status == :busy)
         i = findfirst(pick, usable)
         i === nothing || return usable[i]
     end
@@ -866,7 +868,13 @@ function _remote_connect_task!(r::RemoteSession)
             # SPACESTATION_TUNNELED marks this server as reached over an SSH tunnel: its child workspace
             # ports aren't forwarded to the browser, so its frontend opens workspaces IN-PLACE instead of
             # spawning unreachable children (see serve_api_config + land.js).
-            _ssh_run(r.host, "export SPACESTATION_TUNNELED=1; nohup $(r.julia) $(SERVER_THREAD_FLAGS) --project=$(REMOTE_BOOTSTRAP_DIR) -e 'import SpaceStation; SpaceStation.run(launch_browser=false)' > ~/.spacestation/server.log 2>&1 < /dev/null & disown; true")
+            # A hub (SPACESTATION_HUB=1 before the import, hub=true for the run): it never opens a
+            # notebook itself — each workspace gets a child on the node, relayed under /w/<id>/ — and
+            # it never parses the registries. Its log goes to a NODE-LOCAL directory, not $HOME: a
+            # redirected stdout is a plain file stream, so every log line would otherwise be a
+            # synchronous write to the networked home, on the hub's serving thread. `mktemp -d`, not a name
+            # anyone could pre-create in a shared /tmp; ~/.spacestation/server.log links to it.
+            _ssh_run(r.host, "export SPACESTATION_TUNNELED=1 SPACESTATION_HUB=1; d=\$(mktemp -d \"\${TMPDIR:-/tmp}/spacestation.XXXXXX\") || exit 1; ln -sfn \"\$d/server.log\" ~/.spacestation/server.log; nohup $(r.julia) $(SERVER_THREAD_FLAGS) --project=$(REMOTE_BOOTSTRAP_DIR) -e 'import SpaceStation; SpaceStation.run(launch_browser=false, hub=true)' > \"\$d/server.log\" 2>&1 < /dev/null & disown; true")
             for _ in 1:90
                 sleep(2)
                 _remote_bail(r) && return
@@ -879,7 +887,7 @@ function _remote_connect_task!(r::RemoteSession)
             end
             if remote === nothing
                 r.state = "error"
-                r.detail = "the remote server did not come up — see ~/.spacestation/server.log on $(r.host)"
+                r.detail = "the remote server did not come up — see ~/.spacestation/server.log (a link to its node-local log) on $(r.host)"
                 return
             end
         end
