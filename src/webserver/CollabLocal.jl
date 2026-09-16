@@ -35,8 +35,27 @@ _local_session_url(s::LocalSession) = "http://localhost:$(s.port)/?secret=$(s.se
 # crashed-and-restarted hub self-heals) instead of spawning a duplicate. Every server records its
 # workspace in its connection file (CollabAPI.write_collab_registry_file); we match on that, restrict to
 # this node (shared $HOME on a cluster holds other nodes' files too), and confirm it actually answers.
-function _find_local_server(path::String)
-    want = tamepath(path)
+# The whole scan runs off the serving thread: it is a directory walk plus a read per file on $HOME.
+_find_local_server(path::String) = offload_blocking(() -> _find_local_server_now(path))
+
+# A child on another SpaceStation version than this hub is never adopted: the hub serves the editor
+# and relays the protocol, and the two would disagree. Said once a minute per folder, not per request.
+const _version_mismatch_warned = Dict{String,Float64}()
+function _warn_version_mismatch(path::String, theirs::AbstractString)
+    now = time()
+    if now - get(_version_mismatch_warned, path, 0.0) > 60
+        _version_mismatch_warned[path] = now
+        @warn "SpaceStation: not adopting the workspace server for $(path): it runs $(theirs), this one is $(PLUTO_VERSION_STR). Shut it down and open the workspace again."
+    end
+end
+
+_find_local_server_now(path::String) = (want = tamepath(path); _scan_registry_now(p -> p == want))
+
+"""
+Walk this node's connection files for a LIVE server whose workspace folder satisfies `matches`
+(paths arrive `tamepath`'d). Synchronous disk reads: call through `offload_blocking`.
+"""
+function _scan_registry_now(matches::Function)
     me = gethostname()
     dir = collab_registry_dir()
     isdir(dir) || return nothing
@@ -51,15 +70,21 @@ function _find_local_server(path::String)
         node_m !== nothing && String(node_m.captures[1]) != me && continue
         ws_m = match(r"\"workspace\": \"([^\"]+)\"", txt)
         ws_m === nothing && continue
-        tamepath(String(ws_m.captures[1])) == want || continue
+        ws_path = tamepath(String(ws_m.captures[1]))
+        matches(ws_path) || continue
         port_m = match(r"\"port\": (\d+)", txt)
         secret_m = match(r"\"secret\": \"([^\"]+)\"", txt)
         (port_m === nothing || secret_m === nothing) && continue
+        version_m = match(r"\"spacestation_version\": \"([^\"]+)\"", txt)
+        if version_m !== nothing && String(version_m.captures[1]) != PLUTO_VERSION_STR
+            _warn_version_mismatch(ws_path, version_m.captures[1])
+            continue
+        end
         port = parse(Int, port_m.captures[1])
         # don't adopt a corpse (stale file → tunnel/redirect to a dead port); a server that is merely busy
         # (accepts, answers late) IS the workspace's server — spawning next to it would make two
         _probe_port(port) != :dead || continue
-        return (port=port, secret=String(secret_m.captures[1]))
+        return (path=ws_path, port=port, secret=String(secret_m.captures[1]))
     end
     nothing
 end
@@ -138,16 +163,21 @@ end
 "Get-or-create the local session for a workspace folder; idempotent — a live child is reused, a dead one respawned."
 function open_local_session!(path::String)::LocalSession
     path = tamepath(path)
+    # The liveness probe can take seconds (a busy child answers late); it runs outside the lock so a
+    # hub relaying other workspaces' requests (Proxy.jl resolves under this lock) is never held up.
+    existing = lock(() -> get(LOCAL_SESSIONS, path, nothing), LOCAL_SESSIONS_LOCK)
+    if existing !== nothing
+        if existing.state == "ready" && _probe_port(existing.port) != :dead
+            return existing # alive (answering, or busy behind a live port): reuse, never respawn beside it
+        end
+        if existing.state ∉ ("ready", "error") && existing.task !== nothing && !istaskdone(existing.task)
+            return existing # already starting
+        end
+    end
     lock(LOCAL_SESSIONS_LOCK) do
         s = get(LOCAL_SESSIONS, path, nothing)
-        if s !== nothing
-            if s.state == "ready" && _probe_port(s.port) != :dead
-                return s # alive (answering, or busy behind a live port): reuse, never respawn beside it
-            end
-            if s.state ∉ ("ready", "error") && s.task !== nothing && !istaskdone(s.task)
-                return s # already starting
-            end
-        end
+        # someone else replaced it while we were probing: theirs wins
+        (s !== nothing && s !== existing) && return s
         s = LocalSession(path, "starting", "", 0, "", nothing, nothing, false)
         s.task = @asynclog _local_spawn_task!(s)
         LOCAL_SESSIONS[path] = s
@@ -226,7 +256,7 @@ function register_collab_local!(router, session::ServerSession)
         query = HTTP.queryparams(HTTP.URI(request.target))
         haskey(query, "path") || return _api_error(400, "pass ?path=/abs/folder", false)
         path = tamepath(query["path"])
-        isdir(path) || return _api_error(400, "not a directory: $path", false)
+        offload_blocking(() -> isdir(path)) || return _api_error(400, "not a directory: $path", false)
         s = open_local_session!(path)
         HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], local_status_json(s))
     end

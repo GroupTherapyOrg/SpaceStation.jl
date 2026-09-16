@@ -39,8 +39,8 @@ function http_router_for(session::ServerSession)
     function serve_newfile(request::HTTP.Request)
         notebook_response(SessionActions.new(session); as_redirect=(request.method == "GET"))
     end
-    HTTP.register!(router, "GET", "/new", serve_newfile)
-    HTTP.register!(router, "POST", "/new", serve_newfile)
+    HTTP.register!(router, "GET", "/new", leaf_only(session, serve_newfile))
+    HTTP.register!(router, "POST", "/new", leaf_only(session, serve_newfile))
 
     # This is not in Dynamic.jl because of bookmarks, how HTML works,
     # real loading bars and the rest; Same for CustomLaunchEvent
@@ -91,8 +91,8 @@ function http_router_for(session::ServerSession)
         end
     end
 
-    HTTP.register!(router, "GET", "/open", serve_openfile)
-    HTTP.register!(router, "POST", "/open", serve_openfile)
+    HTTP.register!(router, "GET", "/open", leaf_only(session, serve_openfile))
+    HTTP.register!(router, "POST", "/open", leaf_only(session, serve_openfile))
 
 
     # normally shutdown is done through Dynamic.jl, with the exception of shutdowns made from the desktop app
@@ -153,8 +153,8 @@ function http_router_for(session::ServerSession)
             advice="Please <a href='https://github.com/JuliaPluto/Pluto.jl/issues'>report this error</a>!"
         )
     end
-    HTTP.register!(router, "GET", "/sample/*", serve_sample)
-    HTTP.register!(router, "POST","/sample/*", serve_sample)
+    HTTP.register!(router, "GET", "/sample/*", leaf_only(session, serve_sample))
+    HTTP.register!(router, "POST","/sample/*", leaf_only(session, serve_sample))
 
     function notebook_from_uri(request)
         uri = HTTP.URI(request.target)        
@@ -214,13 +214,17 @@ function http_router_for(session::ServerSession)
         haskey(ENV, "SPACESTATION_DESKTOP") ||
             return error_response(400, "Desktop only", "This endpoint exists only in the desktop app.", "")
         try
-            notebook = notebook_from_uri(request)
             query = HTTP.queryparams(HTTP.URI(request.target))
             type = get(query, "type", "file")
             if type == "pdf"
                 # The Host header carries the port this request actually arrived on — no plumbing.
                 host = HTTP.header(request, "Host", "127.0.0.1")
-                url = "http://$(host)/edit?id=$(notebook.notebook_id)&secret=$(session.secret)&pluto_print=1"
+                # Under a hub the notebook is in a child (Proxy.jl): the URL the system browser opens
+                # must be the hub's, under the workspace prefix, with the hub's secret.
+                wid = get(request.context, :workspace_id, nothing)
+                notebook_id = wid === nothing ? string(notebook_from_uri(request).notebook_id) : HTTP.escapeuri(get(query, "id", ""))
+                prefix = wid === nothing ? "" : WORKSPACE_PREFIX * wid
+                url = "http://$(host)$(prefix)/edit?id=$(notebook_id)&secret=$(session.secret)&pluto_print=1"
                 # the shared opener: a hand-rolled `cmd /c start` here dropped everything after the first
                 # `&` on Windows — the secret included — so the browser landed on "Not yet authenticated"
                 # wait=false: answer the request once the opener is spawned, not once the browser exits
@@ -228,6 +232,7 @@ function http_router_for(session::ServerSession)
                     return error_response(500, "Export failed", "Could not open your default browser.", "")
                 return HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], """{"opened":true}""")
             end
+            notebook = notebook_from_uri(request)
             downloads = joinpath(homedir(), "Downloads")
             isdir(downloads) || (downloads = homedir())
             base = joinpath(downloads, without_pluto_file_extension(basename(notebook.path)))
@@ -258,7 +263,7 @@ function http_router_for(session::ServerSession)
             advice="The contents could not be read as a Pluto notebook file. When copying contents from somewhere else, make sure that you copy the entire notebook file.  You can also <a href='https://github.com/JuliaPluto/Pluto.jl/issues'>report this error</a>!"
         )
     end
-    HTTP.register!(router, "POST", "/notebookupload", serve_notebookupload)
+    HTTP.register!(router, "POST", "/notebookupload", leaf_only(session, serve_notebookupload))
     
     function serve_asset(request::HTTP.Request)
         uri = HTTP.URI(request.target)

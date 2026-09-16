@@ -435,6 +435,25 @@ function _api_notebook_from_query(session::ServerSession, query)::Union{Notebook
     nothing
 end
 
+# Ask a workspace's child server to close the notebook at `path`, if it has it open. Best effort:
+# the file is being deleted either way. The secret goes to the child in the URL of a loopback
+# request, as the proxy does.
+function _close_notebook_in_child(s, path::AbstractString)
+    try
+        listing = HTTP.get("http://127.0.0.1:$(s.port)/api/v1/notebooks?secret=$(HTTP.escapeuri(s.secret))"; connect_timeout=3, readtimeout=10, retry=false, status_exception=false)
+        listing.status == 200 || return
+        want = tamepath(String(path))
+        for m in eachmatch(r"\"notebook_id\":\"([^\"]+)\",\"path\":\"((?:[^\"\\\\]|\\\\.)*)\"", String(listing.body))
+            nb_path = replace(String(m.captures[2]), "\\\"" => "\"", "\\\\" => "\\")
+            tamepath(nb_path) == want || continue
+            HTTP.post("http://127.0.0.1:$(s.port)/shutdown?id=$(m.captures[1])&secret=$(HTTP.escapeuri(s.secret))"; connect_timeout=3, readtimeout=20, retry=false, status_exception=false)
+        end
+    catch e
+        @debug "could not ask the workspace server to close the notebook before deleting it" path exception = e
+    end
+    nothing
+end
+
 function register_collab_api!(router, session::ServerSession)
 
     function serve_api_notebooks(request::HTTP.Request)
@@ -701,7 +720,7 @@ function register_collab_api!(router, session::ServerSession)
         catch end
         HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], _json(Pair["ok" => true, "root" => path]) * "\n")
     end
-    HTTP.register!(router, "POST", "/api/v1/workspace/open", serve_api_workspace_open)
+    HTTP.register!(router, "POST", "/api/v1/workspace/open", leaf_only(session, serve_api_workspace_open))
 
     # Clear the workspace (back to the launcher) — the "home" button on a tunneled server switches
     # workspaces in-place rather than opening new tabs, so it needs a way to return to the homebase.
@@ -726,6 +745,10 @@ function register_collab_api!(router, session::ServerSession)
             # (which `tunneled` hides, since tunnel-over-tunnel ports would be unreachable).
             "desktop" => haskey(ENV, "SPACESTATION_DESKTOP"),
             "pluto_version" => PLUTO_VERSION_STR,
+            # A hub never runs notebooks itself: this page's workspace (if any) is relayed to a child
+            # server under /w/<id>/ (see Proxy.jl). `wid` names it.
+            "hub" => session.options.server.hub,
+            "wid" => get(request.context, :workspace_id, nothing),
             # the integrated terminal's pty is ConPTY here — xterm.js needs to know to enable
             # its Windows heuristics (see TerminalView in land.js)
             "windows" => Sys.iswindows(),
@@ -762,8 +785,12 @@ function register_collab_api!(router, session::ServerSession)
     # The workspace root: its own entries, plus the git branch the sidebar header shows. `?depth=N`
     # (default 0, this folder only) pre-walks N levels into the response for a caller that wants the
     # whole shape in one go — the hub does not, it expands folders one at a time via /listing below.
+    # Under a hub's `/w/<id>/` the folder is the request's workspace (Proxy.jl records it in the
+    # context); at the root it is the server's own.
+    _workspace_root(request::HTTP.Request) = get(request.context, :workspace_root, session.options.server.workspace_folder)
+
     function serve_api_workspace(request::HTTP.Request)
-        ws = session.options.server.workspace_folder
+        ws = _workspace_root(request)
         ws === nothing && return _api_error(404, "this server has no workspace folder — start with SpaceStation.run(workspace=\"/path\")", false)
         root = tamepath(ws)
         isdir(root) || return _api_error(404, "workspace folder does not exist: $root", false)
@@ -790,7 +817,7 @@ function register_collab_api!(router, session::ServerSession)
     # walk could not do that — it re-read (and re-serialized) the entire tree six times a minute,
     # and needed an entry budget to stay bounded, which is what used to hide files.
     function serve_api_workspace_listing(request::HTTP.Request)
-        ws = session.options.server.workspace_folder
+        ws = _workspace_root(request)
         ws === nothing && return _api_error(404, "this server has no workspace folder — start with SpaceStation.run(workspace=\"/path\")", false)
         root = tamepath(ws)
         query = HTTP.queryparams(HTTP.URI(request.target))
@@ -834,7 +861,7 @@ function register_collab_api!(router, session::ServerSession)
         end
         HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], """{"ok": true}\n""")
     end
-    HTTP.register!(router, "POST", "/api/v1/file/save", serve_api_file_save)
+    HTTP.register!(router, "POST", "/api/v1/file/save", _offloaded(serve_api_file_save))
 
     function serve_api_file_new(request::HTTP.Request)
         query = HTTP.queryparams(HTTP.URI(request.target))
@@ -849,24 +876,29 @@ function register_collab_api!(router, session::ServerSession)
         end
         HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], """{"ok": true}\n""")
     end
-    HTTP.register!(router, "POST", "/api/v1/file/new", serve_api_file_new)
+    HTTP.register!(router, "POST", "/api/v1/file/new", _offloaded(serve_api_file_new))
 
     function serve_api_file_delete(request::HTTP.Request)
         query = HTTP.queryparams(HTTP.URI(request.target))
         haskey(query, "path") || return _api_error(400, "pass ?path=/abs/file", false)
         path = tamepath(query["path"])
-        isfile(path) || return _api_error(404, "not a file: $path", false)
+        offload_blocking(() -> isfile(path)) || return _api_error(404, "not a file: $path", false)
         # if it's a notebook running in this session, shut it down first
         for nb in collect(values(session.notebooks))
             if isfile(nb.path) && realpath(nb.path) == realpath(path)
                 SessionActions.shutdown(session, nb; keep_in_session=false, async=false, verbose=false)
             end
         end
+        # …and under a hub, the notebook (if open) lives in the workspace's child server: ask it
+        child = get(request.context, :workspace_session, nothing)
+        child === nothing || _close_notebook_in_child(child, path)
         try
-            rm(path)
-            # a notebook's output cache goes with it
-            sidecar = path * OUTPUT_CACHE_SUFFIX
-            isfile(sidecar) && rm(sidecar)
+            offload_blocking() do
+                rm(path)
+                # a notebook's output cache goes with it
+                sidecar = path * OUTPUT_CACHE_SUFFIX
+                isfile(sidecar) && rm(sidecar)
+            end
         catch e
             return _api_error(500, "could not delete: $(sprint(showerror, e))", false)
         end

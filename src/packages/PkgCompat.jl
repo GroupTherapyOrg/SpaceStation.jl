@@ -325,7 +325,14 @@ is_stdlib(package_name::String) = package_name ∈ GracefulPkg.stdlibs_past_pres
 
 
 # Initial fill of registry cache
+# A workspace hub (SPACESTATION_HUB=1 in its environment; see Proxy.jl) never opens a notebook, so
+# it has no use for the registries — and parsing them is a walk of the depot, which on a cluster is
+# the filesystem that stalls, on the thread the hub serves from. The env var, not a server option:
+# this runs at `import`, before any option exists. `refresh_registry_cache` runs on demand later.
+is_hub_process() = get(ENV, "SPACESTATION_HUB", "") == "1"
+
 function __init__()
+    is_hub_process() && return
     refresh_registry_cache()
     global global_ctx=PkgContext()
 end

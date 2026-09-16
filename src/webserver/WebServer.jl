@@ -153,6 +153,20 @@ function run(session::ServerSession)
     Base.wait(run!(session))
 end
 
+"The SpaceStation integrated terminal: a raw PTY bridge, separate from the notebook protocol. Called for an authenticated websocket upgrade on `/terminal` (at the root, or under a hub's `/w/<id>/`)."
+function serve_terminal_upgrade(http::HTTP.Stream, session::ServerSession, terminal_query)
+    try
+        HTTP.WebSockets.upgrade(http) do clientstream
+            HTTP.WebSockets.isclosed(clientstream) || handle_terminal_websocket(clientstream, session, terminal_query)
+        end
+    catch ex
+        if !(ex isa InterruptException || ex isa HTTP.WebSockets.WebSocketError || ex isa EOFError || ex isa Base.IOError)
+            @warn "Terminal websocket connection failed" exception = (ex, catch_backtrace())
+        end
+    end
+    nothing
+end
+
 function run!(session::ServerSession)
     # Before we spawn ANY notebook worker or integrated terminal, drop the Pkg-app launcher's
     # JULIA_LOAD_PATH pin so those children honor their own `--project=` / Pkg.activate instead of
@@ -169,6 +183,14 @@ function run!(session::ServerSession)
         
     warn_julia_compat()
 
+    if session.options.server.hub
+        session.options.server.workspace_folder === nothing || error("a workspace hub (hub=true) has no workspace of its own: it serves workspaces at /w/<id>/, each in a child server. Drop `workspace=` or `hub=true`.")
+        session.options.server.notebook === nothing || error("a workspace hub (hub=true) cannot open notebooks itself: drop `notebook=` or `hub=true`.")
+        ASSET_CACHE_ALL[] = true
+        if !PkgCompat.is_hub_process()
+            @warn "SpaceStation: this hub was started without SPACESTATION_HUB=1 in its environment, so the package registries were parsed at import — set it in the launcher so the hub never touches the depot."
+        end
+    end
     pluto_router = http_router_for(session)
     store_session_middleware = create_session_context_middleware(session)
     app = pluto_router |> auth_middleware |> store_session_middleware
@@ -236,6 +258,14 @@ function run!(session::ServerSession)
     end
 
     server = HTTP.listen!(hostIP, port; stream=true, server=serversocket, on_shutdown, verbose=-1) do http::HTTP.Stream
+        # A workspace served by this hub: `/w/<id>/…` (see Proxy.jl). The hub answers its own part of it
+        # and relays the notebook part to the workspace's child server.
+        let ws = split_workspace_target(http.message.target; base_url=session.options.server.base_url)
+            if ws !== nothing
+                handle_workspace_request(http, session, app, ws[1], ws[2])
+                return
+            end
+        end
         # the if statement below asks if the current request is a "websocket upgrade" request: the start of a websocket connection.
         if HTTP.WebSockets.isupgrade(http.message)
             secret_required = let
@@ -260,17 +290,7 @@ function run!(session::ServerSession)
             # (no Origin) still pass and must present the secret via cookie/?secret as before.
             if (!secret_required || is_authenticated(session, http.message)) && origin_matches_host(http.message)
                 if startswith(HTTP.URI(http.message.target).path, "/terminal")
-                    # the SpaceStation integrated terminal: a raw PTY bridge, separate from the notebook protocol
-                    terminal_query = HTTP.queryparams(HTTP.URI(http.message.target))
-                    try
-                        HTTP.WebSockets.upgrade(http) do clientstream
-                            HTTP.WebSockets.isclosed(clientstream) || handle_terminal_websocket(clientstream, session, terminal_query)
-                        end
-                    catch ex
-                        if !(ex isa InterruptException || ex isa HTTP.WebSockets.WebSocketError || ex isa EOFError || ex isa Base.IOError)
-                            @warn "Terminal websocket connection failed" exception = (ex, catch_backtrace())
-                        end
-                    end
+                    serve_terminal_upgrade(http, session, HTTP.queryparams(HTTP.URI(http.message.target)))
                     return
                 end
                 try
@@ -414,11 +434,17 @@ function run!(session::ServerSession)
         @info("It looks like you are developing the Pluto package, using the unbundled frontend...")
     end
 
-    # Start this in the background, so that the first notebook launch (which will trigger registry update) will be faster
-    initial_registry_update_task = @asynclog withtoken(pkg_token) do
-        will_update = !PkgCompat.check_registry_age()
-        PkgCompat.update_registries(; force = false)
-        will_update && println("    Updating registry done ✓")
+    # Start this in the background, so that the first notebook launch (which will trigger registry update) will be faster.
+    # Not in a hub: a hub never opens a notebook, and a registry update is Pkg touching the depot — on a
+    # cluster that is the filesystem that stalls (see Proxy.jl), and this thread must never wait on it.
+    initial_registry_update_task = if session.options.server.hub
+        @async nothing
+    else
+        @asynclog withtoken(pkg_token) do
+            will_update = !PkgCompat.check_registry_age()
+            PkgCompat.update_registries(; force = false)
+            will_update && println("    Updating registry done ✓")
+        end
     end
 
     return RunningPlutoServer(server, initial_registry_update_task)
