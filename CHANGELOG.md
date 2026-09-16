@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.3](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.7.2...v0.7.3) (2026-09-16)
+
+
+### Bug Fixes
+
+* a retired remote server is killed if it will not exit, and folder listings run off the serving thread ([#103](https://github.com/GroupTherapyOrg/SpaceStation.jl/issues/103)) ([25b2781](https://github.com/GroupTherapyOrg/SpaceStation.jl/commit/25b2781d9b884c30486309f05df492af0c7b8b60))
+
 ## [0.7.2](https://github.com/GroupTherapyOrg/SpaceStation.jl/compare/v0.7.1...v0.7.2) (2026-09-15)
 
 
