@@ -3,6 +3,7 @@ module PkgCompat
 export package_versions, registered_package_names
 
 import ..Pluto
+import ..Pluto: offload_blocking
 import ..TempDirInScratch
 import REPL
 import Pkg
@@ -77,8 +78,34 @@ function PkgContext!(ctx::PkgContext; kwargs...)
     ctx
 end
 
+# Every `Pkg.Types.Context()` re-discovers the installed registries: a stat of each registry in the
+# depot, then a read of its Registry.toml. On a laptop that is a millisecond; on a cluster whose
+# depot lives on a networked home it can be seconds, and it used to happen on every notebook load —
+# every time a notebook file changed on disk. Discover once, reuse for a while, and start over after
+# a registry update (`refresh_registry_cache`) or when the snapshot gets old.
+const _REGISTRY_SNAPSHOT_MAX_AGE = 600.0
+const _registry_snapshot = Ref{Union{Nothing,Tuple{Float64,Vector{Pkg.Registry.RegistryInstance}}}}(nothing)
+const _registry_snapshot_lock = ReentrantLock()
+
+"The installed registries, as Pkg sees them, discovered at most once per `_REGISTRY_SNAPSHOT_MAX_AGE` seconds."
+function _pkg_registries()::Vector{Pkg.Registry.RegistryInstance}
+	lock(_registry_snapshot_lock) do
+		snap = _registry_snapshot[]
+		if snap === nothing || time() - snap[1] > _REGISTRY_SNAPSHOT_MAX_AGE
+			regs = Pkg.Registry.reachable_registries()
+			_registry_snapshot[] = (time(), regs)
+			regs
+		else
+			snap[2]
+		end
+	end
+end
+
+"Forget the registry snapshot, so the next context sees a registry that was just updated."
+_forget_registry_snapshot() = lock(() -> (_registry_snapshot[] = nothing), _registry_snapshot_lock)
+
 # 🐸 "Public API", but using PkgContext
-load_ctx(env_dir)::PkgContext = PkgContext(;env=Pkg.Types.EnvCache(joinpath(env_dir, "Project.toml")))
+load_ctx(env_dir)::PkgContext = PkgContext(;env=Pkg.Types.EnvCache(joinpath(env_dir, "Project.toml")), registries=_pkg_registries())
 
 # 🐸 "Public API", but using PkgContext
 load_ctx!(ctx::PkgContext, env_dir)::PkgContext = PkgContext!(ctx; env=Pkg.Types.EnvCache(joinpath(env_dir, "Project.toml")))
@@ -91,7 +118,8 @@ else
 end
 
 # 🐸 "Public API", but using PkgContext
-create_empty_ctx()::PkgContext = load_ctx!(PkgContext(), TempDirInScratch.tempdir())
+# Off the serving thread when called from it — `EnvCache` has Pkg write its usage log in the depot.
+create_empty_ctx()::PkgContext = offload_blocking(() -> load_ctx!(PkgContext(; registries=_pkg_registries()), TempDirInScratch.tempdir()))
 
 # ⚠️ Internal API with fallback
 function load_ctx!(original::PkgContext)
@@ -217,6 +245,7 @@ const _parsed_registries = Ref(RegistryInstances.RegistryInstance[])
 "Re-parse the installed registries from disk."
 function refresh_registry_cache()
 	_parsed_registries[] = _get_registries()
+	_forget_registry_snapshot()
 end
 
 
