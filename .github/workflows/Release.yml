@@ -1,0 +1,73 @@
+# Releases, on demand.
+#
+# Bump `version` in Project.toml on main, then run this workflow (Actions → Release → Run workflow,
+# or `gh workflow run Release.yml`). It tags that commit, publishes the GitHub release, dispatches the
+# desktop installer build against it, and asks JuliaRegistrator to register the version in General.
+#
+# Nothing here decides what the version is or writes a changelog; that is done by hand.
+
+name: Release
+
+on:
+    workflow_dispatch:
+
+permissions:
+    contents: write
+    actions: write
+
+jobs:
+    release:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  ref: main
+                  fetch-depth: 0
+
+            - name: Read the version from Project.toml
+              id: version
+              run: |
+                  v=$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' Project.toml)
+                  [ -n "$v" ] || { echo "no version in Project.toml"; exit 1; }
+                  echo "tag=v$v" >> "$GITHUB_OUTPUT"
+                  echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+            - name: Refuse to release a version that is already tagged
+              run: |
+                  if git ls-remote --exit-code --tags origin "refs/tags/${{ steps.version.outputs.tag }}" >/dev/null; then
+                      echo "${{ steps.version.outputs.tag }} already exists — bump version in Project.toml first"
+                      exit 1
+                  fi
+
+            - name: Tag and publish the GitHub release
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  git tag "${{ steps.version.outputs.tag }}" "${{ steps.version.outputs.sha }}"
+                  git push origin "refs/tags/${{ steps.version.outputs.tag }}"
+                  gh release create "${{ steps.version.outputs.tag }}" \
+                      --title "SpaceStation ${{ steps.version.outputs.tag }}" \
+                      --notes "SpaceStation ${{ steps.version.outputs.tag }}. Changes: https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md" \
+                      --target "${{ steps.version.outputs.sha }}"
+
+            # A release created with GITHUB_TOKEN cannot trigger the `release` event, so the desktop
+            # installer build (.dmg/.msi/.AppImage attached to the release) is dispatched explicitly.
+            - name: Build the desktop installers for this release
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: gh workflow run Desktop.yml --repo "$GITHUB_REPOSITORY" -f release_tag="${{ steps.version.outputs.tag }}"
+
+            # JuliaRegistrator listens for this comment on the release commit; General's AutoMerge
+            # then merges the registration in ~15-20 min. The notes must contain "breaking" or
+            # "changelog": AutoMerge treats every pre-1.0 minor bump as breaking and refuses to merge
+            # unless the notes acknowledge it (learned on v0.2.0).
+            - name: Register in JuliaRegistries/General
+              uses: peter-evans/commit-comment@v3
+              with:
+                  sha: ${{ steps.version.outputs.sha }}
+                  body: |
+                      @JuliaRegistrator register
+
+                      Release notes:
+
+                      See the changelog for this release (may include breaking changes): https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md

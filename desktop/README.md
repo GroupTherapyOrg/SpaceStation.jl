@@ -94,7 +94,7 @@ Julia itself is **not** bundled — the app finds or asks for it (juliaup bootst
   secret, the authenticated hub, desktop config — on every OS. Trust by booting, not stubbing.
 - **build**: packages `.app` (arm64 + intel), the Windows directory bundle, and the Linux
   AppImage; uploads them as CI artifacts, and **attaches them to the GitHub release** when a
-  release is published (so release-please releases ship desktop downloads automatically).
+  release is published (the Release workflow dispatches it, so every release ships desktop downloads automatically).
 
 **macOS signing + notarization** activates when the repo has these secrets (skipped otherwise —
 bundles ship ad-hoc-signed): `MACOS_CERTIFICATE_P12` (base64 `.p12` export of a *Developer ID
