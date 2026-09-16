@@ -741,8 +741,16 @@ function _remote_connect_task!(r::RemoteSession)
                 curl -fsS -m 3 -o /dev/null "http://127.0.0.1:$p/ping" 2>/dev/null || continue
                 open=$(printf 'url = "http://127.0.0.1:%s/api/v1/notebooks?secret=%s"\n' "$p" "$s" | curl -fsS -m 5 -K - 2>/dev/null) || continue
                 [ "$open" = "[]" ] || continue
-                [ -n "$pid" ] && kill "$pid" 2>/dev/null
                 rm -f "$f"
+                # Its own shutdown first (it removes its files and stops cleanly), then SIGTERM, then
+                # SIGKILL. A Julia 1.12 process can deadlock in its exit-time finalizers after SIGTERM
+                # and spin at 100% CPU forever, still bound to its port — one did, for 21 hours.
+                printf 'url = "http://127.0.0.1:%s/api/v1/shutdown?secret=%s"\nrequest = "POST"\n' "$p" "$s" | curl -fsS -m 5 -o /dev/null -K - 2>/dev/null
+                [ -n "$pid" ] || continue
+                for i in 1 2 3 4 5 6 7 8; do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+                kill -0 "$pid" 2>/dev/null && kill -TERM "$pid" 2>/dev/null
+                for i in 1 2 3 4 5; do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+                kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
             done
             """)
             # Whatever survived the retirement (busy, or with notebooks open) is still the server to use.
@@ -1063,7 +1071,13 @@ function _supervise_tunnels_once()
         end
         due || continue
 
-        # Say so in the UI rather than leaving a stale "ready" while nothing works.
+        # Say so in the UI rather than leaving a stale "ready" while nothing works — and on the hub's
+        # own output, with the reason, so a drop can be explained after the fact.
+        why = r.state == "error" ? "last attempt ended in an error ($(r.detail))" :
+              r.tunnel === nothing ? "no tunnel process" :
+              process_exited(r.tunnel) ? "the ssh tunnel process exited" :
+              "connections through the tunnel were refused or reset $(TUNNEL_DEAD_STRIKES) times in a row"
+        @info "SpaceStation: rebuilding the tunnel to $(host) — $(why)"
         r.state = "tunneling"
         r.detail = "connection lost — reconnecting to $(host)"
         try

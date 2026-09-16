@@ -245,6 +245,12 @@ Once the budget is spent the walk stops immediately: the folders still queued ar
 without being read at all. This endpoint is polled every 10s by every open hub tab, so an
 exhausted budget must cost nothing more, not one `readdir` per folder it declined to list.
 """
+# Handlers that only walk the disk and build JSON run off the serving thread as a whole (see
+# Offload.jl): the sidebar asks for listings every 10s, and one `readdir` on a networked home that is
+# busy with somebody's precompile would otherwise hold the thread that serves the terminal and every
+# notebook. These handlers read `session.options` (immutable after startup) and nothing else shared.
+_offloaded(handler) = (request::HTTP.Request) -> offload_blocking(() -> handler(request))
+
 function _workspace_entries(dir::String; depth::Int=6, budget::Ref{Int}=Ref(2000))
     root = _TreeListing()
     isdir(dir) || return root
@@ -675,7 +681,7 @@ function register_collab_api!(router, session::ServerSession)
         ])
         HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], body * "\n")
     end
-    HTTP.register!(router, "GET", "/api/v1/browse", serve_api_browse)
+    HTTP.register!(router, "GET", "/api/v1/browse", _offloaded(serve_api_browse))
 
     function serve_api_workspace_open(request::HTTP.Request)
         query = HTTP.queryparams(HTTP.URI(request.target))
@@ -751,7 +757,7 @@ function register_collab_api!(router, session::ServerSession)
         body = _json(unique(hosts))
         HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], body * "\n")
     end
-    HTTP.register!(router, "GET", "/api/v1/ssh_hosts", serve_api_ssh_hosts)
+    HTTP.register!(router, "GET", "/api/v1/ssh_hosts", _offloaded(serve_api_ssh_hosts))
 
     # The workspace root: its own entries, plus the git branch the sidebar header shows. `?depth=N`
     # (default 0, this folder only) pre-walks N levels into the response for a caller that wants the
@@ -776,7 +782,7 @@ function register_collab_api!(router, session::ServerSession)
         ])
         HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], body * "\n")
     end
-    HTTP.register!(router, "GET", "/api/v1/workspace", serve_api_workspace)
+    HTTP.register!(router, "GET", "/api/v1/workspace", _offloaded(serve_api_workspace))
 
     # One folder's entries, nothing below it. This is what makes the sidebar's cost track what the
     # user has open rather than the size of the workspace: the hub asks for a folder when it is
@@ -794,7 +800,7 @@ function register_collab_api!(router, session::ServerSession)
         body = _json(Pair["path" => path, "entries" => _workspace_entries(path; depth=0)])
         HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], body * "\n")
     end
-    HTTP.register!(router, "GET", "/api/v1/workspace/listing", serve_api_workspace_listing)
+    HTTP.register!(router, "GET", "/api/v1/workspace/listing", _offloaded(serve_api_workspace_listing))
 
     function serve_api_file_get(request::HTTP.Request)
         query = HTTP.queryparams(HTTP.URI(request.target))
@@ -810,7 +816,7 @@ function register_collab_api!(router, session::ServerSession)
         isvalid(content) || return _api_error(415, "not a UTF-8 text file", false)
         HTTP.Response(200, ["Content-Type" => "text/plain; charset=utf-8"], content)
     end
-    HTTP.register!(router, "GET", "/api/v1/file", serve_api_file_get)
+    HTTP.register!(router, "GET", "/api/v1/file", _offloaded(serve_api_file_get))
 
     function serve_api_file_save(request::HTTP.Request)
         query = HTTP.queryparams(HTTP.URI(request.target))
