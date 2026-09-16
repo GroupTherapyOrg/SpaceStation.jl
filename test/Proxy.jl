@@ -56,7 +56,7 @@ end
                 @test hget("$base/ping").status == 200
                 r = hget("$base/api/v1/workspace?secret=$hub_secret")
                 @test r.status == 200
-                @test occursin(Pluto.tamepath(ws), body(r))     # the request's workspace, not the hub's (which has none)
+                @test occursin(Pluto._json_string(Pluto.tamepath(ws)), body(r)) # the request's workspace, not the hub's (which has none); JSON-escaped (Windows paths have backslashes)
                 @test occursin("notes.txt", body(r))
                 r = hget("$base/api/v1/config?secret=$hub_secret")
                 @test occursin("\"hub\": true", body(r)) || occursin("\"hub\":true", body(r))
