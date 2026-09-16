@@ -884,18 +884,24 @@ function _remote_connect_task!(r::RemoteSession)
             # locally), and the log there too (a redirected stdout is a plain file stream). The
             # directory is created once per node with mktemp (never a name someone else could
             # pre-create in a shared /tmp), remembered per node in $HOME, and reused while it exists
-            # and is ours. ~/.spacestation/server.log links to the live log.
+            # and is ours (a real directory, never a symlink: the marker is readable by other local
+            # users). ~/.spacestation/server.log links to the live log; the previous run's log is
+            # kept as server.log.1. The trailing ":" on the depot path keeps Julia's bundled depot
+            # (the stdlib compile caches) on the stack. SLURM_TMPDIR is preferred when a job sets it:
+            # /tmp on a compute node can be a small tmpfs, and packages a notebook adds land here.
             _ssh_run(r.host, raw"""
             export SPACESTATION_TUNNELED=1 SPACESTATION_HUB=1
             mkdir -p ~/.spacestation
+            chmod 700 ~/.spacestation 2>/dev/null
             marker=~/.spacestation/nodedir-$(hostname)
             d=$(cat "$marker" 2>/dev/null)
-            if [ -z "$d" ] || [ ! -d "$d" ] || [ ! -O "$d" ]; then
-                d=$(mktemp -d "${TMPDIR:-/tmp}/spacestation.XXXXXX") || exit 1
+            if [ -z "$d" ] || [ -L "$d" ] || [ ! -d "$d" ] || [ ! -O "$d" ]; then
+                d=$(mktemp -d "${SLURM_TMPDIR:-${TMPDIR:-/tmp}}/spacestation.XXXXXX") || exit 1
                 echo "$d" > "$marker"
             fi
             mkdir -p "$d/depot"
-            export JULIA_DEPOT_PATH="$d/depot:${JULIA_DEPOT_PATH:-$HOME/.julia}"
+            export JULIA_DEPOT_PATH="$d/depot:${JULIA_DEPOT_PATH:-$HOME/.julia}:"
+            mv -f "$d/server.log" "$d/server.log.1" 2>/dev/null
             ln -sfn "$d/server.log" ~/.spacestation/server.log
             """ * "nohup $(r.julia) $(SERVER_THREAD_FLAGS) --project=$(REMOTE_BOOTSTRAP_DIR) -e 'import SpaceStation; SpaceStation.run(launch_browser=false, hub=true)' > \"\$d/server.log\" 2>&1 < /dev/null & disown; true")
             for _ in 1:90
