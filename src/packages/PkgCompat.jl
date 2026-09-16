@@ -249,6 +249,17 @@ function refresh_registry_cache()
 end
 
 
+"""
+A server that opens notebooks serves from the parsed registries. `__init__` skips parsing them for
+a hub, and `update_registries` only re-parses after an actual update, so a process that started with
+the hub marker in its environment would otherwise run with an empty cache: every package "does not
+exist". Called once, off the serving thread, when a non-hub server starts.
+"""
+function ensure_registry_cache()
+	isempty(_parsed_registries[]) && refresh_registry_cache()
+	nothing
+end
+
 # ⚠️✅ Internal API with fallback
 const _updated_registries_compat = @static if isdefined(Pkg, :UPDATED_REGISTRY_THIS_SESSION) && Pkg.UPDATED_REGISTRY_THIS_SESSION isa Ref{Bool}
 	Pkg.UPDATED_REGISTRY_THIS_SESSION
