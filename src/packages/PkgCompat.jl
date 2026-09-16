@@ -257,13 +257,29 @@ else
 end
 
 # ✅ Public API
+# `Pkg.Registry.update()` with no arguments touches only the FIRST depot. When the writable depot is
+# a node-local one stacked in front of the shared depot (see the remote launch in CollabRemote.jl),
+# the registries live in the shared depot, and a bare update would take a lock in an empty
+# directory and change nothing: the registry would silently freeze. Update every depot that has one.
+_registry_depots() = filter(d -> isdir(joinpath(d, "registries")), Pkg.depots())
+function _update_registries_everywhere()
+	depots = _registry_depots()
+	isempty(depots) && return Pkg.Registry.update()
+	try
+		Pkg.Registry.update(; depots=depots)
+	catch e
+		e isa MethodError || rethrow() # an older Pkg without the keyword: the first depot it is
+		Pkg.Registry.update()
+	end
+end
+
 function update_registries(; force::Bool=false)
 	if force || !_updated_registries_compat[]
 		try
-			Pkg.Registry.update()
+			_update_registries_everywhere()
 		catch
 			# sometimes it just fails but we dont want Pluto to be too sensitive to that
-			Pkg.Registry.update()
+			_update_registries_everywhere()
 		end
 		try
 			refresh_registry_cache()
