@@ -51,6 +51,7 @@ const SHOW_FILE_SYSTEM_DEFAULT = true
 const ENABLE_AI_EDITOR_FEATURES_DEFAULT = true
 const DISABLE_WRITING_NOTEBOOK_FILES_DEFAULT = false
 const WORKSPACE_FOLDER_DEFAULT = nothing
+const HUB_DEFAULT = false
 const AUTO_RELOAD_FROM_FILE_DEFAULT = false
 const AUTO_RELOAD_FROM_FILE_COOLDOWN_DEFAULT = 0.4
 const AUTO_RELOAD_FROM_FILE_IGNORE_PKG_DEFAULT = false
@@ -77,6 +78,7 @@ The HTTP server options. See [`SecurityOptions`](@ref) for additional settings.
 - `notebook_path_suggestion::String = notebook_path_suggestion()`
 - `disable_writing_notebook_files::Bool = $DISABLE_WRITING_NOTEBOOK_FILES_DEFAULT`
 - `workspace_folder::Union{Nothing,String} = $WORKSPACE_FOLDER_DEFAULT` Open this folder as a workspace (like an IDE): the server's root page becomes a hub with a file browser and tabbed notebooks, scoped to this folder. Pairs well with `on_code_change="lazy"`.
+- `hub::Bool = $HUB_DEFAULT` Run as a workspace hub that never executes notebook or package code itself: workspaces are served at `/w/<id>/`, their notebooks run in a child server per workspace that the hub relays to, and the hub skips every Pkg touch (registry updates) at startup. The `spacestation` CLI and the desktop app run their launcher this way.
 - `auto_reload_from_file::Bool = $AUTO_RELOAD_FROM_FILE_DEFAULT` Watch notebook files for outside changes and update running notebook state automatically
 - `auto_reload_from_file_cooldown::Real = $AUTO_RELOAD_FROM_FILE_COOLDOWN_DEFAULT` Experimental, will be removed
 - `auto_reload_from_file_ignore_pkg::Bool = $AUTO_RELOAD_FROM_FILE_IGNORE_PKG_DEFAULT` Experimental flag, will be removed
@@ -100,6 +102,7 @@ The HTTP server options. See [`SecurityOptions`](@ref) for additional settings.
     enable_ai_editor_features::Bool = ENABLE_AI_EDITOR_FEATURES_DEFAULT
     notebook_path_suggestion::String = notebook_path_suggestion()
     workspace_folder::Union{Nothing,String} = WORKSPACE_FOLDER_DEFAULT
+    hub::Bool = HUB_DEFAULT
     disable_writing_notebook_files::Bool = DISABLE_WRITING_NOTEBOOK_FILES_DEFAULT
     auto_reload_from_file::Bool = AUTO_RELOAD_FROM_FILE_DEFAULT
     auto_reload_from_file_cooldown::Real = AUTO_RELOAD_FROM_FILE_COOLDOWN_DEFAULT
@@ -300,6 +303,7 @@ function from_flat_kwargs(;
         enable_ai_editor_features::Bool = ENABLE_AI_EDITOR_FEATURES_DEFAULT,
         notebook_path_suggestion::String = notebook_path_suggestion(),
         workspace::Union{Nothing,String} = WORKSPACE_FOLDER_DEFAULT,
+        hub::Bool = HUB_DEFAULT,
         disable_writing_notebook_files::Bool = DISABLE_WRITING_NOTEBOOK_FILES_DEFAULT,
         auto_reload_from_file::Bool = AUTO_RELOAD_FROM_FILE_DEFAULT,
         auto_reload_from_file_cooldown::Real = AUTO_RELOAD_FROM_FILE_COOLDOWN_DEFAULT,
@@ -352,6 +356,7 @@ function from_flat_kwargs(;
         enable_ai_editor_features,
         notebook_path_suggestion,
         workspace_folder=workspace,
+        hub=hub,
         disable_writing_notebook_files,
         auto_reload_from_file,
         auto_reload_from_file_cooldown,
