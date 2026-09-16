@@ -353,31 +353,38 @@ function _read_notebook_nbpkg_ctx(cell_order::Vector{UUID}, collected_cells::Dic
         haskey(collected_cells, _ptoml_cell_id) &&
         haskey(collected_cells, _mtoml_cell_id)
 
-    nbpkg_ctx = if read_package
-        ptoml_code = string(collected_cells[_ptoml_cell_id].code)::String
-        mtoml_code = string(collected_cells[_mtoml_cell_id].code)::String
+    # Off the serving thread (see Offload.jl): building a Pkg context writes the environment to the
+    # scratch space, reads it back, and has Pkg write its usage log in the depot — all of it on the
+    # (possibly networked) home, and all of it synchronous. Caught doing exactly this on an HPC node
+    # while the whole workspace was frozen: the notebook file changed on disk, the reload built its
+    # package context, and a rename in the depot took minutes.
+    nbpkg_ctx = offload_blocking() do
+        if read_package
+            ptoml_code = string(collected_cells[_ptoml_cell_id].code)::String
+            mtoml_code = string(collected_cells[_mtoml_cell_id].code)::String
 
-        ptoml_contents = lstrip(split(ptoml_code, "\"\"\"")[2])
-        mtoml_contents = lstrip(split(mtoml_code, "\"\"\"")[2])
+            ptoml_contents = lstrip(split(ptoml_code, "\"\"\"")[2])
+            mtoml_contents = lstrip(split(mtoml_code, "\"\"\"")[2])
 
-        env_dir = TempDirInScratch.tempdir()
-        write(joinpath(env_dir, "Project.toml"), ptoml_contents)
-        write(joinpath(env_dir, "Manifest.toml"), mtoml_contents)
+            env_dir = TempDirInScratch.tempdir()
+            write(joinpath(env_dir, "Project.toml"), ptoml_contents)
+            write(joinpath(env_dir, "Manifest.toml"), mtoml_contents)
 
-        try
-            PkgCompat.load_ctx(env_dir)
-        catch e
-            @error "Failed to load notebook files: Project.toml+Manifest.toml parse error. Trying to recover Project.toml without Manifest.toml..." exception=(e,catch_backtrace())
             try
-                rm(joinpath(env_dir, "Manifest.toml"))
                 PkgCompat.load_ctx(env_dir)
             catch e
-                @error "Failed to load notebook files: Project.toml parse error." exception=(e,catch_backtrace())
-                PkgCompat.create_empty_ctx()
+                @error "Failed to load notebook files: Project.toml+Manifest.toml parse error. Trying to recover Project.toml without Manifest.toml..." exception=(e,catch_backtrace())
+                try
+                    rm(joinpath(env_dir, "Manifest.toml"))
+                    PkgCompat.load_ctx(env_dir)
+                catch e
+                    @error "Failed to load notebook files: Project.toml parse error." exception=(e,catch_backtrace())
+                    PkgCompat.create_empty_ctx()
+                end
             end
+        else
+            PkgCompat.create_empty_ctx()
         end
-    else
-        PkgCompat.create_empty_ctx()
     end
     return nbpkg_ctx
 end
