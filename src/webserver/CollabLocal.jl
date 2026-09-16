@@ -116,11 +116,7 @@ function _local_spawn_task!(s::LocalSession)
         # ENV var, never interpolated into the -e code, so any folder name survives intact.
         proj = something(Base.active_project(), "")
         projdir = isempty(proj) ? pkgdir(@__MODULE__) : dirname(proj)
-        env = copy(ENV)
-        env["SPACESTATION_CHILD_WORKSPACE"] = s.path
-        delete!(env, "JULIA_LOAD_PATH")  # don't leak the app's load path into the child (matches worker/terminal hygiene)
-        delete!(env, "SPACESTATION_TUNNELED")
-        delete!(env, "PLUTOSPACE_TUNNELED")  # legacy alias; a local child is never tunneled
+        env = _child_env(s.path)
         code = "import SpaceStation; SpaceStation.run(workspace=ENV[\"SPACESTATION_CHILD_WORKSPACE\"], launch_browser=false)"
         # SERVER_THREAD_FLAGS last, so it wins over any --threads julia_cmd() copied from the hub: see Offload.jl.
         cmd = setenv(`$(Base.julia_cmd()) $(SERVER_THREAD_FLAGS) --project=$(projdir) -e $(code)`, env)
@@ -161,6 +157,23 @@ function _local_spawn_task!(s::LocalSession)
         s.state = "error"
         s.detail = sprint(showerror, e)
     end
+end
+
+"""
+The environment of a workspace child: the hub's own, minus what a child must not inherit.
+`SPACESTATION_HUB=1` marks a hub BEFORE `import SpaceStation`, so it never parses the package
+registries (`PkgCompat.__init__`). A child is the process that opens notebooks: with the marker
+inherited it would start with an empty registry cache, and `package_exists` would answer no to
+every package a notebook adds. The tunneled flags are the hub's too: a local child is never tunneled.
+"""
+function _child_env(path::AbstractString)::Dict{String,String}
+    env = copy(ENV)
+    env["SPACESTATION_CHILD_WORKSPACE"] = String(path)
+    delete!(env, "JULIA_LOAD_PATH")  # don't leak the app's load path into the child (matches worker/terminal hygiene)
+    delete!(env, "SPACESTATION_TUNNELED")
+    delete!(env, "PLUTOSPACE_TUNNELED")  # legacy alias
+    delete!(env, "SPACESTATION_HUB")
+    env
 end
 
 "Get-or-create the local session for a workspace folder; idempotent — a live child is reused, a dead one respawned."

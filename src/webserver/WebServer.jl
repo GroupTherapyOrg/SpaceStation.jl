@@ -443,6 +443,7 @@ function run!(session::ServerSession)
         @asynclog withtoken(pkg_token) do
             will_update = !PkgCompat.check_registry_age()
             PkgCompat.update_registries(; force = false)
+            PkgCompat.ensure_registry_cache()
             will_update && println("    Updating registry done ✓")
         end
     end

@@ -27,6 +27,16 @@ end
     end
 end
 
+@testset "a workspace child never inherits the hub marker" begin
+    withenv("SPACESTATION_HUB" => "1", "SPACESTATION_TUNNELED" => "1", "JULIA_LOAD_PATH" => "@") do
+        env = Pluto._child_env("/some/folder")
+        @test env["SPACESTATION_CHILD_WORKSPACE"] == "/some/folder"
+        @test !haskey(env, "SPACESTATION_HUB")       # the child parses the registries: it opens notebooks
+        @test !haskey(env, "SPACESTATION_TUNNELED")
+        @test !haskey(env, "JULIA_LOAD_PATH")
+    end
+end
+
 @testset "Workspace hub proxy" begin
     state = mktempdir()
     ws = mktempdir()
