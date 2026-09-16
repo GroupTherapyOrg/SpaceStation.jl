@@ -112,7 +112,7 @@ end
 
             @testset "the websocket is relayed frame for frame" begin
                 got = Ref{Any}(nothing)
-                HTTP.WebSockets.open("ws://127.0.0.1:$hub_port/w/$wid/?secret=$hub_secret"; suppress_close_error=true) do sock
+                HTTP.WebSockets.open("ws://127.0.0.1:$hub_port/w/$wid/?secret=$hub_secret"; suppress_close_error=true, pool=HTTP.Pool(4)) do sock # a fresh pool: the client must not reuse a keep-alive connection an earlier relay closed
                     HTTP.WebSockets.send(sock, Pluto.pack(Dict("type" => "connect", "client_id" => "proxytest", "request_id" => "r1", "body" => Dict())))
                     got[] = Pluto.unpack(HTTP.WebSockets.receive(sock))
                 end
@@ -131,7 +131,7 @@ end
                 @test r.status == 302
                 @test startswith(HTTP.header(r, "Location"), "./edit?id=")
                 @test any(nb -> nb.path == nb_path, values(child_session.notebooks))   # the spaced, non-ASCII path survived the hop
-                HTTP.WebSockets.open("ws://127.0.0.1:$hub_port/w/$wid/?secret=$hub_secret"; suppress_close_error=true) do sock
+                HTTP.WebSockets.open("ws://127.0.0.1:$hub_port/w/$wid/?secret=$hub_secret"; suppress_close_error=true, pool=HTTP.Pool(4)) do sock # a fresh pool: the client must not reuse a keep-alive connection an earlier relay closed
                     HTTP.WebSockets.send(sock, Pluto.pack(Dict("type" => "connect", "client_id" => "closeme", "request_id" => "r2", "body" => Dict())))
                     HTTP.WebSockets.receive(sock)
                 end
