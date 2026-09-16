@@ -196,7 +196,10 @@ export const deck_html = (launcher_url: string) => /* html */ `<!doctype html>
         }
         window.focus_launcher = () => activate("launcher") // the app menu's "Back to Launcher" calls this
 
-        // A tab is one server (one origin/port): opening the same workspace again focuses its tab.
+        // A tab is one workspace: its hub's page for it (/w/<id>/ on the hub's origin), or a whole
+        // server for older URLs. Opening the same workspace again focuses its tab. (This script is
+        // browser JavaScript inside a template literal: no type annotations, and backslashes doubled.)
+        const workspace_key = (u) => u.origin + (u.pathname.match(/^\\/w\\/[^/]+\\//)?.[0] ?? "/")
         const open_tab = (url, title) => {
             let u
             try {
@@ -209,10 +212,10 @@ export const deck_html = (launcher_url: string) => /* html */ `<!doctype html>
             // (the URL carries ?secret) but the cookie is withheld and every API call 403s. Child
             // and SSH-tunnel URLs are loopback by construction, so unify the hostname on ours.
             if (u.hostname === "localhost" || u.hostname === "127.0.0.1") u.hostname = location.hostname
-            const origin = u.origin
-            const existing = tabs.find((t) => t.id !== "launcher" && new URL(t.url).origin === origin)
+            const key = workspace_key(u)
+            const existing = tabs.find((t) => t.id !== "launcher" && workspace_key(new URL(t.url)) === key)
             if (existing) return activate(existing.id)
-            const tab = { id: "ws-" + origin.replace(/\\W/g, "-"), title: String(title || origin), url: u.href }
+            const tab = { id: "ws-" + key.replace(/\\W/g, "-"), title: String(title || key), url: u.href }
             tabs.push(tab)
             activate(tab.id)
         }

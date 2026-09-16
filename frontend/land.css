@@ -1644,3 +1644,31 @@ dialog.land-confirm button.go.danger {
         transform: rotate(360deg);
     }
 }
+
+
+/* The relay's verdict on this workspace's child server (src/webserver/Proxy.jl): busy, or gone. */
+.workspace-status {
+    position: fixed;
+    top: 0.5rem;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 40;
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+    max-width: min(90vw, 44rem);
+    padding: 0.5rem 0.9rem;
+    border-radius: 0.6rem;
+    font-size: 0.85rem;
+    background: var(--land-card-bg, #fff8e6);
+    color: var(--land-fg, #333);
+    border: 1px solid var(--land-border, #e6d9b8);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+.workspace-status.down {
+    background: var(--land-danger-bg, #fdecec);
+    border-color: var(--land-danger-border, #f0b9b9);
+}
+.workspace-status button {
+    white-space: nowrap;
+}

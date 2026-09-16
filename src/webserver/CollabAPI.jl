@@ -40,6 +40,39 @@ function _json_string(s::AbstractString)
     String(take!(io))
 end
 
+"The inverse of `_json_string` for one string's contents (the text between the quotes)."
+function _json_unescape(s::AbstractString)::String
+    io = IOBuffer()
+    i = firstindex(s)
+    while i <= lastindex(s)
+        c = s[i]
+        if c == '\\' && i < lastindex(s)
+            i = nextind(s, i)
+            e = s[i]
+            if e == 'n'; print(io, '\n')
+            elseif e == 'r'; print(io, '\r')
+            elseif e == 't'; print(io, '\t')
+            elseif e == 'b'; print(io, '\b')
+            elseif e == 'f'; print(io, '\f')
+            elseif e == 'u' && i + 4 <= lastindex(s)
+                code = tryparse(UInt32, s[nextind(s, i):i+4]; base=16)
+                if code === nothing
+                    print(io, "\\u")
+                else
+                    print(io, Char(code))
+                    i += 4
+                end
+            else
+                print(io, e) # \" \\ \/
+            end
+        else
+            print(io, c)
+        end
+        i = nextind(s, i)
+    end
+    String(take!(io))
+end
+
 _json(x::AbstractString) = _json_string(x)
 _json(x::Bool) = x ? "true" : "false"
 _json(x::Integer) = string(x)
@@ -106,7 +139,7 @@ function write_collab_registry_file(session::ServerSession, port::Integer)
     end
     path = collab_registry_path(port)
     ws = session.options.server.workspace_folder
-    _write_private_file(path, """{"pid": $(getpid()), "host": $(_json_string(session.options.server.host)), "port": $(port), "node": $(_json_string(gethostname())), "secret": $(_json_string(session.secret)), "workspace": $(ws === nothing ? "null" : _json_string(tamepath(ws))), "spacestation_version": $(_json_string(PLUTO_VERSION_STR)), "pluto_version": $(_json_string(PLUTO_VERSION_STR)), "started_at": $(time())}\n""")
+    _write_private_file(path, """{"pid": $(getpid()), "host": $(_json_string(session.options.server.host)), "port": $(port), "node": $(_json_string(gethostname())), "secret": $(_json_string(session.secret)), "workspace": $(ws === nothing ? "null" : _json_string(tamepath(ws))), "hub": $(session.options.server.hub ? "true" : "false"), "spacestation_version": $(_json_string(PLUTO_VERSION_STR)), "pluto_version": $(_json_string(PLUTO_VERSION_STR)), "started_at": $(time())}\n""")
     path
 end
 
@@ -435,6 +468,47 @@ function _api_notebook_from_query(session::ServerSession, query)::Union{Notebook
     nothing
 end
 
+# Every workspace's notebooks, as its child reports them (a child that does not answer in time
+# counts as busy, which for this purpose means "running"). Loopback requests: async I/O, never a
+# blocking call on the serving thread.
+function _hub_notebooks_response(as_text::Bool)
+    sessions = lock(() -> collect(values(LOCAL_SESSIONS)), LOCAL_SESSIONS_LOCK)
+    rows = Pair{String,String}[]
+    busy = Ref(false)
+    results = Vector{Any}(nothing, length(sessions))
+    # all children at once: the cost of this answer is one timeout, not one per stalled child
+    @sync for (i, s) in enumerate(sessions)
+        @async results[i] = if s.state != "ready"
+            :busy # starting, or dead and not yet replaced: not "nothing open"
+        else
+            try
+                HTTP.get("http://127.0.0.1:$(s.port)/api/v1/notebooks?secret=$(HTTP.escapeuri(s.secret))"; connect_timeout=3, readtimeout=5, retry=false, status_exception=false)
+            catch
+                :busy
+            end
+        end
+    end
+    for listing in results
+        if listing === :busy || listing === nothing || listing.status != 200
+            busy[] = true
+            continue
+        end
+        for m in eachmatch(r"\"notebook_id\":\"([^\"]+)\",\"path\":\"((?:[^\"\\\\]|\\\\.)*)\"", String(listing.body))
+            push!(rows, String(m.captures[1]) => _json_unescape(String(m.captures[2])))
+        end
+    end
+    if busy[] && isempty(rows)
+        # a child that cannot answer has work of its own; do not read "no answer" as "nothing open".
+        # (The sentinel id "busy" is for the yes/no question "is anything running?"; it is not a notebook.)
+        push!(rows, "busy" => "(a workspace server is busy)")
+    end
+    if as_text
+        HTTP.Response(200, ["Content-Type" => "text/plain; charset=utf-8"], join(("$(id)\t$(path)" for (id, path) in rows), "\n") * "\n")
+    else
+        HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], _json([Pair["notebook_id" => id, "path" => path] for (id, path) in rows]) * "\n")
+    end
+end
+
 # Ask a workspace's child server to close the notebook at `path`, if it has it open. Best effort:
 # the file is being deleted either way. The secret goes to the child in the URL of a loopback
 # request, as the proxy does.
@@ -444,7 +518,7 @@ function _close_notebook_in_child(s, path::AbstractString)
         listing.status == 200 || return
         want = tamepath(String(path))
         for m in eachmatch(r"\"notebook_id\":\"([^\"]+)\",\"path\":\"((?:[^\"\\\\]|\\\\.)*)\"", String(listing.body))
-            nb_path = replace(String(m.captures[2]), "\\\"" => "\"", "\\\\" => "\\")
+            nb_path = _json_unescape(String(m.captures[2]))
             tamepath(nb_path) == want || continue
             HTTP.post("http://127.0.0.1:$(s.port)/shutdown?id=$(m.captures[1])&secret=$(HTTP.escapeuri(s.secret))"; connect_timeout=3, readtimeout=20, retry=false, status_exception=false)
         end
@@ -458,6 +532,12 @@ function register_collab_api!(router, session::ServerSession)
 
     function serve_api_notebooks(request::HTTP.Request)
         query = HTTP.queryparams(HTTP.URI(request.target))
+        if session.options.server.hub && !haskey(request.context, :workspace_session)
+            # A hub has no notebooks of its own; asked at its root, it answers for every workspace it
+            # relays. That is what "is anything running here?" means for a hub — the remote update
+            # path asks exactly that before retiring a server, and a hub with busy children is busy.
+            return _hub_notebooks_response(_api_wants_text(query))
+        end
         if _api_wants_text(query)
             body = join(("$(id)\t$(nb.path)" for (id, nb) in session.notebooks), "\n")
             HTTP.Response(200, ["Content-Type" => "text/plain; charset=utf-8"], body * "\n")

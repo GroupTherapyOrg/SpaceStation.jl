@@ -337,9 +337,12 @@ export class SpaceStationServer {
                    end;
                    write(marker, want)
                end;
-               import SpaceStation; SpaceStation.run(port=${port}, launch_browser=false)`
-            : `import SpaceStation; SpaceStation.run(port=${port}, launch_browser=false)`
-        const args = managed ? ["--startup-file=no", "-e", boot] : [`--project=${project}`, "--startup-file=no", "-e", boot]
+               import SpaceStation; SpaceStation.run(port=${port}, launch_browser=false, hub=true)`
+            : `import SpaceStation; SpaceStation.run(port=${port}, launch_browser=false, hub=true)`
+        // --threads=4,1: the hub serves from its interactive thread and keeps default threads for
+        // blocking file work (src/evaluation/Offload.jl); hub=true + SPACESTATION_HUB=1: it never runs
+        // notebooks or touches the package registries (src/webserver/Proxy.jl).
+        const args = managed ? ["--threads=4,1", "--startup-file=no", "-e", boot] : [`--project=${project}`, "--threads=4,1", "--startup-file=no", "-e", boot]
         if (use_channel) args.unshift(`+${channel}`)
         if (managed) Deno.mkdirSync(project, { recursive: true })
 
@@ -350,6 +353,7 @@ export class SpaceStationServer {
                 // the hub reads this via /api/v1/config: one webview window, so open workspaces
                 // in-place instead of spawning browser tabs
                 SPACESTATION_DESKTOP: "1",
+                SPACESTATION_HUB: "1",
                 // GUI-launched processes get the minimal system PATH, not the user's shell PATH
                 // (where ensure_cli_on_path put ~/.julia/bin) — so Pkg.Apps warned "not available
                 // in PATH" on every bootstrap even though the CLI was fully set up. Give the
