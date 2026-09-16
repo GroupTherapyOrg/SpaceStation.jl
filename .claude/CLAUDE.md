@@ -40,18 +40,19 @@ Pluto.jl is a reactive Julia notebook: a Julia web server that executes notebook
 
 - **`sample/`** — example notebooks that double as test fixtures (they are real Pluto notebook files).
 
-## Releases (release-please + JuliaRegistrator)
+## Releases (manual, via the Release workflow)
 
-Releases to the Julia General registry are automated by `.github/workflows/ReleasePlease.yml`:
-release-please keeps a release PR open against `main` (version bump in `Project.toml` + `CHANGELOG.md`);
-merging it creates the tag/GitHub release and auto-comments `@JuliaRegistrator register` on the release commit.
+Releases are cut by hand: bump `version` in `Project.toml` on `main` (one commit or PR), then run
+`.github/workflows/Release.yml` (Actions → Release → Run workflow, or `gh workflow run Release.yml`).
+It tags that commit, publishes the GitHub release, dispatches the desktop installer build
+(`Desktop.yml`) against it, and comments `@JuliaRegistrator register` on the release commit; General's
+AutoMerge registers the version ~15-20 min later. It refuses to run if the tag already exists.
+`CHANGELOG.md` is hand-maintained (or left alone); nothing generates it. Commit message style no longer
+drives anything — release-please was removed in 2026-09.
 
-**Commit messages on `main` must follow Conventional Commits** — `feat:` (minor bump), `fix:` (patch), `feat!:`/`BREAKING CHANGE:` (major), `chore:`/`docs:`/`refactor:`/`test:` (no bump, excluded from changelog). Commits that don't parse as conventional are ignored by release-please and never appear in a changelog. Never bump the version in `Project.toml` by hand; release-please owns it (baseline pinned in `.release-please-manifest.json`).
-
-Hard-won release gotchas (2026-07, the v0.2.0 release):
-- **Squash-merge PRs.** `gh pr merge --merge` titles the merge commit with the PR title, so a conventional PR title gets counted twice by release-please (branch commit + merge commit → duplicate changelog entries).
-- **Never restore upstream Pluto's git tags.** The fork originally inherited all ~310 of Pluto's tags (`v0.2.0`…`v0.20.x`); they collide with SpaceStation's own version line — release-please attached the v0.2.0 release to Pluto's tag from 2020 and generated a changelog spanning six years. They were purged; SpaceStation's tag namespace starts fresh at its own `v0.2.0`.
-- There is **no `julia` release type** in release-please; the config uses `simple` + an `extra-files` TOML updater on `Project.toml` (release-please also maintains a `version.txt`).
+Release gotchas that still apply:
+- **Squash-merge PRs**, so `main` stays one commit per change.
+- **Never restore upstream Pluto's git tags.** The fork originally inherited all ~310 of Pluto's tags (`v0.2.0`…`v0.20.x`); they collide with SpaceStation's own version line. They were purged; SpaceStation's tag namespace starts fresh at its own `v0.2.0`.
 - The upstream-facing test suites assume **autorun**; SpaceStation's lazy default breaks any test that expects "open runs the notebook" (backend Pkg tests, Safe Preview E2E). Pin such tests/servers to `on_code_change="autorun"` — lazy behavior is covered by `test/collab_*.sh`.
 
 ## Commands

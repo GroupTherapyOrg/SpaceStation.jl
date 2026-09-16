@@ -32,7 +32,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Attach installers + install guide to this existing release (e.g. v0.4.0). The ReleasePlease workflow dispatches this automatically — releases it creates with GITHUB_TOKEN cannot trigger the `release` event."
+        description: "Attach installers + install guide to this existing release (e.g. v0.4.0). The Release workflow dispatches this automatically — releases it creates with GITHUB_TOKEN cannot trigger the `release` event."
         required: false
         type: string
         default: ""
@@ -42,7 +42,7 @@ permissions:
   contents: write # attach installers + edit notes on releases; read-only for everything else we do
 
 concurrency:
-  # Release builds get their OWN lane: they are dispatched from ReleasePlease at the same moment
+  # Release builds get their OWN lane: they are dispatched from the Release workflow at the same moment
   # the release commit lands on main, and sharing a group with the ordinary push build meant one
   # cancelled the other (v0.4.0's installer backfill died exactly this way).
   group: desktop-${{ github.ref }}-${{ inputs.release_tag || 'ci' }}
