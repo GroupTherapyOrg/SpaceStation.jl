@@ -40,7 +40,8 @@ trap cleanup EXIT
 for i in $(seq 1 150); do curl -fsS -m 2 -o /dev/null "http://127.0.0.1:$PORT/ping" 2>/dev/null && break; sleep 2; done
 curl -fsS -m 2 -o /dev/null "http://127.0.0.1:$PORT/ping" || { echo "hub did not start"; cat "$d/launch.out" 2>/dev/null | tail -5; tail -5 "$d/hub.log"; exit 4; }
 if [ -n "${LAUNCHER:-}" ]; then # it must really be running from the node-local runtime, or the test proves nothing
-    exe=$(readlink "/proc/$(pgrep -f "port=$PORT" | head -1)/exe"); case "$exe" in */spacestation-*/rt-*/julia/*) echo "the hub runs from $exe" ;; *) echo "FAIL: the hub does not run from a staged runtime ($exe)"; exit 6 ;; esac
+    exe=""; for p in $(pgrep -f "port=$PORT"); do e=$(readlink "/proc/$p/exe"); case "$e" in */julia) exe=$e ;; esac; done
+    case "$exe" in */spacestation-*/rt-*/julia/*) echo "the hub runs from $exe" ;; *) echo "FAIL: the hub does not run from a staged runtime ($exe)"; exit 6 ;; esac
 fi
 urls="/ping /api/v1/config /api/v1/local/list / /land.js /editor.html /api/v1/remote/list"
 ask() { # ask <seconds> -> prints worst latency, count, failures
