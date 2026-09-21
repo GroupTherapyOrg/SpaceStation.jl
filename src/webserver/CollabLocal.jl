@@ -139,12 +139,13 @@ function _local_spawn_task!(s::LocalSession)
         # Reproduce the hub's own environment for the child: same julia, same active project, so the child
         # imports SpaceStation from a precompiled depot (fast — no recompile). The workspace path rides in an
         # ENV var, never interpolated into the -e code, so any folder name survives intact.
-        proj = something(Base.active_project(), "")
-        projdir = isempty(proj) ? pkgdir(@__MODULE__) : dirname(proj)
+        # A workspace server runs notebooks: it needs the USER's julia and depot (their packages, already
+        # compiled), which on a cluster is not what this hub runs from (UserEnv.jl).
+        projdir = user_project_dir()
         env = _child_env(s.path)
         code = "import SpaceStation; SpaceStation.run(workspace=ENV[\"SPACESTATION_CHILD_WORKSPACE\"], launch_browser=false)"
         # SERVER_THREAD_FLAGS last, so it wins over any --threads julia_cmd() copied from the hub: see Offload.jl.
-        cmd = setenv(`$(Base.julia_cmd()) $(SERVER_THREAD_FLAGS) --project=$(projdir) -e $(code)`, env)
+        cmd = setenv(_via_local_shell(`$(user_julia_command()) $(SERVER_THREAD_FLAGS) --project=$(projdir) -e $(code)`), env)
         s.proc = Base.run(pipeline(cmd; stdin=devnull, stdout=logfile, stderr=logfile); wait=false)
         child_pid = try getpid(s.proc) catch; nothing end # asked once, now: getpid throws after the process exits
         # Cancelled in the window before/just-after spawn? Don't leave the child orphaned.
@@ -187,6 +188,17 @@ function _local_spawn_task!(s::LocalSession)
 end
 
 """
+Starting a process makes the parent wait until the new program has been loaded (`execve`), and on a
+cluster the user's julia is on shared storage: during a hang the hub would wait with it. So the hub
+starts `/bin/sh`, which is on the node's own disk, and the shell loads julia.
+If the filesystem hangs, the shell waits, the hub does not, and the spawn's own timeout reports it.
+"""
+function _via_local_shell(cmd::Cmd)::Cmd
+    (Sys.isunix() && isfile("/bin/sh")) || return cmd
+    `/bin/sh -c 'exec "$@"' sh $(cmd.exec)` # the working directory stays the hub's: on the node's own disk
+end
+
+"""
 The environment of a workspace child: the hub's own, minus what a child must not inherit.
 `SPACESTATION_HUB=1` marks a hub BEFORE `import SpaceStation`, so it never parses the package
 registries (`PkgCompat.__init__`). A child is the process that opens notebooks: with the marker
@@ -194,7 +206,13 @@ inherited it would start with an empty registry cache, and `package_exists` woul
 every package a notebook adds. The tunneled flags are the hub's too: a local child is never tunneled.
 """
 function _child_env(path::AbstractString)::Dict{String,String}
-    env = copy(ENV)
+    env = user_env() # what the user launched from, not this hub's cut-down environment (UserEnv.jl)
+    # where this hub keeps its node-local state is the hub's to say
+    for name in ("SPACESTATION_STATE_HOME", "SPACESTATION_NODE_DIR")
+        haskey(ENV, name) && (env[name] = ENV[name])
+    end
+    depot = get(ENV, "SPACESTATION_USER_DEPOT_PATH", "")
+    isempty(depot) || (env["JULIA_DEPOT_PATH"] = depot) # the user's depot, behind a node-local writable one
     env["SPACESTATION_CHILD_WORKSPACE"] = String(path)
     delete!(env, "JULIA_LOAD_PATH")  # don't leak the app's load path into the child (matches worker/terminal hygiene)
     delete!(env, "SPACESTATION_TUNNELED")

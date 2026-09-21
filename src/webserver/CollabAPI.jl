@@ -149,7 +149,7 @@ node-local file alone. Removed at shutdown, best-effort; a leftover is harmless,
 """
 function legacy_registry_dir()::Union{Nothing,String}
     isempty(get(ENV, "SPACESTATION_STATE_HOME", "")) && return nothing
-    legacy = joinpath(get(ENV, "XDG_STATE_HOME", joinpath(homedir(), ".local", "state")), "pluto", "servers")
+    legacy = joinpath(get(ENV, "XDG_STATE_HOME", joinpath(user_home(), ".local", "state")), "pluto", "servers")
     legacy == collab_registry_dir() ? nothing : legacy
 end
 
@@ -818,7 +818,9 @@ function register_collab_api!(router, session::ServerSession)
         HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], body * "\n")
     end
     HTTP.register!(router, "GET", "/api/v1/browse", _offloaded(serve_api_browse))
-    HTTP.register!(router, "GET", "/api/v1/helper/stat", serve_helper_stat) # answers in a file helper only (FileHelper.jl)
+    HTTP.register!(router, "GET", "/api/v1/helper/stat", serve_helper_stat) # these answer in a file helper only (FileHelper.jl)
+    HTTP.register!(router, "POST", "/api/v1/helper/private_file", serve_helper_private_file)
+    HTTP.register!(router, "DELETE", "/api/v1/helper/private_file", serve_helper_private_file)
 
     function serve_api_workspace_open(request::HTTP.Request)
         query = HTTP.queryparams(HTTP.URI(request.target))

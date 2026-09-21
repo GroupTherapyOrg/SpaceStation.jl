@@ -74,7 +74,7 @@ const WORKSPACE_ROOT_HEADER = "X-SpaceStation-Workspace-Root"
 
 "What a helper answers, and nothing else: it is a whole server underneath, and none of the rest (terminals, workspaces, shutdown) is its business."
 const _FILE_HELPER_PATHS = Set(["/ping", "/api/v1/browse", "/api/v1/ssh_hosts", "/api/v1/workspace", "/api/v1/workspace/listing",
-    "/api/v1/file", "/api/v1/file/save", "/api/v1/file/new", "/api/v1/file/delete", "/api/v1/helper/stat"])
+    "/api/v1/file", "/api/v1/file/save", "/api/v1/file/new", "/api/v1/file/delete", "/api/v1/helper/stat", "/api/v1/helper/private_file"])
 file_helper_serves(path::AbstractString) = path in _FILE_HELPER_PATHS
 
 function _file_helper_command(secret::String)
@@ -83,6 +83,7 @@ function _file_helper_command(secret::String)
     env = copy(ENV)
     env["SPACESTATION_FILE_HELPER_SECRET"] = secret
     env["SPACESTATION_HUB"] = "1" # a helper never opens a notebook either: no registry parse at import
+    env["HOME"] = user_home()     # it reads the USER's files: `~`, ~/.ssh/config, the default folder to browse
     delete!(env, "JULIA_LOAD_PATH")
     code = "import SpaceStation; SpaceStation.file_helper_main()"
     setenv(`$(Base.julia_cmd()) --threads=2,1 --project=$(projdir) -e $(code)`, env)
@@ -222,7 +223,7 @@ function _request_path(request::HTTP.Request)::String
     catch
         ""
     end
-    path = !isempty(named) ? named : String(something(get(request.context, :workspace_root, nothing), get(ENV, "HOME", "/")))
+    path = !isempty(named) ? named : String(something(get(request.context, :workspace_root, nothing), user_home()))
     try tamepath(path) catch; path end
 end
 
@@ -281,7 +282,8 @@ function relay_to_file_helper(request::HTTP.Request)::HTTP.Response
     headers = Pair{String,String}[String(k) => String(v) for (k, v) in request.headers if lowercase(String(k)) ∉ _HOP_REQUEST_HEADERS && lowercase(String(k)) != lowercase(WORKSPACE_ROOT_HEADER)]
     ws = get(request.context, :workspace_root, nothing)
     ws === nothing || push!(headers, WORKSPACE_ROOT_HEADER => HTTP.escapeuri(String(ws)))
-    deadline = request.method == "GET" ? FILE_HELPER_DEADLINE[] * (suspect === nothing ? 1 : 4) : FILE_HELPER_WRITE_DEADLINE[]
+    deadline = request.method == "GET" ? FILE_HELPER_DEADLINE[] * (suspect === nothing ? 1 : 4) :
+               request.method == "DELETE" ? FILE_HELPER_DEADLINE[] : FILE_HELPER_WRITE_DEADLINE[] # a removal is asked at shutdown: short
     upstream = try
         _ask_helper(h, request.method, request.target, headers, request.body; deadline)
     catch
@@ -323,4 +325,58 @@ function serve_helper_stat(request::HTTP.Request)
         end
     end
     _json_response(200, """{"exists": $(exists), "isdir": $(dir)}""")
+end
+
+"In a helper only: write (POST, the body) or remove (DELETE) a file that holds a secret: mode 0600, written whole."
+function serve_helper_private_file(request::HTTP.Request)
+    is_file_helper_process() || return HTTP.Response(404)
+    path = String(get(HTTP.queryparams(HTTP.URI(request.target)), "path", ""))
+    (isempty(path) || !isabspath(path)) && return _json_response(400, """{"error": "pass ?path=/abs/file"}""")
+    # only what it is for: a connection file in the directory older clients read
+    allowed = legacy_registry_dir()
+    (allowed !== nothing && dirname(normpath(path)) == normpath(allowed) && endswith(path, ".json")) || return _json_response(403, """{"error": "not a connection file"}""")
+    body = String(copy(request.body))
+    ok = offload_blocking() do
+        try
+            if request.method == "DELETE"
+                rm(path; force=true)
+            else
+                mkpath(dirname(path)); _write_private_file_now(path, body)
+            end
+            true
+        catch
+            false
+        end
+    end
+    _json_response(ok ? 200 : 500, """{"ok": $(ok)}""")
+end
+
+"""
+A hub's connection file also goes where older clients look (`legacy_registry_dir`), which on a cluster
+is the shared home. The hub does not write there itself: it asks a file helper, in the background,
+as soon as one is up. Until then, and if the home is hung, only the node-local file exists.
+"""
+function announce_legacy_via_helper(registry_file::AbstractString)
+    dir = legacy_registry_dir()
+    dir === nothing && return nothing
+    target = joinpath(dir, basename(registry_file))
+    contents = read(registry_file) # node-local
+    @async for _ in 1:150
+        FILE_HELPER_MODE[] || break
+        r = relay_to_file_helper(HTTP.Request("POST", "/api/v1/helper/private_file?path=" * HTTP.escapeuri(target), Pair{String,String}[], contents))
+        r.status == 200 && break
+        sleep(2)
+    end
+    nothing
+end
+
+"At shutdown, best-effort and bounded: a helper removes what `announce_legacy_via_helper` wrote."
+function retract_legacy_via_helper(registry_file::AbstractString)
+    dir = legacy_registry_dir()
+    (dir === nothing || isempty(registry_file)) && return nothing
+    try
+        relay_to_file_helper(HTTP.Request("DELETE", "/api/v1/helper/private_file?path=" * HTTP.escapeuri(joinpath(dir, basename(registry_file)))))
+    catch
+    end
+    nothing
 end

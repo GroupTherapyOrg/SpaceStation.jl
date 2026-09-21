@@ -228,7 +228,9 @@ function run!(session::ServerSession)
     # A hub decides here, once, that it never touches the user's files in its own process; its file
     # helpers come up in the background, and until one answers those requests get 504 (FileHelper.jl).
     session.options.server.hub && !helper && start_file_helpers!()
-    registry_file = helper ? "" : write_collab_registry_file(session, port; announce_legacy=true)
+    # The copy for older clients goes into the shared home: a hub with helpers has a helper write it.
+    registry_file = helper ? "" : write_collab_registry_file(session, port; announce_legacy=!file_helpers_active())
+    file_helpers_active() && announce_legacy_via_helper(registry_file)
     if !helper
         # agent surface: put `pluto-collab` on PATH next to the app, and (opt-in) seed the workspace's AGENTS.md
         ensure_pluto_collab_installed()
@@ -242,7 +244,12 @@ function run!(session::ServerSession)
             isfile(registry_file) && rm(registry_file)
         catch
         end
-        helper || remove_collab_registry_file(port; legacy=true)
+        if file_helpers_active()
+            retract_legacy_via_helper(registry_file)
+            remove_collab_registry_file(port)
+        elseif !helper
+            remove_collab_registry_file(port; legacy=true)
+        end
         stop_file_helpers!()
         # tear down any SSH remote tunnels so the `ssh -N -L` children don't orphan onto the terminal
         try

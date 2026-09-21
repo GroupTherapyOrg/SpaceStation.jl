@@ -31,7 +31,8 @@ import SpaceStation as Pluto
             @test get("http://127.0.0.1:$(h1.port)/api/v1/local/list?secret=$(h1.secret)").status == 404
             @test get("http://127.0.0.1:$(h1.port)/api/v1/helper/stat?secret=$(h1.secret)&path=$(HTTP.escapeuri(ws))").status == 200
             @test get("$base/api/v1/helper/stat?path=$(HTTP.escapeuri(ws))").status == 404  # the hub has no such route to offer
-
+            # the copy of a connection file for older clients, in the shared home, is written and removed by a helper
+            @test Pluto.relay_to_file_helper(HTTP.Request("POST", "/api/v1/helper/private_file?path=" * HTTP.escapeuri(joinpath(ws, "x.json")), Pair{String,String}[], Vector{UInt8}("{}"))).status == 403 # and nothing else
             r = get("$base/api/v1/browse?path=$(HTTP.escapeuri(ws))")
             @test r.status == 200 && occursin("\"sub\"", String(r.body))
             @test get("$base/api/v1/browse?path=/no/such/dir").status == 404          # the helper's answer, relayed as it is
@@ -97,6 +98,24 @@ import SpaceStation as Pluto
             @test !Pluto.file_helpers_active()
         end
     end
+    # A hub whose connection files live on the node also announces itself where older clients look (the
+    # shared home), and does not write there itself: a helper does, and removes it again at shutdown.
+    shared = mktempdir(); node = mktempdir()
+    withenv("XDG_STATE_HOME" => shared, "SPACESTATION_STATE_HOME" => node, "SPACESTATION_FILE_HELPER" => "1") do
+        Pluto.FILE_HELPER_COUNT[] = 1
+        session = Pluto.ServerSession(; options=Pluto.Configuration.from_flat_kwargs(;
+            workspace_use_distributed=false, launch_browser=false, hub=true, port_hint=2467,
+            require_secret_for_access=false, require_secret_for_open_links=false))
+        server = Pluto.run!(session)
+        own = Pluto.collab_registry_path(session.options.server.port)
+        twin = joinpath(shared, "pluto", "servers", basename(own))
+        @test startswith(own, node) && isfile(own)
+        @test timedwait(() -> isfile(twin), 240) == :ok                                  # once a helper is up
+        @test read(twin, String) == read(own, String)
+        Sys.iswindows() || @test filemode(twin) & 0o077 == 0
+        close(server)
+        @test !isfile(own) && !isfile(twin)
+    end
     Pluto.FILE_HELPER_COUNT[] = Sys.islinux() ? 2 : 1
     @testset "hung-ness belongs to a filesystem" begin
         mounts = ["/data/homezvol2/dale", "/dfs6b", "/data", "/tmp", "/"]
@@ -106,7 +125,10 @@ import SpaceStation as Pluto
         @test Pluto.filesystem_key("/home/me/x", mounts) == "/home/me/x"                             # "/" says nothing
         @test Pluto._unescape_mountinfo("/mnt/with\\040space") == "/mnt/with space"
         request = HTTP.Request("GET", "/api/v1/ssh_hosts")
-        @test Pluto._request_path(request) == Pluto.tamepath(get(ENV, "HOME", "/"))                  # no path named: the home directory, never ""
+        @test Pluto._request_path(request) == Pluto.tamepath(homedir())                               # no path named: the home directory, never ""
+        withenv("SPACESTATION_USER_HOME" => "/real/home") do
+            @test Pluto._request_path(request) == "/real/home"                                         # the USER's, when this hub runs from a staged runtime
+        end
         request = HTTP.Request("GET", "/api/v1/workspace/listing?path=%2Fa%2Fb"); request.context[:workspace_root] = "/a"
         @test Pluto._request_path(request) == Pluto.tamepath("/a/b")                                  # the most specific path wins
     end

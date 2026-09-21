@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Stress test: a hub must keep answering while the filesystems under HANG_PREFIXES are hung.
 #
-#   stress_hub.sh <app-dir> <julia> <port> <hang-prefixes> [hang-seconds]
+#   [LAUNCHER=1] stress_hub.sh <app-dir> <julia> <port> <hang-prefixes> [hang-seconds]
+#
+# With LAUNCHER=1 the hub is started by the cluster launcher's own script (staged node-local runtime,
+# scrubbed environment); <julia> and <app-dir> are then the USER's, as on a cluster.
 #
 # Starts a hub from <app-dir> under hangtrace (system-call level hang injection), lets it start and serve one warm-up session,
 # then raises the hang flag and keeps asking (ping, config, workspace list, the page, an asset). The hub
@@ -18,14 +21,28 @@ d=$(mktemp -d "${TMPDIR:-/tmp}/hubstress.XXXXXX")
 gcc -O2 -o "$d/hangtrace" "$here/hangtrace.c" || exit 3
 mkdir -p "$d/state" "$d/depot"
 export SPACESTATION_HUB=1 SPACESTATION_STATE_HOME="$d/state" SPACESTATION_NODE_DIR="$d"
-export JULIA_DEPOT_PATH="${STRESS_DEPOT_PATH:-$d/depot:${JULIA_DEPOT_PATH:-$HOME/.julia}:}"
 cd "$d"; : > "$d/calls.log"
-nohup "$d/hangtrace" -b -p "$PREFIXES" -f "$d/hang" -l "$d/calls.log" -- "$J" --threads=4,1 --project="$APP" -e "@async while true; GC.gc(false); sleep(0.5); end; import SpaceStation; SpaceStation.run(launch_browser=false, hub=true, port=$PORT, require_secret_for_access=false, require_secret_for_open_links=false)" > "$d/hub.log" 2>&1 &
-hub=$!
-cleanup() { rm -f "$d/hang"; kill "$hub" 2>/dev/null; sleep 1; kill -9 "$hub" 2>/dev/null; cd /; rm -rf "$d"; }
+code="@async while true; GC.gc(false); sleep(0.5); end; import SpaceStation; SpaceStation.run(launch_browser=false, hub=true, port=$PORT, require_secret_for_access=false, require_secret_for_open_links=false)"
+if [ -n "${LAUNCHER:-}" ]; then
+    # THE launch script of the cluster launcher (_remote_launch_script), not a copy of it: it stages the
+    # node-local runtime with node/runtime.sh and starts the hub from it with nothing shared in its
+    # environment. The hang injector goes where the script allows a wrapper around the hub's command.
+    script=$("$J" --startup-file=no --project="$APP" -e 'import SpaceStation; print(SpaceStation._remote_launch_script(ARGS[1]; app=ARGS[2], code=ARGS[3]))' "$J" "$APP" "$code") || { echo "could not generate the launch script"; exit 3; }
+    SPACESTATION_LAUNCH_WRAPPER="$d/hangtrace -b -p $PREFIXES -f $d/hang -l $d/calls.log --" bash -c "$script" > "$d/launch.out" 2>&1
+    ln -sf "$HOME/.spacestation/server.log" "$d/hub.log"
+else
+    export JULIA_DEPOT_PATH="${STRESS_DEPOT_PATH:-$d/depot:${JULIA_DEPOT_PATH:-$HOME/.julia}:}"
+    nohup "$d/hangtrace" -b -p "$PREFIXES" -f "$d/hang" -l "$d/calls.log" -- "$J" --threads=4,1 --project="$APP" -e "$code" > "$d/hub.log" 2>&1 &
+fi
+hub=${!:-}
+cleanup() { rm -f "$d/hang"; pkill -f "port=$PORT" 2>/dev/null; [ -n "$hub" ] && kill "$hub" 2>/dev/null; sleep 1; pkill -9 -f "port=$PORT" 2>/dev/null; [ -n "$hub" ] && kill -9 "$hub" 2>/dev/null; cd /; rm -rf "$d"; }
 trap cleanup EXIT
 for i in $(seq 1 150); do curl -fsS -m 2 -o /dev/null "http://127.0.0.1:$PORT/ping" 2>/dev/null && break; sleep 2; done
-curl -fsS -m 2 -o /dev/null "http://127.0.0.1:$PORT/ping" || { echo "hub did not start"; tail -5 "$d/hub.log"; exit 4; }
+curl -fsS -m 2 -o /dev/null "http://127.0.0.1:$PORT/ping" || { echo "hub did not start"; cat "$d/launch.out" 2>/dev/null | tail -5; tail -5 "$d/hub.log"; exit 4; }
+if [ -n "${LAUNCHER:-}" ]; then # it must really be running from the node-local runtime, or the test proves nothing
+    exe=""; for p in $(pgrep -f "port=$PORT"); do e=$(readlink "/proc/$p/exe"); case "$e" in */julia) exe=$e ;; esac; done
+    case "$exe" in */spacestation-*/rt-*/julia/*) echo "the hub runs from $exe" ;; *) echo "FAIL: the hub does not run from a staged runtime ($exe)"; exit 6 ;; esac
+fi
 urls="/ping /api/v1/config /api/v1/local/list / /land.js /editor.html /api/v1/remote/list"
 ask() { # ask <seconds> -> prints worst latency, count, failures
     local until=$(( $(date +%s) + $1 )) worst=0 n=0 bad=0 t code
