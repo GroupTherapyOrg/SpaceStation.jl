@@ -66,3 +66,19 @@ import SpaceStation as Pluto
     end
     @test Pluto.keep_code_pinned!() === nothing
 end
+
+@testset "the job's memory limit is found on an ancestor cgroup" begin
+    mktempdir() do root
+        leaf = joinpath(root, "slurm", "uid_1", "job_9", "step_0")
+        mkpath(leaf)
+        write(joinpath(leaf, "memory.max"), "max\n")
+        write(joinpath(root, "slurm", "uid_1", "job_9", "memory.max"), "$(40 * 2^30)\n")
+        write(joinpath(root, "slurm", "memory.max"), "$(200 * 2^30)\n")
+        @test Pluto._job_memory_budget(; root, group="/slurm/uid_1/job_9/step_0", group_v1="") == 4 * 2^30   # the job's 40 GB, not the leaf's "max"
+        @test Pluto._job_memory_budget(; root, group="/", group_v1="") === nothing
+        @test Pluto._job_memory_budget(; root, group="/not/there", group_v1="") === nothing
+        v1 = joinpath(root, "memory", "slurm", "job_9"); mkpath(v1)
+        write(joinpath(v1, "memory.limit_in_bytes"), "$(10 * 2^30)\n")
+        @test Pluto._job_memory_budget(; root, group="", group_v1="/slurm/job_9") == 2^30
+    end
+end

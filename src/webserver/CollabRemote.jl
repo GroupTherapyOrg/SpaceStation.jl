@@ -614,6 +614,8 @@ function _parse_remote_candidates(out::AbstractString)::Union{Vector{RemoteCandi
         pid = length(words) >= 2 ? something(tryparse(Int, words[2]), 0) : 0
         reg = _parse_remote_registry(rest)
         reg === nothing && continue
+        # one server can show up twice: it announces itself in the shared directory too (legacy_registry_dir)
+        any(c -> c.pid == pid && c.port == reg.port, cands) && continue
         push!(cands, RemoteCandidate(status, reg.port, reg.secret, pid, occursin(r"\"workspace\": \"", rest), occursin(r"\"hub\": true", rest),
             (m = match(r"\"node\": \"([^\"\t\n]+)\"", rest); m === nothing ? "" : String(m.captures[1]))))
     end

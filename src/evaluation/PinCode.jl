@@ -93,16 +93,22 @@ function _prefault(addr::UInt, len::UInt)
     ccall(:madvise, Cint, (Ptr{Cvoid}, Csize_t, Cint), Ptr{Cvoid}(addr), len, 3)        # MADV_WILLNEED
 end
 
-"A tenth of the job's memory limit (cgroup v2, then v1), or `nothing` when there is none."
-function _job_memory_budget()::Union{Nothing,Int}
-    for path in ("/sys/fs/cgroup" * _own_cgroup() * "/memory.max", "/sys/fs/cgroup/memory" * _own_cgroup(; controller="memory") * "/memory.limit_in_bytes")
-        try
-            v = tryparse(Int, strip(read(path, String)))
-            (v !== nothing && 0 < v < 2^50) && return v ÷ 10
-        catch
+"""
+A tenth of the job's memory limit, or `nothing` when there is none. The limit usually sits on an
+ANCESTOR of this process's cgroup (Slurm puts it on `job_N`; the leaf says "max"), so every level up
+to the root is read and the smallest wins. cgroup v2, then v1.
+"""
+function _job_memory_budget(; root::String="/sys/fs/cgroup", group::String=_own_cgroup(), group_v1::String=_own_cgroup(; controller="memory"))::Union{Nothing,Int}
+    smallest = nothing
+    for (base, group, file) in ((root, group, "memory.max"), (joinpath(root, "memory"), group_v1, "memory.limit_in_bytes"))
+        parts = split(group, "/"; keepempty=false)
+        for depth in length(parts):-1:0
+            path = joinpath(base, parts[1:depth]..., file)
+            v = try tryparse(Int, strip(read(path, String))) catch; nothing end
+            (v !== nothing && 0 < v < 2^50) && (smallest = smallest === nothing ? v : min(smallest, v))
         end
     end
-    nothing
+    smallest === nothing ? nothing : smallest ÷ 10
 end
 function _own_cgroup(; controller::String="")::String
     try

@@ -209,6 +209,10 @@ function run!(session::ServerSession)
     favourite_port = session.options.server.port
     port_hint = session.options.server.port_hint
 
+    # Before the port is bound (a connect must be refused, not left hanging, while this reads a few
+    # hundred MB on a cold node): the program's own pages must never be a read from a cluster
+    # filesystem at the moment they run (PinCode.jl). A no-op off Linux and off network filesystems.
+    keep_code_pinned!()
     local port, serversocket = port_serversocket(hostIP, favourite_port, port_hint)
 
     # remember the actual port (it may have been auto-chosen) so e.g. the connection file can be rewritten when the workspace changes at runtime
@@ -217,10 +221,7 @@ function run!(session::ServerSession)
     # connection file: lets external tools (e.g. coding agents) discover this server's port and secret.
     # Keep the path: the name carries the hostname, which can change while we run (VPN on/off), and
     # shutdown must remove the file we wrote, not the one today's hostname would name.
-    # Before this server announces itself: the program's own pages must never be a read from a cluster
-    # filesystem at the moment they run (PinCode.jl). A no-op off Linux and off network filesystems.
-    keep_code_pinned!()
-    registry_file = write_collab_registry_file(session, port)
+    registry_file = write_collab_registry_file(session, port; announce_legacy=true)
     # agent surface: put `pluto-collab` on PATH next to the app, and (opt-in) seed the workspace's AGENTS.md
     ensure_pluto_collab_installed()
     maybe_write_agents_md(session)
@@ -232,7 +233,7 @@ function run!(session::ServerSession)
             isfile(registry_file) && rm(registry_file)
         catch
         end
-        remove_collab_registry_file(port)
+        remove_collab_registry_file(port; legacy=true)
         # tear down any SSH remote tunnels so the `ssh -N -L` children don't orphan onto the terminal
         try
             close_all_remote_tunnels()
