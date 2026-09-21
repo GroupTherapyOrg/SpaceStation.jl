@@ -777,7 +777,7 @@ function _reconnect_known_remote!(r::RemoteSession; known=get(_read_known_remote
     if outcome == :ok
         if node_of(local_port) == known.node && reaches(local_port, known.secret)
             _remote_bail(r) && return true # disconnected while we were asking: do not mark the host active
-            _mark_remote_ready!(r, local_port, known.port, known.secret, known.node)
+            _mark_remote_ready!(r, local_port, known.port, known.secret, known.node; node_of=(_ -> known.node)) # just checked
             after_ready(r.host)
             return true
         end
@@ -789,18 +789,32 @@ function _reconnect_known_remote!(r::RemoteSession; known=get(_read_known_remote
     false
 end
 
-# Discovery fast-forwards the node's clone on every connect; a reconnect that skips discovery would
-# leave a long-lived node on old code forever. Same fetch, in the background, no server touched: the
-# next server started on the node runs the new code.
-function _update_remote_clone_later(host::String)
-    @async try
-        _maybe_update_remote_clone!(host)
-    catch
-    end
-    nothing
+# Discovery fast-forwards the node's clone on every connect, and then REPLACES the idle server that
+# was loaded from the old source. A reconnect that skips discovery must not do the first half alone:
+# new source under a running hub means its next child loads another version than the hub, and the
+# hub refuses it. So this only LOOKS (`git ls-remote`, nothing on the node changes). When the node
+# is behind, the remembered entry is dropped, and the next connect runs discovery, which updates and
+# replaces together as it always has.
+function _remote_clone_is_behind(host::String)::Bool
+    snippet = """
+    d="\$HOME/.spacestation/Pluto.jl"
+    cd "\$d" 2>/dev/null || exit 0
+    here=\$(git rev-parse HEAD 2>/dev/null) || exit 0
+    there=\$(git ls-remote origin refs/heads/$(REMOTE_FORK_BRANCH) 2>/dev/null | cut -f1)
+    [ -n "\$there" ] && [ "\$here" != "\$there" ] && echo __BEHIND__
+    """
+    _, out = _ssh_try(host, snippet)
+    occursin("__BEHIND__", out)
 end
 
-function _mark_remote_ready!(r::RemoteSession, local_port::Integer, remote_port::Integer, secret::AbstractString, node::AbstractString="")
+function _update_remote_clone_later(host::String; behind=_remote_clone_is_behind)
+    @async try
+        behind(host) && _set_known_remote!(host, nothing)
+    catch
+    end
+end
+
+function _mark_remote_ready!(r::RemoteSession, local_port::Integer, remote_port::Integer, secret::AbstractString, node::AbstractString=""; node_of=_tunnel_node)
     remote = (port=remote_port, secret=String(secret))
     r.local_port = local_port
     r.secret = remote.secret
@@ -820,8 +834,14 @@ function _mark_remote_ready!(r::RemoteSession, local_port::Integer, remote_port:
     r.state = "ready"
     r.detail = "connected — the workspace runs on $(r.host)"
     # remembered for the next connect: see "the server we used last time". (A reconnect through this
-    # path updates the node's clone in the background: see _update_remote_clone_later.)
-    _set_known_remote!(r.host, (port=Int(remote_port), secret=String(secret), node=String(node)))
+    # path checks the node's clone in the background: see _update_remote_clone_later.)
+    # Only a server that says who it is on /ping can be reconnected to (an older one cannot, and
+    # remembering it would make every connect pay for a reconnect that is bound to fail).
+    if !isempty(node) && node_of(local_port) == node
+        _set_known_remote!(r.host, (port=Int(remote_port), secret=String(secret), node=String(node)))
+    else
+        _set_known_remote!(r.host, nothing)
+    end
 end
 
 function _remote_connect_task!(r::RemoteSession)

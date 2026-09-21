@@ -256,6 +256,7 @@ function shutdown_local_session!(path::String)
         get(LOCAL_SESSIONS, path, nothing)
     end
     s === nothing || (s.cancelled = true) # also aborts an in-flight spawn task (cancel during "starting")
+    lock(() -> delete!(_credential_refreshes, path), _credential_refreshes_lock) # the next child heals at once
     # Works for a child we spawned AND for one we only reattached to (no proc handle): the graceful path
     # is its own /api/v1/shutdown (secret-gated), which fires the child's on_shutdown.
     found = if s !== nothing && s.port != 0

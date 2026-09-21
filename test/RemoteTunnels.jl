@@ -530,7 +530,17 @@ drop_session!(host) = lock(() -> delete!(Pluto.REMOTE_SESSIONS, host), Pluto.REM
                 @test asked[] == (1234, 1, 6)                               # that port, one attempt, a short wait on busy
                 @test r.state == "ready" && r.local_port == 45999 && r.secret == "s3cret"
                 @test "known-node" in Pluto._read_active_remotes()
-                @test updated == ["known-node"]                             # the node's clone still gets its update
+                @test updated == ["known-node"]                             # the node's clone still gets looked at
+                # behind: nothing on the node is touched, the entry goes, the next connect is a discovery
+                wait(Pluto._update_remote_clone_later("other-node"; behind=h -> false))
+                @test haskey(Pluto._read_known_remotes(), "other-node")
+                wait(Pluto._update_remote_clone_later("other-node"; behind=h -> true))
+                @test !haskey(Pluto._read_known_remotes(), "other-node")
+                Pluto._set_known_remote!("other-node", (port=1240, secret="other", node="gpu-02"))
+                # discovery remembers only a server that names itself on /ping (an older one does not)
+                Pluto._mark_remote_ready!(r, 45999, 1234, "s3cret", "gpu-01"; node_of=p -> "")
+                @test !haskey(Pluto._read_known_remotes(), "known-node")
+                Pluto._mark_remote_ready!(r, 45999, 1234, "s3cret", "gpu-01"; node_of=p -> "gpu-01")
                 @test Pluto._read_known_remotes()["known-node"] == known
 
                 # another machine answers behind the alias: the secret is never sent, the entry goes
