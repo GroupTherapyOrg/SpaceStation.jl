@@ -83,7 +83,17 @@ _json(x::Vector{<:Pair}) = "{" * join(("$(_json_string(String(first(p)))):$(_jso
 
 # --- server connection registry (Jupyter kernel-<id>.json idiom) ---
 
-collab_registry_dir() = joinpath(get(ENV, "XDG_STATE_HOME", joinpath(homedir(), ".local", "state")), "pluto", "servers")
+# SPACESTATION_STATE_HOME wins over XDG_STATE_HOME: on a cluster the launcher points it at a directory
+# on the node's own disk (CollabRemote.jl), because ~/.local/state is on the shared, stalling \$HOME and
+# this directory is walked and read by a hub that must never wait on that filesystem (PinCode.jl says
+# why one waiting thread is the whole process). Its own variable, so that the terminals a server
+# starts — which inherit it, and whose pluto-collab must find these files — do not also move every
+# other program's state (shell and editor histories) off \$HOME.
+function collab_registry_dir()
+    base = get(ENV, "SPACESTATION_STATE_HOME", "")
+    isempty(base) && (base = get(ENV, "XDG_STATE_HOME", joinpath(homedir(), ".local", "state")))
+    joinpath(base, "pluto", "servers")
+end
 
 # Tag the registry filename with the node's hostname: "<node>-<port>.json".
 # On a shared $HOME (an HPC cluster mounts the same NFS home on every compute node) this one
@@ -129,8 +139,22 @@ function _write_private_file_now(path::String, contents::AbstractString)
     path
 end
 
+"""
+Where connection files lived before SPACESTATION_STATE_HOME, when that variable has moved them
+(`nothing` otherwise). An older client (another laptop, a desktop app a version behind, pluto-collab
+in a plain ssh shell) only looks there; not finding this server, it would start a second one next to
+it. So a server ANNOUNCES itself there as well: once, at start, before it serves anything (a hang
+on that filesystem then only delays the start), and never again; later rewrites go to the
+node-local file alone. Removed at shutdown, best-effort; a leftover is harmless, readers check the pid.
+"""
+function legacy_registry_dir()::Union{Nothing,String}
+    isempty(get(ENV, "SPACESTATION_STATE_HOME", "")) && return nothing
+    legacy = joinpath(get(ENV, "XDG_STATE_HOME", joinpath(homedir(), ".local", "state")), "pluto", "servers")
+    legacy == collab_registry_dir() ? nothing : legacy
+end
+
 "Write the connection file that lets external tools discover this live server (port + secret). Flat JSON, greppable with sed — clients need no JSON parser. Mode 0o600: it holds the access secret."
-function write_collab_registry_file(session::ServerSession, port::Integer)
+function write_collab_registry_file(session::ServerSession, port::Integer; announce_legacy::Bool=false)
     dir = collab_registry_dir()
     mkpath(dir)
     try
@@ -140,14 +164,24 @@ function write_collab_registry_file(session::ServerSession, port::Integer)
     path = collab_registry_path(port)
     ws = session.options.server.workspace_folder
     _write_private_file(path, """{"pid": $(getpid()), "host": $(_json_string(session.options.server.host)), "port": $(port), "node": $(_json_string(gethostname())), "secret": $(_json_string(session.secret)), "workspace": $(ws === nothing ? "null" : _json_string(tamepath(ws))), "hub": $(session.options.server.hub ? "true" : "false"), "spacestation_version": $(_json_string(PLUTO_VERSION_STR)), "pluto_version": $(_json_string(PLUTO_VERSION_STR)), "started_at": $(time())}\n""")
+    legacy = announce_legacy ? legacy_registry_dir() : nothing
+    if legacy !== nothing
+        try
+            mkpath(legacy)
+            _write_private_file_now(joinpath(legacy, basename(path)), read(path, String))
+        catch
+        end
+    end
     path
 end
 
-function remove_collab_registry_file(port::Integer)
+function remove_collab_registry_file(port::Integer; legacy::Bool=false)
     path = collab_registry_path(port)
     try
         isfile(path) && rm(path)
     catch end
+    dir = legacy ? legacy_registry_dir() : nothing
+    dir === nothing || try rm(joinpath(dir, basename(path)); force=true) catch end
 end
 
 # --- the workspace tree (SpaceStation) ---

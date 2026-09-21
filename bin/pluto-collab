@@ -37,7 +37,11 @@
 
 set -u
 
-REGISTRY_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/pluto/servers"
+# SPACESTATION_STATE_HOME first: a server on a cluster keeps these files on the node's own disk, and
+# the terminals it starts inherit the variable (see collab_registry_dir in CollabAPI.jl).
+REGISTRY_DIR="${SPACESTATION_STATE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}}/pluto/servers"
+LEGACY_REGISTRY_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/pluto/servers"
+[ "$LEGACY_REGISTRY_DIR" = "$REGISTRY_DIR" ] && LEGACY_REGISTRY_DIR=/nonexistent
 
 err() { echo "pluto-collab: $*" >&2; }
 
@@ -69,9 +73,9 @@ EOF
 # the published code). On a shared $HOME (an HPC cluster) the dir also holds OTHER nodes' files, where a
 # dead-looking pid isn't ours to delete — so we only rm a stale file when its "node" matches THIS host.
 live_servers() {
-    [ -d "$REGISTRY_DIR" ] || return 0
     me=$(hostname)
-    for f in "$REGISTRY_DIR"/*.json; do
+    # both places: a server started before the node-local directory existed wrote to the shared one
+    for f in "$REGISTRY_DIR"/*.json "$LEGACY_REGISTRY_DIR"/*.json; do
         [ -e "$f" ] || continue
         pid=$(json_field pid <"$f")
         port=$(json_field port <"$f")

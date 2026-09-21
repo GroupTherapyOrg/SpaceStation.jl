@@ -27,6 +27,46 @@ end
     end
 end
 
+@testset "the connection files go where SPACESTATION_STATE_HOME says, before XDG_STATE_HOME" begin
+    withenv("SPACESTATION_STATE_HOME" => "/node/local", "XDG_STATE_HOME" => "/home/shared") do
+        @test Pluto.collab_registry_dir() == joinpath("/node/local", "pluto", "servers")
+        @test Pluto._child_env("/some/folder")["SPACESTATION_STATE_HOME"] == "/node/local" # children and terminals follow
+    end
+    withenv("SPACESTATION_STATE_HOME" => nothing, "XDG_STATE_HOME" => "/home/shared") do
+        @test Pluto.collab_registry_dir() == joinpath("/home/shared", "pluto", "servers")
+    end
+    withenv("SPACESTATION_STATE_HOME" => "", "XDG_STATE_HOME" => "/home/shared") do
+        @test Pluto.collab_registry_dir() == joinpath("/home/shared", "pluto", "servers")
+    end
+    # a server whose files moved still announces itself where older clients look, once, and cleans up
+    mktempdir() do shared
+        mktempdir() do node
+            withenv("SPACESTATION_STATE_HOME" => node, "XDG_STATE_HOME" => shared) do
+                @test Pluto.legacy_registry_dir() == joinpath(shared, "pluto", "servers")
+                session = Pluto.ServerSession()
+                path = Pluto.write_collab_registry_file(session, 45998; announce_legacy=true)
+                twin = joinpath(shared, "pluto", "servers", basename(path))
+                @test startswith(path, node) && isfile(twin) && read(twin, String) == read(path, String)
+                Sys.iswindows() || @test filemode(twin) & 0o077 == 0
+                rm(twin); Pluto.write_collab_registry_file(session, 45998)      # a later rewrite: node-local only
+                @test !isfile(twin)
+                Pluto.write_collab_registry_file(session, 45998; announce_legacy=true)
+                Pluto.remove_collab_registry_file(45998; legacy=true)
+                @test !isfile(path) && !isfile(twin)
+            end
+        end
+    end
+    withenv("SPACESTATION_STATE_HOME" => nothing) do
+        @test Pluto.legacy_registry_dir() === nothing
+    end
+    # the same server seen in both directories is one candidate
+    file = """{"pid": 77, "port": 1234, "node": "n1", "secret": "s", "workspace": null, "hub": true}"""
+    cands = Pluto._parse_remote_candidates("__CANDIDATE__ LIVE 77\n$file\n__CANDIDATE__ LIVE 77\n$file\n__SCAN_DONE__\n")
+    @test length(cands) == 1 && cands[1].node == "n1"
+    # both remote scans look in the node-local directory as well as the shared one
+    @test occursin("\"\$nd\"/state/pluto/servers/*.json", Pluto._SCAN_REMOTE_SERVERS_SNIPPET)
+end
+
 @testset "a workspace child never inherits the hub marker" begin
     withenv("SPACESTATION_HUB" => "1", "SPACESTATION_TUNNELED" => "1", "JULIA_LOAD_PATH" => "@") do
         env = Pluto._child_env("/some/folder")

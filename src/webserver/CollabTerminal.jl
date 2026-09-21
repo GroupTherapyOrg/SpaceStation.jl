@@ -308,7 +308,7 @@ function _get_or_create_terminal(session::ServerSession, tid::String; requested_
             try
                 pty_write(t.pty, Vector{UInt8}(codeunits(run * "\n")))
             catch e
-                @warn "terminal: could not type the initial command" exception = (e, catch_backtrace())
+                @warn "terminal: could not type the initial command" error = sprint(showerror, e) # no backtrace: see PinCode.jl
             end
         end
         t.pump = @asynclog begin
@@ -527,7 +527,7 @@ function handle_terminal_websocket(ws, session::ServerSession, query::Dict{Strin
         end
     catch e
         if !(e isa InterruptException || e isa HTTP.WebSockets.WebSocketError || e isa EOFError || e isa Base.IOError)
-            @warn "Terminal websocket failed" exception = (e, catch_backtrace())
+            @warn "Terminal websocket failed" error = sprint(showerror, e) # no backtrace: see PinCode.jl
         end
     finally
         # detach only — the shell keeps running for the next attach
