@@ -221,6 +221,10 @@ function run!(session::ServerSession)
     # connection file: lets external tools (e.g. coding agents) discover this server's port and secret.
     # Keep the path: the name carries the hostname, which can change while we run (VPN on/off), and
     # shutdown must remove the file we wrote, not the one today's hostname would name.
+    # A hub and its helpers never symbolicate a backtrace: that reads the depot (PinCode.jl).
+    (session.options.server.hub || is_file_helper_process()) && log_without_backtraces!()
+    # A hub and its helpers never symbolicate a backtrace: that reads the depot (PinCode.jl).
+    (session.options.server.hub || is_file_helper_process()) && log_without_backtraces!()
     # A file helper (FileHelper.jl) is nobody's server but its hub's: it is not announced, and installs nothing.
     helper = is_file_helper_process()
     # A hub brings its file helpers up BEFORE it announces itself: from its first request on, it never
@@ -350,7 +354,7 @@ function run!(session::ServerSession)
                             if ex isa InterruptException || ex isa HTTP.WebSockets.WebSocketError || ex isa EOFError || (ex isa Base.IOError && occursin("connection reset", ex.msg))
                                 # that's fine!
                             else
-                                bt = stacktrace(catch_backtrace())
+                                bt = catch_backtrace()
                                 @warn "Reading WebSocket client stream failed for unknown reason:" exception = (ex, bt)
                             end
                         finally
@@ -368,7 +372,7 @@ function run!(session::ServerSession)
                     elseif ex isa ArgumentError && occursin("stream is closed", ex.msg)
                         # that's fine!
                     else
-                        bt = stacktrace(catch_backtrace())
+                        bt = catch_backtrace()
                         @warn "HTTP upgrade failed for unknown reason" exception = (ex, bt)
                     end
                 finally
