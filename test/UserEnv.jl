@@ -83,12 +83,9 @@ import SpaceStation as Pluto
                 end
             end
         end
-        cmd = Pluto._via_local_shell(`/shared/julia --project=/p -e code`, "/work space")
+        cmd = Pluto._via_local_shell(`/shared/julia --project=/p -e code`)
         @test cmd.exec[1] == "/bin/sh" && cmd.exec[end-3:end] == ["/shared/julia", "--project=/p", "-e", "code"]
-        mktempdir() do dir # the shell changes directory, then becomes the program
-            @test realpath(strip(read(Pluto._via_local_shell(`pwd`, dir), String))) == realpath(dir)
-            @test read(Pluto._via_local_shell(`echo "a b" c`, joinpath(dir, "gone")), String) == "a b c\n"   # a missing folder is not fatal
-        end
+        @test read(Pluto._via_local_shell(`echo "a b" c`), String) == "a b c\n"                     # the shell becomes the program, arguments intact
         runtime = joinpath(pkgdir(Pluto), "src", "webserver", "node", "runtime.sh")
         @test isfile(runtime) && success(`bash -n $runtime`)
         @test startswith(read(`bash $runtime /no/such/julia /tmp`, String), "NORUNTIME")        # a refusal is an answer, never an error

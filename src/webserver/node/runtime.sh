@@ -92,30 +92,39 @@ BUNDLE="$BUNDLES/$KEY.tar.gz"
 ready() { [ -f "$RT/.complete" ] && [ -x "$RT/julia/bin/julia" ]; }
 # A runtime a live process runs from is never removed, whatever else looks wrong with it (a tmp cleaner
 # may have aged its marker away): a hub is serving from it.
-in_use() {
-    local exe
-    for exe in /proc/[0-9]*/exe; do
-        case "$(readlink "$exe" 2>/dev/null)" in "$1"/*) return 0 ;; esac
-    done
-    return 1
-}
-if ! ready && [ -x "$RT/julia/bin/julia" ] && in_use "$RT"; then touch "$RT/.complete"; fi
+in_use() { readlink /proc/[0-9]*/exe 2>/dev/null | grep -q "^$1/"; } # one pass, however many processes
+LOCK="$ROOT/rt-$KEY.lock"
+# ...but a runtime that is still being BUILT also has a julia running from it (the precompile step):
+# the builder marks it, and holds the lock, for as long as that is so.
+if ! ready && [ -x "$RT/julia/bin/julia" ] && [ ! -e "$RT/.building" ] && [ ! -e "$LOCK" ] && in_use "$RT"; then touch "$RT/.complete"; fi
 ready && { touch "$RT/.complete" 2>/dev/null; echo "RUNTIME $RT"; exit 0; }
 
-# One builder per node at a time. The lock names its owner: it is taken over only from a process that
-# no longer exists (same node, so that can be told), never because time has passed.
-LOCK="$ROOT/rt-$KEY.lock"
-have_lock=0
-for i in $(seq 1 1800); do
-    if mkdir "$LOCK" 2>/dev/null; then echo $$ > "$LOCK/pid"; have_lock=1; break; fi
-    ready && { echo "RUNTIME $RT"; exit 0; }
-    owner=$(cat "$LOCK/pid" 2>/dev/null)
-    if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then rm -rf "$LOCK"; continue; fi
-    [ -z "$owner" ] && [ -n "$(find "$LOCK" -maxdepth 0 -mmin +1 2>/dev/null)" ] && { rm -rf "$LOCK"; continue; } # died between mkdir and echo
-    sleep 1
-done
-[ "$have_lock" = 1 ] || fail "another launch is still building the runtime"
-unlock() { [ "$(cat "$LOCK/pid" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK"; }
+# One builder per node at a time, for at most as long as the client waits for a first start (15 min).
+# With flock the kernel lets go when the holder dies: nothing to steal, no pid to be reused. Without
+# it, a directory that names its owner, taken over only from a process that is gone or is not us.
+WAIT=840
+if command -v flock >/dev/null 2>&1; then
+    exec 9> "$ROOT/rt-$KEY.flock"
+    flock -w "$WAIT" 9 || fail "another launch is still building the runtime"
+    unlock() { :; }
+else
+    # alive AND one of us where that can be told (a pid gets reused); elsewhere (no /proc), alive
+    owner_alive() { if [ -r /proc/self/cmdline ]; then grep -qs runtime.sh "/proc/$1/cmdline"; else kill -0 "$1" 2>/dev/null; fi; }
+    have_lock=0
+    for i in $(seq 1 "$WAIT"); do
+        if mkdir "$LOCK" 2>/dev/null; then echo $$ > "$LOCK/pid"; have_lock=1; break; fi
+        ready && { echo "RUNTIME $RT"; exit 0; }
+        owner=$(cat "$LOCK/pid" 2>/dev/null)
+        if [ -n "$owner" ] && ! owner_alive "$owner"; then
+            # re-read right before removing: another waiter may have taken it over in the meantime
+            [ "$(cat "$LOCK/pid" 2>/dev/null)" = "$owner" ] && rm -rf "$LOCK"; continue
+        fi
+        [ -z "$owner" ] && [ -n "$(find "$LOCK" -maxdepth 0 -mmin +1 2>/dev/null)" ] && { rm -rf "$LOCK"; continue; } # died between mkdir and echo
+        sleep 1
+    done
+    [ "$have_lock" = 1 ] || fail "another launch is still building the runtime"
+    unlock() { [ "$(cat "$LOCK/pid" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK"; }
+fi
 trap unlock EXIT
 ready && { echo "RUNTIME $RT"; exit 0; }
 in_use "$RT" && fail "the runtime at $RT is in use but incomplete"
@@ -125,8 +134,9 @@ give_up() { rm -rf "$RT"; fail "$@"; } # never leave a partial runtime behind
 # --- restore: one sequential read ----------------------------------------------------------------------
 if [ -f "$BUNDLE" ] && [ -f "$BUNDLE.sha256" ]; then
     say "restoring $BUNDLE"
+    mkdir -p "$RT" && : > "$RT/.building"
     if [ "$(sha "$BUNDLE" | cut -d' ' -f1)" = "$(cut -d' ' -f1 "$BUNDLE.sha256")" ] && tar -xzf "$BUNDLE" -C "$ROOT" && [ -x "$RT/julia/bin/julia" ]; then
-        mkdir -p "$RT/home" "$RT/tmp" "$RT/depot/logs"; touch "$RT/.complete"; echo "RUNTIME $RT"; exit 0
+        mkdir -p "$RT/home" "$RT/tmp" "$RT/depot/logs"; rm -f "$RT/.building"; touch "$RT/.complete"; echo "RUNTIME $RT"; exit 0
     fi
     say "the bundle is damaged: building afresh"; rm -rf "$RT"
 fi
@@ -134,7 +144,7 @@ fi
 # --- build (once per key, anywhere) -----------------------------------------------------------------------
 # AT its final path, never somewhere else and moved: the paths go into the compile-cache key.
 say "building the node-local runtime (a few minutes, once per version)"
-mkdir -p "$RT/depot" "$RT/home" "$RT/tmp" || give_up "cannot create $RT"
+mkdir -p "$RT/depot" "$RT/home" "$RT/tmp" && : > "$RT/.building" || give_up "cannot create $RT"
 cp -a "$JULIA_ROOT" "$RT/julia" || give_up "could not copy julia"
 rm -rf "$RT/julia/share/doc" "$RT/julia/share/julia/test" "$RT/julia/share/man" 2>/dev/null
 # the app, mtimes kept (its cache is validated by path and mtime), without its history
@@ -171,11 +181,16 @@ mkdir -p "$RT/app" && (cd "$APP" && for f in Project.toml Manifest.toml src fron
 ( cd "$RT" && env -u JULIA_LOAD_PATH -u JULIA_PROJECT HOME="$RT/home" TMPDIR="$RT/tmp" JULIA_DEPOT_PATH="$RT/depot:" JULIA_CPU_TARGET="$CPU_TARGET" JULIA_PKG_OFFLINE=true \
     "$RT/julia/bin/julia" --startup-file=no --history-file=no --project="$RT/app" -e 'import SpaceStation' >&2 ) || give_up "the app does not load from the local runtime"
 echo "$CPU_TARGET" > "$RT/cpu-target"
+rm -f "$RT/.building"
 touch "$RT/.complete"
 echo "RUNTIME $RT"
 
 # older runtimes of this user that nothing runs from: the two newest stay
-ls -dt "$ROOT"/rt-*/ 2>/dev/null | tail -n +3 | while read -r old; do old=${old%/}; [ "$old" = "$RT" ] || in_use "$old" || rm -rf "$old"; done
+# (runtimes only: not the locks beside them, and not one that is being built or restored right now)
+for old in $(ls -dt "$ROOT"/rt-*/ 2>/dev/null | grep -v '\.lock/$' | tail -n +3); do
+    old=${old%/}
+    [ "$old" = "$RT" ] || [ -e "$old/.building" ] || [ -e "$old.lock" ] || [ ! -f "$old/.complete" ] || in_use "$old" || rm -rf "$old"
+done
 
 # A runtime in a place that changes from job to job is of no use to the next job: no bundle for it.
 [ "$(cat "$ROOT/.place" 2>/dev/null)" = fixed ] || exit 0

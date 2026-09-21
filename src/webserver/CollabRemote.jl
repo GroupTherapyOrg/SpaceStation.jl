@@ -1118,7 +1118,7 @@ function _remote_connect_task!(r::RemoteSession)
             # once); every later one restores or reuses it in seconds. The launch script does that before
             # it starts the hub, so this wait covers both.
             r.detail = "starting the SpaceStation server on $(r.host) (the first start of a new version prepares its runtime on the node's own disk: a few minutes, once)"
-            for _ in 1:450
+            for _ in 1:480 # a little longer than node/runtime.sh waits for a build already under way
                 sleep(2)
                 _remote_bail(r) && return
                 # the server we just launched announces itself by answering /ping on this node

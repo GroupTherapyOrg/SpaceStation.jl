@@ -282,7 +282,8 @@ function relay_to_file_helper(request::HTTP.Request)::HTTP.Response
     headers = Pair{String,String}[String(k) => String(v) for (k, v) in request.headers if lowercase(String(k)) ∉ _HOP_REQUEST_HEADERS && lowercase(String(k)) != lowercase(WORKSPACE_ROOT_HEADER)]
     ws = get(request.context, :workspace_root, nothing)
     ws === nothing || push!(headers, WORKSPACE_ROOT_HEADER => HTTP.escapeuri(String(ws)))
-    deadline = request.method == "GET" ? FILE_HELPER_DEADLINE[] * (suspect === nothing ? 1 : 4) : FILE_HELPER_WRITE_DEADLINE[]
+    deadline = request.method == "GET" ? FILE_HELPER_DEADLINE[] * (suspect === nothing ? 1 : 4) :
+               request.method == "DELETE" ? FILE_HELPER_DEADLINE[] : FILE_HELPER_WRITE_DEADLINE[] # a removal is asked at shutdown: short
     upstream = try
         _ask_helper(h, request.method, request.target, headers, request.body; deadline)
     catch
@@ -331,6 +332,9 @@ function serve_helper_private_file(request::HTTP.Request)
     is_file_helper_process() || return HTTP.Response(404)
     path = String(get(HTTP.queryparams(HTTP.URI(request.target)), "path", ""))
     (isempty(path) || !isabspath(path)) && return _json_response(400, """{"error": "pass ?path=/abs/file"}""")
+    # only what it is for: a connection file in the directory older clients read
+    allowed = legacy_registry_dir()
+    (allowed !== nothing && dirname(normpath(path)) == normpath(allowed) && endswith(path, ".json")) || return _json_response(403, """{"error": "not a connection file"}""")
     body = String(copy(request.body))
     ok = offload_blocking() do
         try
