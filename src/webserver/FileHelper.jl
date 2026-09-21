@@ -74,7 +74,7 @@ const WORKSPACE_ROOT_HEADER = "X-SpaceStation-Workspace-Root"
 
 "What a helper answers, and nothing else: it is a whole server underneath, and none of the rest (terminals, workspaces, shutdown) is its business."
 const _FILE_HELPER_PATHS = Set(["/ping", "/api/v1/browse", "/api/v1/ssh_hosts", "/api/v1/workspace", "/api/v1/workspace/listing",
-    "/api/v1/file", "/api/v1/file/save", "/api/v1/file/new", "/api/v1/file/delete", "/api/v1/helper/stat"])
+    "/api/v1/file", "/api/v1/file/save", "/api/v1/file/new", "/api/v1/file/delete", "/api/v1/helper/stat", "/api/v1/helper/private_file"])
 file_helper_serves(path::AbstractString) = path in _FILE_HELPER_PATHS
 
 function _file_helper_command(secret::String)
@@ -324,4 +324,55 @@ function serve_helper_stat(request::HTTP.Request)
         end
     end
     _json_response(200, """{"exists": $(exists), "isdir": $(dir)}""")
+end
+
+"In a helper only: write (POST, the body) or remove (DELETE) a file that holds a secret: mode 0600, written whole."
+function serve_helper_private_file(request::HTTP.Request)
+    is_file_helper_process() || return HTTP.Response(404)
+    path = String(get(HTTP.queryparams(HTTP.URI(request.target)), "path", ""))
+    (isempty(path) || !isabspath(path)) && return _json_response(400, """{"error": "pass ?path=/abs/file"}""")
+    body = String(copy(request.body))
+    ok = offload_blocking() do
+        try
+            if request.method == "DELETE"
+                rm(path; force=true)
+            else
+                mkpath(dirname(path)); _write_private_file_now(path, body)
+            end
+            true
+        catch
+            false
+        end
+    end
+    _json_response(ok ? 200 : 500, """{"ok": $(ok)}""")
+end
+
+"""
+A hub's connection file also goes where older clients look (`legacy_registry_dir`), which on a cluster
+is the shared home. The hub does not write there itself: it asks a file helper, in the background,
+as soon as one is up. Until then, and if the home is hung, only the node-local file exists.
+"""
+function announce_legacy_via_helper(registry_file::AbstractString)
+    dir = legacy_registry_dir()
+    dir === nothing && return nothing
+    target = joinpath(dir, basename(registry_file))
+    contents = read(registry_file) # node-local
+    @async for _ in 1:150
+        FILE_HELPER_MODE[] || break
+        r = relay_to_file_helper(HTTP.Request("POST", "/api/v1/helper/private_file?path=" * HTTP.escapeuri(target), Pair{String,String}[], contents))
+        r.status == 200 && break
+        sleep(2)
+    end
+    nothing
+end
+
+"At shutdown, best-effort and bounded: a helper removes what `announce_legacy_via_helper` wrote."
+function retract_legacy_via_helper(registry_file::AbstractString)
+    dir = legacy_registry_dir()
+    (dir === nothing || isempty(registry_file)) && return nothing
+    try
+        relay_to_file_helper(HTTP.Request("DELETE", "/api/v1/helper/private_file?path=" * HTTP.escapeuri(joinpath(dir, basename(registry_file)))))
+    catch
+    end
+    nothing
 end

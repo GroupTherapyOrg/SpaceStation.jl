@@ -30,7 +30,8 @@ function user_env()::Dict{String,String}
             file = get(ENV, "SPACESTATION_USER_ENV_FILE", "")
             _user_env_cache[] = try
                 isempty(file) ? nothing : parse_env0(read(file))
-            catch
+            catch e
+                @warn "SpaceStation: the saved user environment could not be read; terminals and notebooks get this server's own, reduced environment" file error = sprint(showerror, e) maxlog = 1
                 nothing
             end
             _user_env_cache[] === nothing && return Dict{String,String}(ENV) # not cached: ENV can change

@@ -818,7 +818,9 @@ function register_collab_api!(router, session::ServerSession)
         HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], body * "\n")
     end
     HTTP.register!(router, "GET", "/api/v1/browse", _offloaded(serve_api_browse))
-    HTTP.register!(router, "GET", "/api/v1/helper/stat", serve_helper_stat) # answers in a file helper only (FileHelper.jl)
+    HTTP.register!(router, "GET", "/api/v1/helper/stat", serve_helper_stat) # these answer in a file helper only (FileHelper.jl)
+    HTTP.register!(router, "POST", "/api/v1/helper/private_file", serve_helper_private_file)
+    HTTP.register!(router, "DELETE", "/api/v1/helper/private_file", serve_helper_private_file)
 
     function serve_api_workspace_open(request::HTTP.Request)
         query = HTTP.queryparams(HTTP.URI(request.target))

@@ -31,6 +31,13 @@ import SpaceStation as Pluto
             @test get("http://127.0.0.1:$(h1.port)/api/v1/local/list?secret=$(h1.secret)").status == 404
             @test get("http://127.0.0.1:$(h1.port)/api/v1/helper/stat?secret=$(h1.secret)&path=$(HTTP.escapeuri(ws))").status == 200
             @test get("$base/api/v1/helper/stat?path=$(HTTP.escapeuri(ws))").status == 404  # the hub has no such route to offer
+            # files that hold a secret, in the shared home, are written and removed by a helper, not by the hub
+            private = joinpath(ws, "deep", "conn.json")
+            wrote = Pluto.relay_to_file_helper(HTTP.Request("POST", "/api/v1/helper/private_file?path=" * HTTP.escapeuri(private), Pair{String,String}[], Vector{UInt8}("{\"secret\": 1}")))
+            @test wrote.status == 200 && read(private, String) == "{\"secret\": 1}"
+            Sys.iswindows() || @test filemode(private) & 0o077 == 0
+            @test Pluto.relay_to_file_helper(HTTP.Request("DELETE", "/api/v1/helper/private_file?path=" * HTTP.escapeuri(private))).status == 200
+            @test !isfile(private)
 
             r = get("$base/api/v1/browse?path=$(HTTP.escapeuri(ws))")
             @test r.status == 200 && occursin("\"sub\"", String(r.body))

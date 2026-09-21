@@ -145,7 +145,7 @@ function _local_spawn_task!(s::LocalSession)
         env = _child_env(s.path)
         code = "import SpaceStation; SpaceStation.run(workspace=ENV[\"SPACESTATION_CHILD_WORKSPACE\"], launch_browser=false)"
         # SERVER_THREAD_FLAGS last, so it wins over any --threads julia_cmd() copied from the hub: see Offload.jl.
-        cmd = setenv(`$(user_julia_command()) $(SERVER_THREAD_FLAGS) --project=$(projdir) -e $(code)`, env)
+        cmd = setenv(_via_local_shell(`$(user_julia_command()) $(SERVER_THREAD_FLAGS) --project=$(projdir) -e $(code)`, s.path), env)
         s.proc = Base.run(pipeline(cmd; stdin=devnull, stdout=logfile, stderr=logfile); wait=false)
         child_pid = try getpid(s.proc) catch; nothing end # asked once, now: getpid throws after the process exits
         # Cancelled in the window before/just-after spawn? Don't leave the child orphaned.
@@ -185,6 +185,17 @@ function _local_spawn_task!(s::LocalSession)
         s.state = "error"
         s.detail = sprint(showerror, e)
     end
+end
+
+"""
+Starting a process makes the parent wait until the new program has been loaded (`execve`), and on a
+cluster the user's julia is on shared storage: during a hang the hub would wait with it. So the hub
+starts `/bin/sh`, which is on the node's own disk, and the shell changes directory and loads julia.
+If the filesystem hangs, the shell waits, the hub does not, and the spawn's own timeout reports it.
+"""
+function _via_local_shell(cmd::Cmd, dir::AbstractString)::Cmd
+    (Sys.isunix() && isfile("/bin/sh")) || return cmd
+    `/bin/sh -c 'cd "$1" 2>/dev/null; shift; exec "$@"' sh $(String(dir)) $(cmd.exec)`
 end
 
 """

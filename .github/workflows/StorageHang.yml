@@ -43,7 +43,7 @@ jobs:
             - name: "runtime.sh: build the node-local runtime, keep it as one file, restore it"
               run: |
                   set -e
-                  J=$(readlink -f $(which julia))
+                  J=$(which julia)   # as found on PATH, symlink or not: the script asks julia where it really lives
                   out=$(bash src/webserver/node/runtime.sh "$J" "$GITHUB_WORKSPACE" /tmp/bundles); echo "$out"
                   RT=${out#RUNTIME }; [ -x "$RT/julia/bin/julia" ]
                   du -sh "$RT"; case "$RT" in /tmp/spacestation-*) ;; *) echo "not in the fixed per-user place"; exit 1 ;; esac
@@ -65,10 +65,10 @@ jobs:
             - name: A hub started the launcher's way outlives a hang of the whole home directory and the Julia install
               run: |
                   julia_root=$(dirname $(dirname $(readlink -f $(which julia))))
-                  bash test/hangfs/stress_hub.sh "$GITHUB_WORKSPACE" "$(readlink -f $(which julia))" 2471 "$HOME:$julia_root" 40
+                  LAUNCHER=1 SPACESTATION_BUNDLE_DIR=/tmp/bundles bash test/hangfs/stress_hub.sh "$GITHUB_WORKSPACE" "$(readlink -f $(which julia))" 2471 "$HOME:$julia_root" 40
             - name: A listing of a hung directory stalls a file helper, never the hub
               run: |
                   julia_root=$(dirname $(dirname $(readlink -f $(which julia))))
                   mkdir -p "$GITHUB_WORKSPACE/userfiles" && touch "$GITHUB_WORKSPACE/userfiles/a.jl"
-                  SCENARIO=userfiles USERFILES_DIR="$GITHUB_WORKSPACE/userfiles" \
+                  LAUNCHER=1 SPACESTATION_BUNDLE_DIR=/tmp/bundles SCENARIO=userfiles USERFILES_DIR="$GITHUB_WORKSPACE/userfiles" \
                     bash test/hangfs/stress_hub.sh "$GITHUB_WORKSPACE" "$(readlink -f $(which julia))" 2472 "$HOME:$julia_root" 40

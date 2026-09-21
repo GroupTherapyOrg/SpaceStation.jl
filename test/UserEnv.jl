@@ -48,6 +48,47 @@ import SpaceStation as Pluto
     if Sys.isunix()
         path, io = mktemp(); write(io, script); close(io)
         @test success(`bash -n $path`)                                                           # a valid shell script
+        # RUN it, against stand-ins for julia and for the staging script: what command line and what
+        # environment does the hub really get? (`bash -n` cannot see a command split in two.)
+        for staged in (true, false)
+            mktempdir() do fake
+                fake = realpath(fake)
+                home = joinpath(fake, "home"); app = joinpath(home, ".spacestation", "Pluto.jl"); rt = joinpath(fake, "rt")
+                mkpath(joinpath(app, "src", "webserver", "node")); mkpath(joinpath(rt, "julia", "bin")); mkpath(joinpath(fake, "tmp"))
+                stub = "#!/bin/sh\nenv -0 > \"$fake/seen-env\"\nprintf '%s\\n' \"\$@\" > \"$fake/seen-args\"\npwd > \"$fake/seen-cwd\"\n"
+                for bin in (joinpath(rt, "julia", "bin", "julia"), joinpath(fake, "userjulia")); write(bin, stub); chmod(bin, 0o755); end
+                write(joinpath(rt, "cpu-target"), "generic\n")
+                write(joinpath(app, "src", "webserver", "node", "runtime.sh"), staged ? "echo 'RUNTIME $rt'\n" : "echo 'NORUNTIME testing'\n")
+                launch = Pluto._remote_launch_script(joinpath(fake, "userjulia"); app, code="run_the_hub()")
+                withenv("HOME" => home, "TMPDIR" => joinpath(fake, "tmp"), "LD_LIBRARY_PATH" => "/shared/lib", "JULIA_DEPOT_PATH" => "/shared/depot",
+                        "SLURM_TMPDIR" => nothing, "SPACESTATION_LAUNCH_WRAPPER" => nothing, "SPACESTATION_HUB" => nothing, "SPACESTATION_TUNNELED" => nothing) do
+                    @test success(pipeline(`bash -c $launch`; stdout=devnull, stderr=devnull))
+                end
+                @test timedwait(() -> isfile(joinpath(fake, "seen-cwd")) && filesize(joinpath(fake, "seen-cwd")) > 0, 20) == :ok
+                seen = Pluto.parse_env0(read(joinpath(fake, "seen-env"))); args = readlines(joinpath(fake, "seen-args"))
+                @test seen["SPACESTATION_HUB"] == "1" && seen["SPACESTATION_TUNNELED"] == "1"      # one command, markers included
+                @test args[end-1:end] == ["-e", "run_the_hub()"] && "--threads=4,1" in args
+                @test startswith(seen["SPACESTATION_STATE_HOME"], joinpath(fake, "tmp"))           # node-local state either way
+                if staged
+                    @test seen["HOME"] == joinpath(rt, "home") && seen["JULIA_DEPOT_PATH"] == "$rt/depot:" && seen["JULIA_CPU_TARGET"] == "generic"
+                    @test !haskey(seen, "LD_LIBRARY_PATH") && !occursin("/shared", seen["PATH"])
+                    @test strip(read(joinpath(fake, "seen-cwd"), String)) == rt                     # not the launch directory
+                    @test seen["SPACESTATION_USER_JULIA"] == joinpath(fake, "userjulia") && seen["SPACESTATION_USER_HOME"] == home
+                    user = Pluto.parse_env0(read(seen["SPACESTATION_USER_ENV_FILE"]))
+                    @test user["LD_LIBRARY_PATH"] == "/shared/lib" && user["HOME"] == home         # what the user had, for what runs for them
+                    @test !haskey(user, "SPACESTATION_HUB")                                        # and it does not say "hub"
+                    @test filemode(seen["SPACESTATION_USER_ENV_FILE"]) & 0o077 == 0
+                else
+                    @test seen["HOME"] == home && endswith(seen["JULIA_DEPOT_PATH"], ":/shared/depot:") # the old way, from the shared install
+                end
+            end
+        end
+        cmd = Pluto._via_local_shell(`/shared/julia --project=/p -e code`, "/work space")
+        @test cmd.exec[1] == "/bin/sh" && cmd.exec[end-3:end] == ["/shared/julia", "--project=/p", "-e", "code"]
+        mktempdir() do dir # the shell changes directory, then becomes the program
+            @test realpath(strip(read(Pluto._via_local_shell(`pwd`, dir), String))) == realpath(dir)
+            @test read(Pluto._via_local_shell(`echo "a b" c`, joinpath(dir, "gone")), String) == "a b c\n"   # a missing folder is not fatal
+        end
         runtime = joinpath(pkgdir(Pluto), "src", "webserver", "node", "runtime.sh")
         @test isfile(runtime) && success(`bash -n $runtime`)
         @test startswith(read(`bash $runtime /no/such/julia /tmp`, String), "NORUNTIME")        # a refusal is an answer, never an error

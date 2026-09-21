@@ -861,7 +861,7 @@ saved first (`env -0`, on the node's disk) and handed to everything the hub star
 terminals, workspace servers and their notebooks run with the user's julia, depot and PATH
 (UserEnv.jl). When staging is not possible the hub starts as it used to, from the shared install.
 """
-function _remote_launch_script(julia::AbstractString)::String
+function _remote_launch_script(julia::AbstractString; app::AbstractString=REMOTE_BOOTSTRAP_DIR, code::AbstractString="import SpaceStation; SpaceStation.run(launch_browser=false, hub=true)")::String
     # (the hub's own markers, SPACESTATION_HUB and SPACESTATION_TUNNELED, go on its command line and are
     # not exported: the saved user environment must not tell a terminal that it is a hub)
     raw"""
@@ -878,22 +878,22 @@ function _remote_launch_script(julia::AbstractString)::String
     mv -f "$d/server.log" "$d/server.log.1" 2>/dev/null
     ln -sfn "$d/server.log" ~/.spacestation/server.log
     user_depot="$d/depot:${JULIA_DEPOT_PATH:-$HOME/.julia}:"
-    app=$(cd """ * REMOTE_BOOTSTRAP_DIR * raw""" && pwd)
+    app=$(cd """ * String(app) * raw""" && pwd)
     julia=""" * _shquote(String(julia)) * "\n" * raw"""
     rt=$(bash "$app/src/webserver/node/runtime.sh" "$julia" "$app" 2>"$d/runtime.log" | sed -n 's/^RUNTIME //p')
     # (without a saved copy of this environment the hub could not give terminals and notebooks the user's own)
     if [ -n "$rt" ] && [ -x "$rt/julia/bin/julia" ] && (umask 077; env -0 > "$d/user-env") 2>/dev/null && cd "$rt"; then
         nohup env -u LD_LIBRARY_PATH -u JULIA_PROJECT -u JULIA_LOAD_PATH \
-            SPACESTATION_TUNNELED=1 SPACESTATION_HUB=1 \\
+            SPACESTATION_TUNNELED=1 SPACESTATION_HUB=1 \
             HOME="$rt/home" TMPDIR="$rt/tmp" PATH="$rt/julia/bin:/usr/local/bin:/usr/bin:/bin" \
             JULIA_DEPOT_PATH="$rt/depot:" JULIA_CPU_TARGET="$(cat "$rt/cpu-target")" JULIA_PKG_OFFLINE=true \
             SPACESTATION_USER_ENV_FILE="$d/user-env" SPACESTATION_USER_JULIA="$julia" SPACESTATION_USER_PROJECT="$app" \
             SPACESTATION_USER_DEPOT_PATH="$user_depot" SPACESTATION_USER_HOME="$HOME" \
-            "$rt/julia/bin/julia" """ * SERVER_THREAD_FLAGS * raw""" --startup-file=no --history-file=no --project="$rt/app" \
-            -e 'import SpaceStation; SpaceStation.run(launch_browser=false, hub=true)' > "$d/server.log" 2>&1 < /dev/null & disown
+            ${SPACESTATION_LAUNCH_WRAPPER:-} "$rt/julia/bin/julia" """ * SERVER_THREAD_FLAGS * raw""" --startup-file=no --history-file=no --project="$rt/app" \
+            -e """ * _shquote(String(code)) * raw""" > "$d/server.log" 2>&1 < /dev/null & disown
     else
         export JULIA_DEPOT_PATH="$user_depot" SPACESTATION_TUNNELED=1 SPACESTATION_HUB=1
-        nohup "$julia" """ * SERVER_THREAD_FLAGS * raw""" --project="$app" -e 'import SpaceStation; SpaceStation.run(launch_browser=false, hub=true)' > "$d/server.log" 2>&1 < /dev/null & disown
+        nohup ${SPACESTATION_LAUNCH_WRAPPER:-} "$julia" """ * SERVER_THREAD_FLAGS * raw""" --project="$app" -e """ * _shquote(String(code)) * raw""" > "$d/server.log" 2>&1 < /dev/null & disown
     fi
     true
     """
@@ -1114,7 +1114,11 @@ function _remote_connect_task!(r::RemoteSession)
             # (the stdlib compile caches) on the stack. SLURM_TMPDIR is preferred when a job sets it:
             # /tmp on a compute node can be a small tmpfs, and packages a notebook adds land here.
             _ssh_run(r.host, _remote_launch_script(r.julia))
-            for _ in 1:90
+            # The first launch of a version on a cluster builds the node-local runtime (a few minutes,
+            # once); every later one restores or reuses it in seconds. The launch script does that before
+            # it starts the hub, so this wait covers both.
+            r.detail = "starting the SpaceStation server on $(r.host) (the first start of a new version prepares its runtime on the node's own disk: a few minutes, once)"
+            for _ in 1:450
                 sleep(2)
                 _remote_bail(r) && return
                 # the server we just launched announces itself by answering /ping on this node
