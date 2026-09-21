@@ -862,8 +862,9 @@ terminals, workspace servers and their notebooks run with the user's julia, depo
 (UserEnv.jl). When staging is not possible the hub starts as it used to, from the shared install.
 """
 function _remote_launch_script(julia::AbstractString)::String
+    # (the hub's own markers, SPACESTATION_HUB and SPACESTATION_TUNNELED, go on its command line and are
+    # not exported: the saved user environment must not tell a terminal that it is a hub)
     raw"""
-    export SPACESTATION_TUNNELED=1 SPACESTATION_HUB=1
     mkdir -p ~/.spacestation
     chmod 700 ~/.spacestation 2>/dev/null
     marker=~/.spacestation/nodedir-$(hostname)
@@ -883,6 +884,7 @@ function _remote_launch_script(julia::AbstractString)::String
     # (without a saved copy of this environment the hub could not give terminals and notebooks the user's own)
     if [ -n "$rt" ] && [ -x "$rt/julia/bin/julia" ] && (umask 077; env -0 > "$d/user-env") 2>/dev/null && cd "$rt"; then
         nohup env -u LD_LIBRARY_PATH -u JULIA_PROJECT -u JULIA_LOAD_PATH \
+            SPACESTATION_TUNNELED=1 SPACESTATION_HUB=1 \\
             HOME="$rt/home" TMPDIR="$rt/tmp" PATH="$rt/julia/bin:/usr/local/bin:/usr/bin:/bin" \
             JULIA_DEPOT_PATH="$rt/depot:" JULIA_CPU_TARGET="$(cat "$rt/cpu-target")" JULIA_PKG_OFFLINE=true \
             SPACESTATION_USER_ENV_FILE="$d/user-env" SPACESTATION_USER_JULIA="$julia" SPACESTATION_USER_PROJECT="$app" \
@@ -890,7 +892,7 @@ function _remote_launch_script(julia::AbstractString)::String
             "$rt/julia/bin/julia" """ * SERVER_THREAD_FLAGS * raw""" --startup-file=no --history-file=no --project="$rt/app" \
             -e 'import SpaceStation; SpaceStation.run(launch_browser=false, hub=true)' > "$d/server.log" 2>&1 < /dev/null & disown
     else
-        export JULIA_DEPOT_PATH="$user_depot"
+        export JULIA_DEPOT_PATH="$user_depot" SPACESTATION_TUNNELED=1 SPACESTATION_HUB=1
         nohup "$julia" """ * SERVER_THREAD_FLAGS * raw""" --project="$app" -e 'import SpaceStation; SpaceStation.run(launch_browser=false, hub=true)' > "$d/server.log" 2>&1 < /dev/null & disown
     fi
     true
