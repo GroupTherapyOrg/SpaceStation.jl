@@ -1,7 +1,7 @@
 name: Storage hang stress test
 
 # A hub must keep answering while the filesystems that hold Julia, the depot and the checkout are
-# hung: that is a normal day on a cluster (NFS home, BeeGFS/Lustre depot). test/hangfs/hangfs.c makes
+# hung: that is a normal day on a cluster (NFS home, BeeGFS/Lustre depot). test/hangfs/hangtrace.c makes
 # chosen directory trees hang on demand for one process, without root, so this runs on a plain runner.
 on:
     workflow_dispatch:

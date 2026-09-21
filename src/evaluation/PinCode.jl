@@ -187,16 +187,36 @@ struct NoBacktraceLogger{L<:Logging.AbstractLogger} <: Logging.AbstractLogger
     inner::L
 end
 Logging.min_enabled_level(l::NoBacktraceLogger) = Logging.min_enabled_level(l.inner)
-Logging.shouldlog(l::NoBacktraceLogger, args...) = Logging.shouldlog(l.inner, args...)
+# HTTP.jl builds its error messages eagerly, backtrace and all (`current_exceptions_to_string` inside
+# the message block), so by the time a message reaches `handle_message` the depot has been read. A
+# message block only runs when `shouldlog` says yes: for HTTP's own modules it says no, and one
+# plain line is printed in its place.
+function Logging.shouldlog(l::NoBacktraceLogger, level, _module, group, id)
+    if _module isa Module && nameof(Base.moduleroot(_module)) === :HTTP
+        level >= Logging.Error && Logging.shouldlog(l.inner, level, _module, group, id) &&
+            Logging.handle_message(l.inner, level, "HTTP reported an error (details are not printed in a hub: see PinCode.jl)", _module, group, id, "", 0)
+        return false
+    end
+    Logging.shouldlog(l.inner, level, _module, group, id)
+end
 Logging.catch_exceptions(l::NoBacktraceLogger) = Logging.catch_exceptions(l.inner)
+
+"What an error says, without a stack trace. The wrappers that carry a trace of their own are opened first."
+function error_text(e)::String
+    e isa TaskFailedException && return error_text(e.task.result)
+    e isa CapturedException && return error_text(e.ex)
+    e isa CompositeException && return join((error_text(x) for x in e.exceptions), "; ")
+    e isa Exception ? sprint(showerror, e) : string(e)
+end
+
 function Logging.handle_message(l::NoBacktraceLogger, level, message, _module, group, id, file, line; kwargs...)
     cleaned = Pair{Symbol,Any}[]
     for (k, v) in kwargs
         if v isa Tuple && length(v) == 2 && v[1] isa Exception
-            push!(cleaned, k => sprint(showerror, v[1]))       # (exception, backtrace): keep what it says
+            push!(cleaned, k => error_text(v[1]))               # (exception, backtrace): keep what it says
         elseif v isa Exception
-            push!(cleaned, k => sprint(showerror, v))
-        elseif v isa AbstractVector && (eltype(v) <: Union{Ptr{Nothing},Base.InterpreterIP,Base.StackTraces.StackFrame} && !isempty(v))
+            push!(cleaned, k => error_text(v))
+        elseif v isa AbstractVector && !isempty(v) && eltype(v) <: Union{Ptr{Nothing},Base.InterpreterIP,Base.StackTraces.StackFrame}
             continue                                            # a bare backtrace
         else
             push!(cleaned, k => v)

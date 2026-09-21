@@ -1606,6 +1606,9 @@ const Land = () => {
 
     // The relay's answers for this workspace's child: a 504 `workspace_busy` (no answer in time) or a
     // 503 `workspace_down`. The page stays usable — the hub answered — and says which it is.
+    // the filesystem that holds the workspace's files is not answering (the hub says 504 filesystem_busy):
+    // the last listing stays on screen, and everything that is not a file listing keeps working
+    const [files_status, set_files_status] = useState(/** @type {{since: number, detail: String}?} */ (null))
     const [workspace_status, set_workspace_status] = useState(/** @type {{kind: "busy" | "down", since: number, detail: String}?} */ (null))
     const refreshing = useRef(false)
     const refresh = useCallback(async () => {
@@ -1624,7 +1627,12 @@ const Land = () => {
                 set_workspace(null)
                 set_error(null)
                 return // the launcher has no notebooks to list (a hub's root list would poll every workspace's child)
+            } else if (ws_response.status === 504) {
+                const info = await ws_response.json().catch(() => ({}))
+                set_files_status((prev) => ({ since: prev?.since ?? Date.now(), detail: String(info.detail ?? "") }))
+                // no return and no throw: what is on screen stays, and the notebooks are asked about below
             } else if (ws_response.ok) {
+                set_files_status(null)
                 set_no_workspace(false)
                 set_workspace(await ws_response.json())
                 // Re-read the open folders — and only those. This is the whole point of the lazy
@@ -1999,6 +2007,11 @@ const Land = () => {
                               </p>
                           </div>
                       </div>
+                  </div>`
+                : null}
+            ${files_status != null && !offline
+                ? html`<div class="workspace-status busy" role="status" aria-live="polite" title=${files_status.detail}>
+                      <span>The filesystem that holds these files is not answering (${Math.max(1, Math.round((Date.now() - files_status.since) / 1000))}s) — the file list will catch up; the terminal and notebooks keep working.</span>
                   </div>`
                 : null}
             ${workspace_status != null && !offline

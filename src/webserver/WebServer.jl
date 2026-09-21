@@ -223,12 +223,10 @@ function run!(session::ServerSession)
     # shutdown must remove the file we wrote, not the one today's hostname would name.
     # A hub and its helpers never symbolicate a backtrace: that reads the depot (PinCode.jl).
     (session.options.server.hub || is_file_helper_process()) && log_without_backtraces!()
-    # A hub and its helpers never symbolicate a backtrace: that reads the depot (PinCode.jl).
-    (session.options.server.hub || is_file_helper_process()) && log_without_backtraces!()
     # A file helper (FileHelper.jl) is nobody's server but its hub's: it is not announced, and installs nothing.
     helper = is_file_helper_process()
-    # A hub brings its file helpers up BEFORE it announces itself: from its first request on, it never
-    # touches the user's files in its own process.
+    # A hub decides here, once, that it never touches the user's files in its own process; its file
+    # helpers come up in the background, and until one answers those requests get 504 (FileHelper.jl).
     session.options.server.hub && !helper && start_file_helpers!()
     registry_file = helper ? "" : write_collab_registry_file(session, port; announce_legacy=true)
     if !helper
@@ -276,6 +274,12 @@ function run!(session::ServerSession)
     server = HTTP.listen!(hostIP, port; stream=true, server=serversocket, on_shutdown, verbose=-1) do http::HTTP.Stream
         # A workspace served by this hub: `/w/<id>/…` (see Proxy.jl). The hub answers its own part of it
         # and relays the notebook part to the workspace's child server.
+        # A file helper answers the handful of routes its hub forwards, and nothing else (FileHelper.jl).
+        if is_file_helper_process() && !file_helper_serves(HTTP.URI(http.message.target).path)
+            http.message.body = read(http)
+            _write_response!(http, HTTP.Response(404, ["Content-Type" => "text/plain"], "not served by a file helper\n"))
+            return
+        end
         let ws = split_workspace_target(http.message.target; base_url=session.options.server.base_url)
             if ws !== nothing
                 handle_workspace_request(http, session, app, ws[1], ws[2])

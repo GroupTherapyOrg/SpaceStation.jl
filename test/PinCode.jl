@@ -1,4 +1,5 @@
 using Test
+import HTTP
 import SpaceStation as Pluto
 
 @testset "Pinning program code mapped from network filesystems" begin
@@ -101,4 +102,14 @@ end
     @test seen[:message] == "it failed" && seen[:other] == 3
     @test seen[:exception] == "boom" && seen[:plain] == "boom"          # the error's own text, as a string
     @test !haskey(seen, :bare)                                          # a backtrace never reaches the printer
+    # wrappers that carry a trace of their own are opened first
+    failed = try fetch(@async error("inner")) catch e; e end
+    @test Pluto.error_text(failed) == "inner" && !occursin("Stacktrace", Pluto.error_text(failed))
+    # HTTP.jl builds its messages eagerly, backtrace included: its message blocks must never run
+    ran = Ref(false)
+    Logging.with_logger(Pluto.NoBacktraceLogger(CaptureLogger())) do
+        Base.eval(HTTP, :(f_for_test(ran) = @error begin ran[] = true; "symbolicated" end))
+        Base.invokelatest(HTTP.f_for_test, ran)
+    end
+    @test !ran[] && occursin("HTTP reported an error", String(seen[:message]))
 end

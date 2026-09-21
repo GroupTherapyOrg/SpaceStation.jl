@@ -57,8 +57,9 @@ macro asynclog(expr)
 			try
 				$(esc(expr))
 			catch ex
-				bt = stacktrace(catch_backtrace())
-				showerror(stderr, ex, bt)
+				# through the logger, which in a hub drops the backtrace before anything symbolicates it
+				# (PinCode.jl): these tasks fail exactly when a filesystem hangs
+				@error "A background task failed" exception = (ex, catch_backtrace())
 				rethrow(ex)
 			end
 		end

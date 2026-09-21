@@ -36,8 +36,12 @@ const RUNNER_DIR = @path(joinpath(ROOT_DIR, "src", "runner"))
 # directories are does not change while the process runs: resolve each once.
 const _resolved_dirs = Dict{String,String}()
 const _resolved_dirs_lock = ReentrantLock()
-_resolved_dir(key::String, dir) = lock(_resolved_dirs_lock) do
-    get!(() -> String(dir), _resolved_dirs, key)
+function _resolved_dir(key::String, dir)
+    # never while precompiling: a path resolved then would be baked into a cache that may be moved
+    ccall(:jl_generating_output, Cint, ()) == 1 && return String(dir)
+    lock(_resolved_dirs_lock) do
+        get!(() -> String(dir), _resolved_dirs, key)
+    end
 end
 function project_relative_path(root, xs...)
     root == joinpath("src", "runner") ? joinpath(_resolved_dir("runner", RUNNER_DIR), xs...) :

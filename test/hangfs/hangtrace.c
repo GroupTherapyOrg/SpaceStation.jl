@@ -4,7 +4,7 @@
 //
 // Every system call that takes a path (however it is made: libc, libuv's raw syscalls, a static
 // binary) is trapped with a seccomp filter; this tracer reads the path, and when it lies under one
-// of the prefixes it logs "<syscall>\t<path>\t<tid>" and, for as long as the flag file exists, does
+// of the prefixes it logs "<syscall>\t<path>\t<tid>\t<pid>\t<root|child>" and, for as long as the flag file exists, does
 // not let the thread continue. The thread is then stopped inside the kernel boundary of a system
 // call, which is where a thread sits when NFS/BeeGFS/Lustre stops answering: the runtime cannot
 // interrupt it, and a stop-the-world garbage collector has to wait for it. All other system calls
@@ -52,6 +52,12 @@ static const struct sc table[] = {
     {__NR_readlinkat, 1, 0, "readlinkat"}, {__NR_mkdirat, 1, 0, "mkdirat"}, {__NR_unlinkat, 1, 0, "unlinkat"},
     {__NR_renameat, 1, 0, "renameat"}, {__NR_execve, 0, -1, "execve"}, {__NR_chdir, 0, -1, "chdir"},
     {__NR_statfs, 0, -1, "statfs"}, {__NR_truncate, 0, -1, "truncate"},
+    {__NR_symlinkat, 2, 1, "symlinkat"}, {__NR_linkat, 1, 0, "linkat"}, {__NR_utimensat, 1, 0, "utimensat"},
+    {__NR_fchmodat, 1, 0, "fchmodat"}, {__NR_fchownat, 1, 0, "fchownat"}, {__NR_inotify_add_watch, 1, -1, "inotify_add_watch"},
+    {__NR_getxattr, 0, -1, "getxattr"}, {__NR_lgetxattr, 0, -1, "lgetxattr"},
+#ifdef __NR_creat
+    {__NR_creat, 0, -1, "creat"},
+#endif
 #ifdef __NR_statx
     {__NR_statx, 1, 0, "statx"},
 #endif
@@ -192,9 +198,25 @@ static pid_t held[MAXHELD]; static int nheld;
 #define NKNOWN (1 << 16)
 static pid_t known[NKNOWN];
 static int meet(pid_t t) { // 1 if new
-    unsigned h = ((unsigned)t * 2654435761u) & (NKNOWN - 1);
-    for (int k = 0; k < NKNOWN; k++, h = (h + 1) & (NKNOWN - 1)) { if (known[h] == t) return 0; if (known[h] == 0) { known[h] = t; return 1; } }
+    unsigned h = ((unsigned)t * 2654435761u) & (NKNOWN - 1); int grave = -1;
+    for (int k = 0; k < NKNOWN; k++, h = (h + 1) & (NKNOWN - 1)) {
+        if (known[h] == t) return 0;
+        if (known[h] == -1 && grave < 0) grave = (int)h;
+        if (known[h] == 0) { known[grave >= 0 ? grave : (int)h] = t; return 1; }
+    }
     return 0;
+}
+static void forget(pid_t t) { // the kernel reuses task ids: a recycled one must be met again
+    unsigned h = ((unsigned)t * 2654435761u) & (NKNOWN - 1);
+    for (int k = 0; k < NKNOWN && known[h] != 0; k++, h = (h + 1) & (NKNOWN - 1)) if (known[h] == t) { known[h] = -1; return; }
+}
+// the process (thread group) a task belongs to: which PROGRAM made the call
+static pid_t tgid_of(pid_t tid) {
+    char path[64], line[256]; snprintf(path, sizeof path, "/proc/%d/status", tid);
+    FILE *f = fopen(path, "r"); pid_t tg = tid;
+    if (!f) return tg;
+    while (fgets(line, sizeof line, f)) if (sscanf(line, "Tgid: %d", &tg) == 1) break;
+    fclose(f); return tg;
 }
 
 int main(int argc, char **argv) {
@@ -229,7 +251,7 @@ int main(int argc, char **argv) {
             continue;
         }
         if (tid < 0) { if (errno == ECHILD) break; if (errno == EINTR) continue; break; }
-        if (WIFEXITED(st) || WIFSIGNALED(st)) { if (tid == child) code = WIFEXITED(st) ? WEXITSTATUS(st) : 128 + WTERMSIG(st); continue; }
+        if (WIFEXITED(st) || WIFSIGNALED(st)) { forget(tid); if (tid == child) code = WIFEXITED(st) ? WEXITSTATUS(st) : 128 + WTERMSIG(st); continue; }
         if (!WIFSTOPPED(st)) continue;
         if (!(WSTOPSIG(st) == SIGSTOP)) meet(tid);
         int sig = WSTOPSIG(st), event = (unsigned)st >> 16;
@@ -239,7 +261,8 @@ int main(int argc, char **argv) {
                 for (int k = 0; k < NSC; k++) if (table[k].nr == nr) {
                     resolve(tid, &table[k], args, path, sizeof path);
                     if (path[0] && under(path) && !(logpath && !strcmp(path, logpath))) {
-                        if (logf) { fprintf(logf, "%s\t%s\t%d\n", table[k].name, path, tid); fflush(logf); }
+                        // <syscall> <path> <tid> <pid> <root|child>: "root" is the command itself, "child" anything it started
+                        if (logf) { pid_t tg = tgid_of(tid); fprintf(logf, "%s\t%s\t%d\t%d\t%s\n", table[k].name, path, tid, tg, tg == child ? "root" : "child"); fflush(logf); }
                         if (flag && access(flag, F_OK) == 0 && nheld < MAXHELD) {
                             if (want_stacks && logf) { dump_stack(tid, logf); fflush(logf); }
                             held[nheld++] = tid; goto next;
