@@ -54,7 +54,7 @@ import SpaceStation as Pluto
             for h in helpers; h.port = 9; end                                            # neither answers
             key = Pluto.filesystem_key(Pluto.tamepath(ws))
             t = time(); busy = get("$base/api/v1/browse?path=$(HTTP.escapeuri(ws))"); took = time() - t
-            @test busy.status == 504 && occursin("filesystem_busy", String(busy.body)) && took < 8
+            @test busy.status == 504 && occursin("filesystem_busy", String(busy.body)) && took < 20 # (Windows takes seconds to refuse a closed port)
             # a first miss is a suspicion (a big healthy listing is slow too): the same helper gets one longer try
             suspect = lock(() -> Pluto.SUSPECT_ROOTS[key], Pluto.FILE_HELPERS_LOCK)
             @test lock(() -> isempty(Pluto.HUNG_ROOTS), Pluto.FILE_HELPERS_LOCK)
