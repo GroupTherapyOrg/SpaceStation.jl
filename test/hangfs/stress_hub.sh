@@ -39,6 +39,12 @@ ask() { # ask <seconds> -> prints worst latency, count, failures
 read -r w n b < <(ask 10); echo "warm-up:      worst ${w}s over $n requests, $b failed"
 calls_before=$(wc -l < "$d/calls.log")
 touch "$d/hang"
+# SCENARIO=userfiles: meanwhile a browser keeps asking for a listing of a directory that IS on the hung
+# filesystem (the sidebar during a home-directory hang). Those requests may fail or time out; every
+# OTHER request must still be answered at once.
+if [ "${SCENARIO:-}" = userfiles ]; then
+    ( while [ -e "$d/hang" ]; do curl -s -m 5 -o /dev/null "http://127.0.0.1:$PORT/api/v1/browse?path=${USERFILES_DIR}"; sleep 0.5; done ) &
+fi
 read -r w n b < <(ask "$HANG"); echo "during hang:  worst ${w}s over $n requests, $b failed   (hang of ${HANG}s on $PREFIXES)"
 blocked=$(( $(wc -l < "$d/calls.log") - calls_before ))
 echo "path calls into the hung trees during the hang: $blocked"

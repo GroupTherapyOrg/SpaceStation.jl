@@ -39,3 +39,10 @@ jobs:
                   julia --project=/tmp/app -e 'import SpaceStation'
                   JULIA_DEPOT_PATH="$HOME/.julia:" STRESS_DEPOT_PATH="$HOME/.julia:" \
                     bash test/hangfs/stress_hub.sh /tmp/app "$(which julia)" 2471 "$GITHUB_WORKSPACE:$HOME/.julia:$julia_root" 40
+            - name: "Known gap: a listing of a hung directory must not freeze the hub (file-helper, not built yet)"
+              continue-on-error: true
+              run: |
+                  julia_root=$(dirname $(dirname $(readlink -f $(which julia))))
+                  mkdir -p "$GITHUB_WORKSPACE/userfiles" && touch "$GITHUB_WORKSPACE/userfiles/a.jl"
+                  SCENARIO=userfiles USERFILES_DIR="$GITHUB_WORKSPACE/userfiles" JULIA_DEPOT_PATH="$HOME/.julia:" STRESS_DEPOT_PATH="$HOME/.julia:" \
+                    bash test/hangfs/stress_hub.sh /tmp/app "$(which julia)" 2472 "$GITHUB_WORKSPACE:$HOME/.julia:$julia_root" 40
