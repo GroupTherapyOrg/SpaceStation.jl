@@ -59,7 +59,7 @@ touch "$d/hang"
 # filesystem (the sidebar during a home-directory hang). Those requests may fail or time out; every
 # OTHER request must still be answered at once.
 if [ "${SCENARIO:-}" = userfiles ]; then
-    ( while [ -e "$d/hang" ]; do curl -s -m 9 -o /dev/null -w "%{http_code} %{time_total}\n" "http://127.0.0.1:$PORT/api/v1/browse?path=${USERFILES_DIR}" >> "$d/browse.log"; sleep 0.5; done ) &
+    ( while [ -e "$d/hang" ]; do curl -s -m 20 -o /dev/null -w "%{http_code} %{time_total}\n" "http://127.0.0.1:$PORT/api/v1/browse?path=${USERFILES_DIR}" >> "$d/browse.log"; sleep 0.5; done ) &
 fi
 read -r w n b < <(ask "$HANG"); echo "during hang:  worst ${w}s over $n requests, $b failed   (hang of ${HANG}s on $PREFIXES)"
 blocked=$(( $(wc -l < "$d/calls.log") - calls_before ))
@@ -84,7 +84,10 @@ if [ "${SCENARIO:-}" = userfiles ]; then
     refused=$(awk '$1==504' "$d/browse.log" | wc -l); slowest=$(awk '{ if ($2>m) m=$2 } END { print m+0 }' "$d/browse.log")
     echo "listings of the hung directory: $(wc -l < "$d/browse.log") asked, $refused refused with 504, slowest ${slowest}s"
     [ "$refused" -ge 1 ] || { echo "FAIL: a listing of a hung directory was never refused"; verdict=1; }
-    awk -v m="$slowest" 'BEGIN{ exit !(m+0 > 8) }' && { echo "FAIL: a refusal took longer than 8 s"; verdict=1; }
+    # the deadline (3 s), then ONE longer try on the same helper (12 s) before the filesystem is marked: after that, at once
+    awk -v m="$slowest" 'BEGIN{ exit !(m+0 > 14) }' && { echo "FAIL: a refusal took longer than 14 s"; verdict=1; }
+    late=$(tail -n +4 "$d/browse.log" | awk '{ if ($2>m) m=$2 } END { print m+0 }')
+    awk -v m="$late" 'BEGIN{ exit !(m+0 > 2) }' && { echo "FAIL: once the filesystem was marked hung, a refusal still took ${late}s"; verdict=1; }
     back=000; for i in $(seq 1 30); do back=$(curl -s -m 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/api/v1/browse?path=${USERFILES_DIR}"); [ "$back" = 200 ] && break; sleep 1; done
     [ "$back" = 200 ] && echo "the listing works again ${i}s after the hang" || { echo "FAIL: the listing did not come back after the hang (last status $back)"; verdict=1; }
 fi
