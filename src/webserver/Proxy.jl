@@ -177,12 +177,19 @@ function proxy_http(s::LocalSession, wid::AbstractString, request::HTTP.Request,
         _parked!(wid, -1)
         return _json_response(503, """{"workspace_busy": true, "detail": "too many requests are waiting on this workspace's server"}""")
     end
-    url = "http://127.0.0.1:$(s.port)" * child_target(rest, s.secret)
     headers = [h for h in request.headers if lowercase(h.first) ∉ _HOP_REQUEST_HEADERS]
+    ask() = HTTP.request(request.method, "http://127.0.0.1:$(s.port)" * child_target(rest, s.secret), headers, request.body;
+        connect_timeout=3, readtimeout=(path ∈ _PROXY_POLL_PATHS ? PROXY_READ_TIMEOUT[] : 0),
+        redirect=false, retry=false, status_exception=false, decompress=false, cookies=false, pool=_proxy_pool(wid))
+    # cookies=false: HTTP.jl keeps a client cookie jar by default. With it, the child's Set-Cookie from
+    # one good request would authenticate every later one whatever secret the hub sends, until the
+    # child restarts and the jar's cookie is suddenly wrong. The session's secret is the only credential.
     upstream = try
-        HTTP.request(request.method, url, headers, request.body;
-            connect_timeout=3, readtimeout=(path ∈ _PROXY_POLL_PATHS ? PROXY_READ_TIMEOUT[] : 0),
-            redirect=false, retry=false, status_exception=false, decompress=false, pool=_proxy_pool(wid))
+        r = ask()
+        # The hub authenticated this request before relaying it, so a 403 from the child is about the
+        # HUB's credentials, never the browser's: re-read the child's connection file, and if it
+        # changed, ask again. (A child refusing the path itself answers the same the second time.)
+        r.status == 403 && _refresh_child_credentials!(s) ? ask() : r
     catch e
         if _probe_port(s.port; wait=0.2) == :dead
             return _json_response(503, """{"workspace_down": true, "state": $(_json_string(s.state)), "detail": "the server for this workspace is not answering; restart the workspace"}""")
@@ -208,11 +215,11 @@ handshake (the frontend retries) instead of getting a socket that never answers;
 both ways with no buffering, so a slow reader only slows its own connection. Either side ending
 closes the other's socket outright rather than negotiating a close it might have to wait for.
 """
-function proxy_ws(http::HTTP.Stream, s::LocalSession, rest::AbstractString)
+function proxy_ws(http::HTTP.Stream, s::LocalSession, rest::AbstractString; retried::Bool=false)
     url = "ws://127.0.0.1:$(s.port)" * child_target(rest, s.secret)
     opened = Ref(false)
     try
-        HTTP.WebSockets.open(url; suppress_close_error=true, connect_timeout=3, retry=false) do childws
+        HTTP.WebSockets.open(url; suppress_close_error=true, connect_timeout=3, retry=false, cookies=false) do childws
             opened[] = true
             HTTP.WebSockets.upgrade(http) do clientws
                 HTTP.WebSockets.isclosed(clientws) && return
@@ -237,6 +244,10 @@ function proxy_ws(http::HTTP.Stream, s::LocalSession, rest::AbstractString)
         end
     catch e
         if !opened[]
+            # refused rather than unreachable? the hub's credentials may be stale: see proxy_http
+            if !retried && _probe_port(s.port; wait=0.2) != :dead && _refresh_child_credentials!(s)
+                return proxy_ws(http, s, rest; retried=true)
+            end
             # the child could not be reached: fail the handshake now, the browser retries by itself
             try
                 if isopen(http) && !iswritable(http)

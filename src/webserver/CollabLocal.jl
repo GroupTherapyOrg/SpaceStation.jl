@@ -39,7 +39,7 @@ _local_session_url(s::LocalSession) = "$(WORKSPACE_PREFIX)$(workspace_id(s.path)
 # workspace in its connection file (CollabAPI.write_collab_registry_file); we match on that, restrict to
 # this node (shared $HOME on a cluster holds other nodes' files too), and confirm it actually answers.
 # The whole scan runs off the serving thread: it is a directory walk plus a read per file on $HOME.
-_find_local_server(path::String) = offload_blocking(() -> _find_local_server_now(path))
+_find_local_server(path::String; pid::Union{Nothing,Integer}=nothing) = offload_blocking(() -> _find_local_server_now(path; pid))
 
 # A child on another SpaceStation version than this hub is never adopted: the hub serves the editor
 # and relays the protocol, and the two would disagree. Said once a minute per folder, not per request.
@@ -52,13 +52,29 @@ function _warn_version_mismatch(path::String, theirs::AbstractString)
     end
 end
 
-_find_local_server_now(path::String) = (want = tamepath(path); _scan_registry_now(p -> p == want))
+_find_local_server_now(path::String; pid::Union{Nothing,Integer}=nothing) = (want = tamepath(path); _scan_registry_now(p -> p == want; pid))
+
+"Is a process with this pid running on this machine? (Unix: signal 0. Elsewhere we cannot tell cheaply, so: yes.)"
+function _pid_alive(pid::Integer)::Bool
+    Sys.isunix() || return true
+    0 < pid <= typemax(Cint) || return false
+    ccall(:kill, Cint, (Cint, Cint), pid, 0) == 0 || Libc.errno() == Libc.EPERM
+end
 
 """
 Walk this node's connection files for a LIVE server whose workspace folder satisfies `matches`
 (paths arrive `tamepath`'d). Synchronous disk reads: call through `offload_blocking`.
+
+A connection file is a claim, and it outlives a server that was killed. The port in it proves
+nothing: ports are reused, and the next server for the same folder usually gets the same one, and
+it binds that port BEFORE it rewrites the file. So a file only counts if the process that wrote it
+is still running (its `pid`), and a caller that spawned the server passes that `pid` and accepts no
+other file. Without this the hub adopted a dead child's file while the new child held its port, and
+relayed every request with the dead child's secret: 403, forever. A dead process's file is skipped,
+not deleted: the next server for the port renames its own file over that very name, and a delete
+decided on text read a moment ago could remove the new file instead.
 """
-function _scan_registry_now(matches::Function)
+function _scan_registry_now(matches::Function; pid::Union{Nothing,Integer}=nothing)
     me = gethostname()
     dir = collab_registry_dir()
     isdir(dir) || return nothing
@@ -75,6 +91,12 @@ function _scan_registry_now(matches::Function)
         ws_m === nothing && continue
         ws_path = tamepath(String(ws_m.captures[1]))
         matches(ws_path) || continue
+        pid_m = match(r"\"pid\": (\d+)", txt)
+        if pid_m !== nothing
+            file_pid = tryparse(Int, pid_m.captures[1])
+            (file_pid === nothing || !_pid_alive(file_pid)) && continue
+            pid !== nothing && file_pid != pid && continue
+        end
         port_m = match(r"\"port\": (\d+)", txt)
         secret_m = match(r"\"secret\": \"([^\"]+)\"", txt)
         (port_m === nothing || secret_m === nothing) && continue
@@ -121,6 +143,7 @@ function _local_spawn_task!(s::LocalSession)
         # SERVER_THREAD_FLAGS last, so it wins over any --threads julia_cmd() copied from the hub: see Offload.jl.
         cmd = setenv(`$(Base.julia_cmd()) $(SERVER_THREAD_FLAGS) --project=$(projdir) -e $(code)`, env)
         s.proc = Base.run(pipeline(cmd; stdin=devnull, stdout=logfile, stderr=logfile); wait=false)
+        child_pid = try getpid(s.proc) catch; nothing end # asked once, now: getpid throws after the process exits
         # Cancelled in the window before/just-after spawn? Don't leave the child orphaned.
         if s.cancelled
             try; process_exited(s.proc) || kill(s.proc); catch; end
@@ -137,7 +160,8 @@ function _local_spawn_task!(s::LocalSession)
                 s.state = "error"; s.detail = "canceled"
                 return
             end
-            found = _find_local_server(s.path)
+            # only the file written by the process we spawned: see _scan_registry_now
+            found = _find_local_server(s.path; pid=child_pid)
             if found !== nothing
                 s.port = found.port
                 s.secret = found.secret
@@ -176,6 +200,30 @@ function _child_env(path::AbstractString)::Dict{String,String}
     env
 end
 
+const CREDENTIAL_REFRESH_COOLDOWN = Ref(3.0)
+const _credential_refreshes = Dict{String,Float64}()
+const _credential_refreshes_lock = ReentrantLock()
+
+"""
+The child refused the hub's credentials. Read them again from its connection file; true when they
+changed (the caller retries once). A hub that holds a wrong secret has no other way to notice.
+"""
+function _refresh_child_credentials!(s::LocalSession)::Bool
+    # A child has 403s of its own (a path outside the workspace, a foreign Origin), and each one
+    # lands here. The answer is a directory walk on \$HOME: at most one per session every few seconds.
+    now = time()
+    last = lock(() -> get(_credential_refreshes, s.path, 0.0), _credential_refreshes_lock)
+    now - last < CREDENTIAL_REFRESH_COOLDOWN[] && return false
+    lock(() -> (_credential_refreshes[s.path] = now), _credential_refreshes_lock)
+    pid = try (s.proc !== nothing && !process_exited(s.proc)) ? getpid(s.proc) : nothing catch; nothing end
+    found = _find_local_server(s.path; pid)
+    found === nothing && return false
+    (found.port == s.port && found.secret == s.secret) && return false
+    s.port = found.port
+    s.secret = found.secret
+    true
+end
+
 "Get-or-create the local session for a workspace folder; idempotent — a live child is reused, a dead one respawned."
 function open_local_session!(path::String)::LocalSession
     path = tamepath(path)
@@ -208,6 +256,7 @@ function shutdown_local_session!(path::String)
         get(LOCAL_SESSIONS, path, nothing)
     end
     s === nothing || (s.cancelled = true) # also aborts an in-flight spawn task (cancel during "starting")
+    lock(() -> delete!(_credential_refreshes, path), _credential_refreshes_lock) # the next child heals at once
     # Works for a child we spawned AND for one we only reattached to (no proc handle): the graceful path
     # is its own /api/v1/shutdown (secret-gated), which fires the child's on_shutdown.
     found = if s !== nothing && s.port != 0
@@ -217,7 +266,7 @@ function shutdown_local_session!(path::String)
     end
     if found !== nothing
         try
-            HTTP.post("http://127.0.0.1:$(found.port)/api/v1/shutdown?secret=$(HTTP.escapeuri(found.secret))";
+            HTTP.post("http://127.0.0.1:$(found.port)/api/v1/shutdown?secret=$(HTTP.escapeuri(found.secret))"; cookies=false,
                 connect_timeout=3, readtimeout=4, retry=false, status_exception=false)
         catch
         end
