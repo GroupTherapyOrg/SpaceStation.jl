@@ -1623,6 +1623,7 @@ const Land = () => {
         try {
             const ws_response = await fetch("./api/v1/workspace", { signal })
             if (ws_response.status === 404) {
+                set_files_status(null)
                 set_no_workspace(true)
                 set_workspace(null)
                 set_error(null)

@@ -50,8 +50,18 @@ const FILE_HELPERS = FileHelper[]
 const FILE_HELPERS_LOCK = ReentrantLock()
 "Decided once, at hub start: this process forwards file requests, and never runs them itself."
 const FILE_HELPER_MODE = Ref(false)
-"root => (the helper stuck on it, when it was last probed)"
-const HUNG_ROOTS = Dict{String,Tuple{FileHelper,Float64}}()
+"""
+What is known to be hung: `key => (the helper stuck on it, when it was last probed, the path to probe)`.
+The key is the FILESYSTEM a path is on, as far as that can be told without asking the filesystem:
+the longest mount point in `/proc/self/mountinfo` that contains it (read at hub start and on a
+timer, never for a request; reading /proc touches no mount). So a second folder on a hung
+filesystem is refused at once instead of costing the second helper. Where there is no /proc the
+key is the path itself.
+"""
+const HUNG_ROOTS = Dict{String,Tuple{FileHelper,Float64,String}}()
+"key => the helper that missed the deadline once: the next request gets a longer one, on the SAME helper"
+const SUSPECT_ROOTS = Dict{String,FileHelper}()
+const _mount_points = Ref(String[])
 const _last_helper_spawn = Ref(0.0)
 const _helper_spawning = Ref(false)
 
@@ -76,6 +86,31 @@ function _file_helper_command(secret::String)
     delete!(env, "JULIA_LOAD_PATH")
     code = "import SpaceStation; SpaceStation.file_helper_main()"
     setenv(`$(Base.julia_cmd()) --threads=2,1 --project=$(projdir) -e $(code)`, env)
+end
+
+function refresh_mount_points!()
+    Sys.islinux() || return
+    points = String[]
+    try
+        for line in readlines("/proc/self/mountinfo") # line by line: see PinCode.jl about /proc files
+            fields = split(line)
+            length(fields) >= 5 && push!(points, _unescape_mountinfo(fields[5]))
+        end
+    catch
+        return
+    end
+    _mount_points[] = sort!(unique!(points); by=ncodeunits, rev=true)
+    nothing
+end
+_unescape_mountinfo(x::AbstractString) = replace(x, "\\040" => " ", "\\011" => "\t", "\\012" => "\n", "\\134" => "\\")
+
+"The filesystem a path is on, by name only (no system call on the path). See HUNG_ROOTS."
+function filesystem_key(path::AbstractString, mount_points=_mount_points[])::String
+    for m in mount_points
+        m == "/" && continue # everything is under it: says nothing
+        (path == m || startswith(path, m * "/")) && return m
+    end
+    String(path)
 end
 
 "Start one helper and wait for it to say which port it serves. `nothing` when it does not come up."
@@ -109,11 +144,17 @@ up in the background (each is a Julia start); until the first one answers, file 
 function start_file_helpers!(; count::Integer=FILE_HELPER_COUNT[], wait::Bool=false)
     (file_helpers_enabled() && !is_file_helper_process()) || return nothing
     FILE_HELPER_MODE[] = true
+    refresh_mount_points!()
+    @async while FILE_HELPER_MODE[]
+        sleep(60); refresh_mount_points!() # autofs mounts appear late
+    end
+    _helper_spawning[] = true; _last_helper_spawn[] = time() # these ARE the starts: a first request must not add a third
     tasks = [@async begin
         h = try _spawn_file_helper() catch; nothing end
-        h === nothing || lock(() -> push!(FILE_HELPERS, h), FILE_HELPERS_LOCK)
+        h === nothing || _admit_helper!(h)
         h
     end for _ in 1:count]
+    @async (foreach(t -> try wait(t) catch end, tasks); _helper_spawning[] = false)
     watcher = @async begin
         all(isnothing, fetch.(tasks)) && @warn "SpaceStation: no file helper came up; the workspace's files cannot be listed or edited from this hub until one does"
     end
@@ -121,11 +162,23 @@ function start_file_helpers!(; count::Integer=FILE_HELPER_COUNT[], wait::Bool=fa
     nothing
 end
 
+"A helper that came up joins, unless the hub stopped in the meantime: then it goes at once."
+function _admit_helper!(h::FileHelper)
+    lock(FILE_HELPERS_LOCK) do
+        if FILE_HELPER_MODE[]
+            push!(FILE_HELPERS, h)
+        else
+            try close(h.lifeline.in) catch end
+            try kill(h.proc) catch end
+        end
+    end
+end
+
 function stop_file_helpers!()
     helpers = lock(FILE_HELPERS_LOCK) do
-        hs = copy(FILE_HELPERS); empty!(FILE_HELPERS); empty!(HUNG_ROOTS); hs
+        FILE_HELPER_MODE[] = false
+        hs = copy(FILE_HELPERS); empty!(FILE_HELPERS); empty!(HUNG_ROOTS); empty!(SUSPECT_ROOTS); hs
     end
-    FILE_HELPER_MODE[] = false
     for h in helpers
         try close(h.lifeline.in) catch end
         try h.proc === nothing || kill(h.proc) catch end
@@ -151,7 +204,7 @@ function _replace_exited_helpers!()
         _helper_spawning[] = true; _last_helper_spawn[] = time()
         @async try
             h = _spawn_file_helper()
-            h === nothing || lock(() -> push!(FILE_HELPERS, h), FILE_HELPERS_LOCK)
+            h === nothing || _admit_helper!(h)
         catch
         finally
             _helper_spawning[] = false
@@ -159,15 +212,18 @@ function _replace_exited_helpers!()
     end
 end
 
-"The folder a request is about: its workspace, or else the path it names."
-function _request_root(request::HTTP.Request)::String
-    root = get(request.context, :workspace_root, nothing)
-    root === nothing || return String(root)
-    try
+"""
+The path a request is about, as specific as it says: the `path` it names, else its workspace, else
+the home directory (what the handlers fall back to). String work only: nothing here asks a filesystem.
+"""
+function _request_path(request::HTTP.Request)::String
+    named = try
         String(get(HTTP.queryparams(HTTP.URI(request.target)), "path", ""))
     catch
         ""
     end
+    path = !isempty(named) ? named : String(something(get(request.context, :workspace_root, nothing), get(ENV, "HOME", "/")))
+    try tamepath(path) catch; path end
 end
 
 function _ask_helper(h::FileHelper, method::AbstractString, target::AbstractString, headers, body; deadline::Integer)
@@ -175,51 +231,70 @@ function _ask_helper(h::FileHelper, method::AbstractString, target::AbstractStri
         connect_timeout=2, readtimeout=deadline, redirect=false, retry=false, status_exception=false, decompress=false, cookies=false)
 end
 
-"Is `root` still hung? Asked (at most once a second) of the helper that stuck on it, as a `stat` of that root."
-function _root_still_hung(root::String)::Bool
-    entry = lock(() -> get(HUNG_ROOTS, root, nothing), FILE_HELPERS_LOCK)
+"Is this filesystem still hung? Asked (at most once a second) of the helper that stuck on it, as a `stat` of the very path it stuck on."
+function _still_hung(key::String)::Bool
+    entry = lock(() -> get(HUNG_ROOTS, key, nothing), FILE_HELPERS_LOCK)
     entry === nothing && return false
-    h, probed = entry
+    h, probed, probe_path = entry
     if h.proc !== nothing && process_exited(h.proc)
-        lock(() -> delete!(HUNG_ROOTS, root), FILE_HELPERS_LOCK) # whatever held it is gone: ask afresh
+        lock(() -> delete!(HUNG_ROOTS, key), FILE_HELPERS_LOCK) # whatever held it is gone: ask afresh
         return false
     end
     time() - probed < 1.0 && return true
-    lock(() -> (HUNG_ROOTS[root] = (h, time())), FILE_HELPERS_LOCK)
+    lock(() -> (HUNG_ROOTS[key] = (h, time(), probe_path)), FILE_HELPERS_LOCK)
     ok = try
-        _ask_helper(h, "GET", "/api/v1/helper/stat?path=" * HTTP.escapeuri(root), Pair{String,String}[], UInt8[]; deadline=1).status == 200
+        r = _ask_helper(h, "GET", "/api/v1/helper/stat?path=" * HTTP.escapeuri(probe_path), Pair{String,String}[], UInt8[]; deadline=1)
+        r.status == 200 && !isempty(r.body)
     catch
         false
     end
-    ok && lock(() -> delete!(HUNG_ROOTS, root), FILE_HELPERS_LOCK)
+    ok && lock(() -> delete!(HUNG_ROOTS, key), FILE_HELPERS_LOCK)
     !ok
 end
 
-const _FILESYSTEM_BUSY = """{"filesystem_busy": true, "detail": "the filesystem that holds these files is not answering; the rest of the workspace keeps working. A listing will catch up by itself; a save that was under way may or may not have been written, check the file when it answers again"}"""
-const _HELPERS_STARTING = """{"filesystem_busy": true, "detail": "this hub's file helpers are still starting"}"""
+_busy(detail::AbstractString) = _json_response(504, """{"filesystem_busy": true, "detail": $(_json_string(detail))}""")
+const _FILESYSTEM_BUSY = "the filesystem that holds these files is not answering; the rest of the workspace keeps working. A listing will catch up by itself; a save that was under way may or may not have been written, check the file when it answers again"
+const _HELPER_BUSY = "the file helpers of this hub are waiting on another filesystem that is not answering; files here will be served again when one of them is free"
+const _HELPERS_STARTING = "this hub's file helpers are still starting"
 
 "Forward a file request to a helper and relay the answer. Holds a task, never a thread."
 function relay_to_file_helper(request::HTTP.Request)::HTTP.Response
     _replace_exited_helpers!()
-    root = _request_root(request)
-    _root_still_hung(root) && return _json_response(504, _FILESYSTEM_BUSY)
-    stuck = lock(() -> Set(h for (h, _) in values(HUNG_ROOTS)), FILE_HELPERS_LOCK)
-    helpers = lock(() -> [h for h in FILE_HELPERS if !(h in stuck) && (h.proc === nothing || !process_exited(h.proc))], FILE_HELPERS_LOCK)
-    if isempty(helpers)
-        return _json_response(504, isempty(stuck) ? _HELPERS_STARTING : _FILESYSTEM_BUSY)
+    path = _request_path(request)
+    key = filesystem_key(path)
+    _still_hung(key) && return _busy(_FILESYSTEM_BUSY)
+    # A first miss is only a suspicion (a big healthy listing is slow too): the next request for this
+    # filesystem goes to the SAME helper (another would only stick as well) with a longer deadline.
+    suspect = lock(() -> get(SUSPECT_ROOTS, key, nothing), FILE_HELPERS_LOCK)
+    stuck = lock(() -> Set(h for (h, _, _) in values(HUNG_ROOTS)), FILE_HELPERS_LOCK)
+    suspects = lock(() -> Set(values(SUSPECT_ROOTS)), FILE_HELPERS_LOCK)
+    h = if suspect !== nothing && (suspect.proc === nothing || !process_exited(suspect.proc))
+        suspect
+    else
+        free = lock(() -> [x for x in FILE_HELPERS if !(x in stuck) && !(x in suspects) && (x.proc === nothing || !process_exited(x.proc))], FILE_HELPERS_LOCK)
+        if isempty(free)
+            nobody = lock(() -> isempty(FILE_HELPERS), FILE_HELPERS_LOCK)
+            return _busy(nobody ? _HELPERS_STARTING : _HELPER_BUSY)
+        end
+        rand(free)
     end
-    h = rand(helpers)
     headers = Pair{String,String}[String(k) => String(v) for (k, v) in request.headers if lowercase(String(k)) ∉ _HOP_REQUEST_HEADERS && lowercase(String(k)) != lowercase(WORKSPACE_ROOT_HEADER)]
     ws = get(request.context, :workspace_root, nothing)
     ws === nothing || push!(headers, WORKSPACE_ROOT_HEADER => HTTP.escapeuri(String(ws)))
-    deadline = request.method == "GET" ? FILE_HELPER_DEADLINE[] : FILE_HELPER_WRITE_DEADLINE[]
+    deadline = request.method == "GET" ? FILE_HELPER_DEADLINE[] * (suspect === nothing ? 1 : 4) : FILE_HELPER_WRITE_DEADLINE[]
     upstream = try
         _ask_helper(h, request.method, request.target, headers, request.body; deadline)
     catch
-        # never sent to the other helper: it would ask the same filesystem and stick too
-        lock(() -> (HUNG_ROOTS[root] = (h, time())), FILE_HELPERS_LOCK)
-        return _json_response(504, _FILESYSTEM_BUSY)
+        lock(FILE_HELPERS_LOCK) do
+            if suspect === nothing && request.method == "GET"
+                SUSPECT_ROOTS[key] = h
+            else
+                delete!(SUSPECT_ROOTS, key); HUNG_ROOTS[key] = (h, time(), path)
+            end
+        end
+        return _busy(_FILESYSTEM_BUSY)
     end
+    suspect === nothing || lock(() -> delete!(SUSPECT_ROOTS, key), FILE_HELPERS_LOCK)
     response = HTTP.Response(upstream.status, Pair{String,String}[], upstream.body)
     for hd in upstream.headers
         lowercase(hd.first) ∈ _HOP_RESPONSE_HEADERS && continue
@@ -239,6 +314,13 @@ end
 function serve_helper_stat(request::HTTP.Request)
     is_file_helper_process() || return HTTP.Response(404)
     path = String(get(HTTP.queryparams(HTTP.URI(request.target)), "path", ""))
-    st = stat(path)
-    _json_response(200, """{"exists": $(ispath(st)), "isdir": $(isdir(st))}""")
+    # off the helper's serving thread: a probe of a hung path must cost a worker, not the event loop
+    exists, dir = offload_blocking() do
+        try
+            st = stat(path); (ispath(st), isdir(st))
+        catch
+            (false, false) # no permission to look is "not there" for our purposes, not "not answering"
+        end
+    end
+    _json_response(200, """{"exists": $(exists), "isdir": $(dir)}""")
 end

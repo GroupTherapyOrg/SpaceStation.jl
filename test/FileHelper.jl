@@ -52,10 +52,16 @@ import SpaceStation as Pluto
             other = mktempdir(); mkdir(joinpath(other, "inner"))
             real_ports = [h.port for h in helpers]
             for h in helpers; h.port = 9; end                                            # neither answers
+            key = Pluto.filesystem_key(Pluto.tamepath(ws))
             t = time(); busy = get("$base/api/v1/browse?path=$(HTTP.escapeuri(ws))"); took = time() - t
             @test busy.status == 504 && occursin("filesystem_busy", String(busy.body)) && took < 8
-            stuck = lock(() -> Pluto.HUNG_ROOTS[ws][1], Pluto.FILE_HELPERS_LOCK)
-            @test lock(() -> length(Pluto.HUNG_ROOTS), Pluto.FILE_HELPERS_LOCK) == 1    # one root, one helper: the other was not spent on it
+            # a first miss is a suspicion (a big healthy listing is slow too): the same helper gets one longer try
+            suspect = lock(() -> Pluto.SUSPECT_ROOTS[key], Pluto.FILE_HELPERS_LOCK)
+            @test lock(() -> isempty(Pluto.HUNG_ROOTS), Pluto.FILE_HELPERS_LOCK)
+            @test get("$base/api/v1/browse?path=$(HTTP.escapeuri(ws))").status == 504
+            stuck, _, probe_path = lock(() -> Pluto.HUNG_ROOTS[key], Pluto.FILE_HELPERS_LOCK)
+            @test stuck === suspect && probe_path == Pluto.tamepath(ws)                   # the same helper, and the very path to ask about
+            @test lock(() -> length(Pluto.HUNG_ROOTS) == 1 && isempty(Pluto.SUSPECT_ROOTS), Pluto.FILE_HELPERS_LOCK)
             free = only(h for h in helpers if h !== stuck)
             free.port = real_ports[findfirst(h -> h === free, helpers)]                  # the other helper is fine
             t = time(); again = get("$base/api/v1/browse?path=$(HTTP.escapeuri(ws))"); took = time() - t
@@ -92,6 +98,18 @@ import SpaceStation as Pluto
         end
     end
     Pluto.FILE_HELPER_COUNT[] = Sys.islinux() ? 2 : 1
+    @testset "hung-ness belongs to a filesystem" begin
+        mounts = ["/data/homezvol2/dale", "/dfs6b", "/data", "/tmp", "/"]
+        @test Pluto.filesystem_key("/data/homezvol2/dale/dev/a", mounts) == "/data/homezvol2/dale"
+        @test Pluto.filesystem_key("/data/homezvol2/dale/dev/b", mounts) == "/data/homezvol2/dale"   # a second folder there costs no helper
+        @test Pluto.filesystem_key("/dfs6bother/x", mounts) == "/dfs6bother/x"                       # a prefix is not a parent
+        @test Pluto.filesystem_key("/home/me/x", mounts) == "/home/me/x"                             # "/" says nothing
+        @test Pluto._unescape_mountinfo("/mnt/with\\040space") == "/mnt/with space"
+        request = HTTP.Request("GET", "/api/v1/ssh_hosts")
+        @test Pluto._request_path(request) == Pluto.tamepath(get(ENV, "HOME", "/"))                  # no path named: the home directory, never ""
+        request = HTTP.Request("GET", "/api/v1/workspace/listing?path=%2Fa%2Fb"); request.context[:workspace_root] = "/a"
+        @test Pluto._request_path(request) == Pluto.tamepath("/a/b")                                  # the most specific path wins
+    end
     withenv("SPACESTATION_FILE_HELPER" => "0") do
         Pluto.start_file_helpers!()
         @test !Pluto.file_helpers_active()                                              # the switch

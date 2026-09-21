@@ -42,6 +42,16 @@ ask() { # ask <seconds> -> prints worst latency, count, failures
 if [ "${SCENARIO:-}" = userfiles ]; then # the helpers come up in the background: wait for a first listing
     for i in $(seq 1 120); do [ "$(curl -s -m 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/api/v1/browse?path=${USERFILES_DIR}")" = 200 ] && break; sleep 2; done
 fi
+# Positive control: the injector must be attached and must see THIS hub. Julia itself was started from
+# under the prefixes or not; either way a deliberate touch has to show up, tagged with the right process.
+probe="${PREFIXES%%:*}"
+before=$(wc -l < "$d/calls.log")
+"$d/hangtrace" -p "$PREFIXES" -l "$d/control.log" -- stat "$probe" > /dev/null 2>&1
+grep -q "root$" "$d/control.log" 2>/dev/null || { echo "FAIL: the injector does not see path calls (positive control)"; exit 5; }
+if [ "${SCENARIO:-}" = userfiles ]; then
+    curl -s -m 9 -o /dev/null "http://127.0.0.1:$PORT/api/v1/browse?path=${USERFILES_DIR}"
+    [ "$(tail -n +"$((before + 1))" "$d/calls.log" | awk -F'\t' '$5=="child"' | wc -l)" -ge 1 ] || { echo "FAIL: a listing through the hub left no trace from a helper process (positive control)"; exit 5; }
+fi
 read -r w n b < <(ask 10); echo "warm-up:      worst ${w}s over $n requests, $b failed"
 calls_before=$(wc -l < "$d/calls.log")
 touch "$d/hang"
