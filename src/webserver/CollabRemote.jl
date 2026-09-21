@@ -566,7 +566,8 @@ end
 # auth-fail. Old bare "<port>.json" files (no node field) are judged by liveness alone.
 const _SCAN_REMOTE_SERVERS_SNIPPET = raw"""
 me=$(hostname)
-for f in "$HOME"/.local/state/pluto/servers/*.json; do
+nd=$(cat "$HOME/.spacestation/nodedir-$me" 2>/dev/null)
+for f in "$HOME"/.local/state/pluto/servers/*.json ${nd:+"$nd"/state/pluto/servers/*.json}; do
     [ -e "$f" ] || continue
     p=$(sed -n 's/.*"port": *\([0-9]*\).*/\1/p' "$f")
     [ -n "$p" ] || continue
@@ -899,7 +900,8 @@ function _remote_connect_task!(r::RemoteSession)
             me=$(hostname)
             rm -f "$HOME/.spacestation/.install_ok"
             command -v curl >/dev/null 2>&1 || exit 0
-            for f in "$HOME"/.local/state/pluto/servers/*.json; do
+            nd=$(cat "$HOME/.spacestation/nodedir-$me" 2>/dev/null)
+            for f in "$HOME"/.local/state/pluto/servers/*.json ${nd:+"$nd"/state/pluto/servers/*.json}; do
                 [ -e "$f" ] || continue
                 p=$(sed -n 's/.*"port": *\([0-9]*\).*/\1/p' "$f")
                 pid=$(sed -n 's/.*"pid": *\([0-9]*\).*/\1/p' "$f")
@@ -1047,7 +1049,9 @@ function _remote_connect_task!(r::RemoteSession)
             # to do. So: a writable depot on the node in FRONT of the shared one (Julia's depot stack
             # is made for this — packages, registries and compiled caches are still read from the
             # shared depot, nothing is recompiled; usage logs, scratch spaces and new caches land
-            # locally), and the log there too (a redirected stdout is a plain file stream). The
+            # locally), and the log there too (a redirected stdout is a plain file stream), and the
+            # servers' connection files (SPACESTATION_STATE_HOME: the hub walks that directory on every
+            # status poll, and ~/.local/state is $HOME; the scans look in both places). The
             # directory is created once per node with mktemp (never a name someone else could
             # pre-create in a shared /tmp), remembered per node in $HOME, and reused while it exists
             # and is ours (a real directory, never a symlink: the marker is readable by other local
@@ -1065,7 +1069,8 @@ function _remote_connect_task!(r::RemoteSession)
                 d=$(mktemp -d "${SLURM_TMPDIR:-${TMPDIR:-/tmp}}/spacestation.XXXXXX") || exit 1
                 echo "$d" > "$marker"
             fi
-            mkdir -p "$d/depot"
+            mkdir -p "$d/depot" "$d/state"
+            export SPACESTATION_STATE_HOME="$d/state" SPACESTATION_NODE_DIR="$d"
             export JULIA_DEPOT_PATH="$d/depot:${JULIA_DEPOT_PATH:-$HOME/.julia}:"
             mv -f "$d/server.log" "$d/server.log.1" 2>/dev/null
             ln -sfn "$d/server.log" ~/.spacestation/server.log

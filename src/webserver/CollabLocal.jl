@@ -118,7 +118,10 @@ end
 # _remote_connect_task! but local: no SSH, no install — just spawn `julia --project=… -e 'run(workspace=…)'`
 # and wait for its connection file to appear, then hand back port + secret.
 function _local_spawn_task!(s::LocalSession)
-    logfile = joinpath(tempdir(), "spacestation-workspace-$(getpid())-$(string(hash(s.path), base=16)).log")
+    # On a cluster the launcher names a directory on the node's own disk (TMPDIR there is often network
+    # scratch, and a child whose stderr is a file on a hung filesystem stops at its first message).
+    logdir = get(ENV, "SPACESTATION_NODE_DIR", "")
+    logfile = joinpath(isempty(logdir) ? tempdir() : logdir, "spacestation-workspace-$(getpid())-$(string(hash(s.path), base=16)).log")
     try
         # Already up (tab reopened, or a previous hub left it running)? Reattach — never duplicate.
         existing = _find_local_server(s.path)

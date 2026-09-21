@@ -161,7 +161,7 @@ function serve_terminal_upgrade(http::HTTP.Stream, session::ServerSession, termi
         end
     catch ex
         if !(ex isa InterruptException || ex isa HTTP.WebSockets.WebSocketError || ex isa EOFError || ex isa Base.IOError)
-            @warn "Terminal websocket connection failed" exception = (ex, catch_backtrace())
+            @warn "Terminal websocket connection failed" error = sprint(showerror, ex) # no backtrace: symbolicating one reads the depot (PinCode.jl)
         end
     end
     nothing
@@ -217,6 +217,9 @@ function run!(session::ServerSession)
     # connection file: lets external tools (e.g. coding agents) discover this server's port and secret.
     # Keep the path: the name carries the hostname, which can change while we run (VPN on/off), and
     # shutdown must remove the file we wrote, not the one today's hostname would name.
+    # Before this server announces itself: the program's own pages must never be a read from a cluster
+    # filesystem at the moment they run (PinCode.jl). A no-op off Linux and off network filesystems.
+    keep_code_pinned!()
     registry_file = write_collab_registry_file(session, port)
     # agent surface: put `pluto-collab` on PATH next to the app, and (opt-in) seed the workspace's AGENTS.md
     ensure_pluto_collab_installed()

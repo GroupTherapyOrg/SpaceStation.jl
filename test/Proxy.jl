@@ -27,6 +27,21 @@ end
     end
 end
 
+@testset "the connection files go where SPACESTATION_STATE_HOME says, before XDG_STATE_HOME" begin
+    withenv("SPACESTATION_STATE_HOME" => "/node/local", "XDG_STATE_HOME" => "/home/shared") do
+        @test Pluto.collab_registry_dir() == joinpath("/node/local", "pluto", "servers")
+        @test Pluto._child_env("/some/folder")["SPACESTATION_STATE_HOME"] == "/node/local" # children and terminals follow
+    end
+    withenv("SPACESTATION_STATE_HOME" => nothing, "XDG_STATE_HOME" => "/home/shared") do
+        @test Pluto.collab_registry_dir() == joinpath("/home/shared", "pluto", "servers")
+    end
+    withenv("SPACESTATION_STATE_HOME" => "", "XDG_STATE_HOME" => "/home/shared") do
+        @test Pluto.collab_registry_dir() == joinpath("/home/shared", "pluto", "servers")
+    end
+    # both remote scans look in the node-local directory as well as the shared one
+    @test occursin("\"\$nd\"/state/pluto/servers/*.json", Pluto._SCAN_REMOTE_SERVERS_SNIPPET)
+end
+
 @testset "a workspace child never inherits the hub marker" begin
     withenv("SPACESTATION_HUB" => "1", "SPACESTATION_TUNNELED" => "1", "JULIA_LOAD_PATH" => "@") do
         env = Pluto._child_env("/some/folder")

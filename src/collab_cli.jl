@@ -8,7 +8,12 @@
 
 import HTTP
 
-_collab_registry_dir() = joinpath(get(ENV, "XDG_STATE_HOME", joinpath(homedir(), ".local", "state")), "pluto", "servers")
+# Same rule as the server's `collab_registry_dir` (CollabAPI.jl): SPACESTATION_STATE_HOME first.
+function _collab_registry_dir()
+    base = get(ENV, "SPACESTATION_STATE_HOME", "")
+    isempty(base) && (base = get(ENV, "XDG_STATE_HOME", joinpath(homedir(), ".local", "state")))
+    joinpath(base, "pluto", "servers")
+end
 
 # Flat connection JSON (written by write_collab_registry_file): "key": value | "key": "value".
 function _collab_cf_field(content::AbstractString, key::AbstractString)::String

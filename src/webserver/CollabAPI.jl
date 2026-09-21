@@ -83,7 +83,17 @@ _json(x::Vector{<:Pair}) = "{" * join(("$(_json_string(String(first(p)))):$(_jso
 
 # --- server connection registry (Jupyter kernel-<id>.json idiom) ---
 
-collab_registry_dir() = joinpath(get(ENV, "XDG_STATE_HOME", joinpath(homedir(), ".local", "state")), "pluto", "servers")
+# SPACESTATION_STATE_HOME wins over XDG_STATE_HOME: on a cluster the launcher points it at a directory
+# on the node's own disk (CollabRemote.jl), because ~/.local/state is on the shared, stalling \$HOME and
+# this directory is walked and read by a hub that must never wait on that filesystem (PinCode.jl says
+# why one waiting thread is the whole process). Its own variable, so that the terminals a server
+# starts — which inherit it, and whose pluto-collab must find these files — do not also move every
+# other program's state (shell and editor histories) off \$HOME.
+function collab_registry_dir()
+    base = get(ENV, "SPACESTATION_STATE_HOME", "")
+    isempty(base) && (base = get(ENV, "XDG_STATE_HOME", joinpath(homedir(), ".local", "state")))
+    joinpath(base, "pluto", "servers")
+end
 
 # Tag the registry filename with the node's hostname: "<node>-<port>.json".
 # On a shared $HOME (an HPC cluster mounts the same NFS home on every compute node) this one
