@@ -122,6 +122,10 @@ function _own_cgroup(; controller::String="")::String
     ""
 end
 
+# Line by line, never `read(path, String)`: a /proc file has no size, and one bulk read returns only
+# its first chunk. On a node with 800 mounts that was 5 of them, none of them the one that mattered.
+_read_proc(path::String)::String = join(readlines(path), "\n")
+
 pin_code_enabled() = Sys.islinux() && get(ENV, "SPACESTATION_PIN_CODE", "1") != "0"
 
 """
@@ -132,7 +136,7 @@ Never throws.
 function pin_network_code!(; lock_region=_mlock, read_region=_prefault, budget=_job_memory_budget())::Tuple{Int,Int}
     pin_code_enabled() || return (0, 0)
     regions = try
-        _network_mappings(read("/proc/self/maps", String), _network_devices(read("/proc/self/mountinfo", String)))
+        _network_mappings(_read_proc("/proc/self/maps"), _network_devices(_read_proc("/proc/self/mountinfo")))
     catch
         return (0, 0)
     end

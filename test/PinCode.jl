@@ -46,6 +46,9 @@ import SpaceStation as Pluto
     @test Pluto._pin_regions(regions, 100MB; lock_region=(a, len) -> error("boom"), read_region=(a, len) -> error("boom")) == (0, 0) # never throws
 
     if Sys.islinux()
+        # /proc files have no size: one bulk read can return only the first chunk (5 of 833 mounts, on a real node)
+        @test count(==('\n'), Pluto._read_proc("/proc/self/maps")) + 1 == length(readlines("/proc/self/maps")) > 10
+        @test ncodeunits(Pluto._read_proc("/proc/self/mountinfo")) >= ncodeunits(read("/proc/self/mountinfo", String))
         # a real file mapping, one page of file and two pages of mapping: asking never faults, touching would
         path, io = mktemp(); write(io, zeros(UInt8, 100)); close(io)
         fd = ccall(:open, Cint, (Cstring, Cint), path, 0)
