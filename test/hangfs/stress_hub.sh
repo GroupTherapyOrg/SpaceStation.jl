@@ -3,7 +3,7 @@
 #
 #   stress_hub.sh <app-dir> <julia> <port> <hang-prefixes> [hang-seconds]
 #
-# Starts a hub from <app-dir> under the hangfs shim, lets it start and serve one warm-up session,
+# Starts a hub from <app-dir> under hangtrace (system-call level hang injection), lets it start and serve one warm-up session,
 # then raises the hang flag and keeps asking (ping, config, workspace list, the page, an asset) while
 # a second client forces garbage collections through allocation-heavy requests. Prints the worst
 # latency per phase and exits non-zero if any request during the hang took longer than LIMIT seconds.
@@ -11,13 +11,12 @@ set -u
 APP=$1; J=$2; PORT=$3; PREFIXES=$4; HANG=${5:-40}; LIMIT=${LIMIT:-2}
 here=$(cd "$(dirname "$0")" && pwd)
 d=$(mktemp -d "${TMPDIR:-/tmp}/hubstress.XXXXXX")
-gcc -O2 -shared -fPIC -o "$d/hangfs.so" "$here/hangfs.c" -ldl || exit 3
+gcc -O2 -o "$d/hangtrace" "$here/hangtrace.c" || exit 3
 mkdir -p "$d/state" "$d/depot"
 export SPACESTATION_HUB=1 SPACESTATION_STATE_HOME="$d/state" SPACESTATION_NODE_DIR="$d"
 export JULIA_DEPOT_PATH="${STRESS_DEPOT_PATH:-$d/depot:${JULIA_DEPOT_PATH:-$HOME/.julia}:}"
-export HANGFS_PREFIXES="$PREFIXES" HANGFS_FLAG="$d/hang" HANGFS_LOG="$d/calls.log"
-cd "$d"
-LD_PRELOAD="$d/hangfs.so" nohup "$J" --threads=4,1 --project="$APP" -e "import SpaceStation; SpaceStation.run(launch_browser=false, hub=true, port=$PORT, require_secret_for_access=false, require_secret_for_open_links=false)" > "$d/hub.log" 2>&1 &
+cd "$d"; : > "$d/calls.log"
+nohup "$d/hangtrace" -p "$PREFIXES" -f "$d/hang" -l "$d/calls.log" -- "$J" --threads=4,1 --project="$APP" -e "import SpaceStation; SpaceStation.run(launch_browser=false, hub=true, port=$PORT, require_secret_for_access=false, require_secret_for_open_links=false)" > "$d/hub.log" 2>&1 &
 hub=$!
 cleanup() { rm -f "$d/hang"; kill "$hub" 2>/dev/null; sleep 1; kill -9 "$hub" 2>/dev/null; cd /; rm -rf "$d"; }
 trap cleanup EXIT

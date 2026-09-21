@@ -23,13 +23,23 @@ jobs:
             - uses: julia-actions/cache@v3
             - name: Install and precompile
               run: julia --project=. -e 'import Pkg; Pkg.instantiate(); import SpaceStation'
-            - name: The shim itself
+            - name: The hang injector itself (system-call level, so libuv's raw calls count too)
               run: |
                   set -e
-                  d=$(mktemp -d); gcc -O2 -shared -fPIC -o $d/hangfs.so test/hangfs/hangfs.c -ldl
-                  mkdir -p $d/tree; echo hello > $d/tree/f; touch $d/hang; ( sleep 3; rm -f $d/hang ) &
-                  s=$(date +%s); HANGFS_PREFIXES=$d/tree HANGFS_FLAG=$d/hang LD_PRELOAD=$d/hangfs.so cat $d/tree/f; e=$(date +%s)
-                  [ $((e - s)) -ge 2 ] || { echo "the shim did not block"; exit 1; }
+                  gcc -O2 -Wall -o /tmp/hangtrace test/hangfs/hangtrace.c
+                  d=$(mktemp -d); mkdir -p $d/tree/sub; echo hello > $d/tree/sub/f; echo other > $d/outside
+                  /tmp/hangtrace -p $d/tree -l $d/log -- sh -c "cat $d/tree/sub/f $d/outside; ls $d/tree >/dev/null; cd $d/tree && cat sub/f"
+                  echo "--- audit:"; cat $d/log
+                  grep -q "sub/f" $d/log && ! grep -q outside $d/log
+                  # Julia's stat/readdir go through libuv's raw system calls: they must be seen
+                  /tmp/hangtrace -p $d/tree -l $d/log2 -- julia --startup-file=no -e "isdir(\"$d/tree/sub\"); readdir(\"$d/tree\"); read(\"$d/tree/sub/f\")"
+                  echo "--- julia audit:"; grep "$d/tree" $d/log2 | cut -f1 | sort | uniq -c
+                  [ $(grep -c "$d/tree" $d/log2) -ge 3 ]
+                  touch $d/hang; ( sleep 3; rm -f $d/hang ) &
+                  s=$(date +%s); /tmp/hangtrace -p $d/tree -f $d/hang -- cat $d/tree/sub/f; e=$(date +%s)
+                  [ $((e - s)) -ge 2 ] || { echo "the injector did not block"; exit 1; }
+                  touch $d/hang; s=$(date +%s); /tmp/hangtrace -p $d/tree -f $d/hang -- cat $d/outside; e=$(date +%s); rm -f $d/hang
+                  [ $((e - s)) -le 1 ] || { echo "a path outside the tree was blocked"; exit 1; }
             - name: A hub outlives a hang of Julia, the depot and the checkout
               run: |
                   set -e
