@@ -1,0 +1,41 @@
+name: Storage hang stress test
+
+# A hub must keep answering while the filesystems that hold Julia, the depot and the checkout are
+# hung: that is a normal day on a cluster (NFS home, BeeGFS/Lustre depot). test/hangfs/hangfs.c makes
+# chosen directory trees hang on demand for one process, without root, so this runs on a plain runner.
+on:
+    workflow_dispatch:
+    push:
+        branches: [main]
+        paths: ["src/**", "test/hangfs/**", ".github/workflows/StorageHang.yml", "Project.toml"]
+    pull_request:
+        paths: ["src/**", "test/hangfs/**", ".github/workflows/StorageHang.yml", "Project.toml"]
+
+jobs:
+    hang:
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        steps:
+            - uses: actions/checkout@v7
+            - uses: julia-actions/setup-julia@v3
+              with:
+                  version: "1.12"
+            - uses: julia-actions/cache@v3
+            - name: Install and precompile
+              run: julia --project=. -e 'import Pkg; Pkg.instantiate(); import SpaceStation'
+            - name: The shim itself
+              run: |
+                  set -e
+                  d=$(mktemp -d); gcc -O2 -shared -fPIC -o $d/hangfs.so test/hangfs/hangfs.c -ldl
+                  mkdir -p $d/tree; echo hello > $d/tree/f; touch $d/hang; ( sleep 3; rm -f $d/hang ) &
+                  s=$(date +%s); HANGFS_PREFIXES=$d/tree HANGFS_FLAG=$d/hang LD_PRELOAD=$d/hangfs.so cat $d/tree/f; e=$(date +%s)
+                  [ $((e - s)) -ge 2 ] || { echo "the shim did not block"; exit 1; }
+            - name: A hub outlives a hang of Julia, the depot and the checkout
+              run: |
+                  set -e
+                  julia_root=$(dirname $(dirname $(readlink -f $(which julia))))
+                  # the app on "node-local" disk, as the cluster launcher stages it; everything else hangs
+                  cp -r "$GITHUB_WORKSPACE" /tmp/app && rm -rf /tmp/app/.git
+                  julia --project=/tmp/app -e 'import SpaceStation'
+                  JULIA_DEPOT_PATH="$HOME/.julia:" STRESS_DEPOT_PATH="$HOME/.julia:" \
+                    bash test/hangfs/stress_hub.sh /tmp/app "$(which julia)" 2471 "$GITHUB_WORKSPACE:$HOME/.julia:$julia_root" 40
