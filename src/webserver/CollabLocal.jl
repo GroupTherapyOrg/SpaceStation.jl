@@ -325,7 +325,9 @@ function register_collab_local!(router, session::ServerSession)
         query = HTTP.queryparams(HTTP.URI(request.target))
         haskey(query, "path") || return _api_error(400, "pass ?path=/abs/folder", false)
         path = tamepath(query["path"])
-        offload_blocking(() -> isdir(path)) || return _api_error(400, "not a directory: $path", false)
+        isdir_answer = hub_isdir(path) # asked of a file helper in a hub: see FileHelper.jl
+        isdir_answer === nothing && return _api_error(504, "the filesystem that holds $path is not answering; try again when it does", false)
+        isdir_answer || return _api_error(400, "not a directory: $path", false)
         s = open_local_session!(path)
         HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], local_status_json(s))
     end

@@ -26,7 +26,7 @@ jobs:
             - name: The hang injector itself (system-call level, so libuv's raw calls count too)
               run: |
                   set -e
-                  gcc -O2 -Wall -o /tmp/hangtrace test/hangfs/hangtrace.c
+                  gcc -O2 -o /tmp/hangtrace test/hangfs/hangtrace.c
                   d=$(mktemp -d); mkdir -p $d/tree/sub; echo hello > $d/tree/sub/f; echo other > $d/outside
                   /tmp/hangtrace -p $d/tree -l $d/log -- sh -c "cat $d/tree/sub/f $d/outside; ls $d/tree >/dev/null; cd $d/tree && cat sub/f"
                   echo "--- audit:"; cat $d/log
@@ -49,8 +49,7 @@ jobs:
                   julia --project=/tmp/app -e 'import SpaceStation'
                   JULIA_DEPOT_PATH="$HOME/.julia:" STRESS_DEPOT_PATH="$HOME/.julia:" \
                     bash test/hangfs/stress_hub.sh /tmp/app "$(which julia)" 2471 "$GITHUB_WORKSPACE:$HOME/.julia:$julia_root" 40
-            - name: "Known gap: a listing of a hung directory must not freeze the hub (file-helper, not built yet)"
-              continue-on-error: true
+            - name: A listing of a hung directory stalls a file helper, never the hub
               run: |
                   julia_root=$(dirname $(dirname $(readlink -f $(which julia))))
                   mkdir -p "$GITHUB_WORKSPACE/userfiles" && touch "$GITHUB_WORKSPACE/userfiles/a.jl"

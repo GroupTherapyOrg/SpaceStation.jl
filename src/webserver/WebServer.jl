@@ -221,10 +221,17 @@ function run!(session::ServerSession)
     # connection file: lets external tools (e.g. coding agents) discover this server's port and secret.
     # Keep the path: the name carries the hostname, which can change while we run (VPN on/off), and
     # shutdown must remove the file we wrote, not the one today's hostname would name.
-    registry_file = write_collab_registry_file(session, port; announce_legacy=true)
-    # agent surface: put `pluto-collab` on PATH next to the app, and (opt-in) seed the workspace's AGENTS.md
-    ensure_pluto_collab_installed()
-    maybe_write_agents_md(session)
+    # A file helper (FileHelper.jl) is nobody's server but its hub's: it is not announced, and installs nothing.
+    helper = is_file_helper_process()
+    # A hub brings its file helpers up BEFORE it announces itself: from its first request on, it never
+    # touches the user's files in its own process.
+    session.options.server.hub && !helper && start_file_helpers!()
+    registry_file = helper ? "" : write_collab_registry_file(session, port; announce_legacy=true)
+    if !helper
+        # agent surface: put `pluto-collab` on PATH next to the app, and (opt-in) seed the workspace's AGENTS.md
+        ensure_pluto_collab_installed()
+        maybe_write_agents_md(session)
+    end
 
     on_shutdown() = @sync begin
         # Triggered by HTTP.jl
@@ -233,7 +240,8 @@ function run!(session::ServerSession)
             isfile(registry_file) && rm(registry_file)
         catch
         end
-        remove_collab_registry_file(port; legacy=true)
+        helper || remove_collab_registry_file(port; legacy=true)
+        stop_file_helpers!()
         # tear down any SSH remote tunnels so the `ssh -N -L` children don't orphan onto the terminal
         try
             close_all_remote_tunnels()

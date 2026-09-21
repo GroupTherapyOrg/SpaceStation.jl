@@ -1339,8 +1339,10 @@ function start_tunnel_watchdog!()
 end
 
 function register_collab_remote!(router, session::ServerSession)
-    start_tunnel_watchdog!()
-    restore_remote_sessions!()
+    if !is_file_helper_process() # a file helper (FileHelper.jl) has no business with anybody's tunnels
+        start_tunnel_watchdog!()
+        restore_remote_sessions!()
+    end
 
     function remote_status_json(r::RemoteSession)
         _json(Pair[
