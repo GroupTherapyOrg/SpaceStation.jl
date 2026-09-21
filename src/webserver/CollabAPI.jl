@@ -149,7 +149,7 @@ node-local file alone. Removed at shutdown, best-effort; a leftover is harmless,
 """
 function legacy_registry_dir()::Union{Nothing,String}
     isempty(get(ENV, "SPACESTATION_STATE_HOME", "")) && return nothing
-    legacy = joinpath(get(ENV, "XDG_STATE_HOME", joinpath(homedir(), ".local", "state")), "pluto", "servers")
+    legacy = joinpath(get(ENV, "XDG_STATE_HOME", joinpath(user_home(), ".local", "state")), "pluto", "servers")
     legacy == collab_registry_dir() ? nothing : legacy
 end
 

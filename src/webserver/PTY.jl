@@ -139,7 +139,7 @@ function pty_spawn(cmd::Vector{String}; rows::Int=24, cols::Int=80,
     argv = Cstring[Base.unsafe_convert(Cstring, c) for c in c_strs]
     push!(argv, C_NULL)
 
-    env_dict = copy(ENV)
+    env_dict = user_env() # the user's environment, not this server's cut-down one: see UserEnv.jl
     if env !== nothing
         for (k, v) in env
             env_dict[k] = v

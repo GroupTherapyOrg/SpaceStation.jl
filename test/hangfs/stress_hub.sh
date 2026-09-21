@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Stress test: a hub must keep answering while the filesystems under HANG_PREFIXES are hung.
 #
-#   stress_hub.sh <app-dir> <julia> <port> <hang-prefixes> [hang-seconds]
+#   [RT=<staged runtime>] stress_hub.sh <app-dir> <julia> <port> <hang-prefixes> [hang-seconds]
+#
+# With RT (a directory made by src/webserver/node/runtime.sh) the hub is started the way the cluster
+# launcher starts it; <julia> and <app-dir> are then the USER's, for what the hub starts on their behalf.
 #
 # Starts a hub from <app-dir> under hangtrace (system-call level hang injection), lets it start and serve one warm-up session,
 # then raises the hang flag and keeps asking (ping, config, workspace list, the page, an asset). The hub
@@ -18,9 +21,24 @@ d=$(mktemp -d "${TMPDIR:-/tmp}/hubstress.XXXXXX")
 gcc -O2 -o "$d/hangtrace" "$here/hangtrace.c" || exit 3
 mkdir -p "$d/state" "$d/depot"
 export SPACESTATION_HUB=1 SPACESTATION_STATE_HOME="$d/state" SPACESTATION_NODE_DIR="$d"
-export JULIA_DEPOT_PATH="${STRESS_DEPOT_PATH:-$d/depot:${JULIA_DEPOT_PATH:-$HOME/.julia}:}"
 cd "$d"; : > "$d/calls.log"
-nohup "$d/hangtrace" -b -p "$PREFIXES" -f "$d/hang" -l "$d/calls.log" -- "$J" --threads=4,1 --project="$APP" -e "@async while true; GC.gc(false); sleep(0.5); end; import SpaceStation; SpaceStation.run(launch_browser=false, hub=true, port=$PORT, require_secret_for_access=false, require_secret_for_open_links=false)" > "$d/hub.log" 2>&1 &
+code="@async while true; GC.gc(false); sleep(0.5); end; import SpaceStation; SpaceStation.run(launch_browser=false, hub=true, port=$PORT, require_secret_for_access=false, require_secret_for_open_links=false)"
+if [ -n "${RT:-}" ]; then
+    # exactly what the cluster launcher does (_remote_launch_script): the hub runs from the staged
+    # runtime with nothing shared in its environment, and knows the user's environment from a file
+    (umask 077; env -0 > "$d/user-env")
+    cd "$RT"
+    nohup env -u LD_LIBRARY_PATH -u JULIA_PROJECT -u JULIA_LOAD_PATH \
+        HOME="$RT/home" TMPDIR="$RT/tmp" PATH="$RT/julia/bin:/usr/local/bin:/usr/bin:/bin" \
+        JULIA_DEPOT_PATH="$RT/depot:" JULIA_CPU_TARGET="$(cat "$RT/cpu-target")" JULIA_PKG_OFFLINE=true \
+        SPACESTATION_USER_ENV_FILE="$d/user-env" SPACESTATION_USER_JULIA="$J" SPACESTATION_USER_PROJECT="$APP" \
+        SPACESTATION_USER_DEPOT_PATH="$d/depot:${JULIA_DEPOT_PATH:-$HOME/.julia}:" SPACESTATION_USER_HOME="$HOME" \
+        "$d/hangtrace" -b -p "$PREFIXES" -f "$d/hang" -l "$d/calls.log" -- \
+        "$RT/julia/bin/julia" --threads=4,1 --startup-file=no --history-file=no --project="$RT/app" -e "$code" > "$d/hub.log" 2>&1 &
+else
+    export JULIA_DEPOT_PATH="${STRESS_DEPOT_PATH:-$d/depot:${JULIA_DEPOT_PATH:-$HOME/.julia}:}"
+    nohup "$d/hangtrace" -b -p "$PREFIXES" -f "$d/hang" -l "$d/calls.log" -- "$J" --threads=4,1 --project="$APP" -e "$code" > "$d/hub.log" 2>&1 &
+fi
 hub=$!
 cleanup() { rm -f "$d/hang"; kill "$hub" 2>/dev/null; sleep 1; kill -9 "$hub" 2>/dev/null; cd /; rm -rf "$d"; }
 trap cleanup EXIT

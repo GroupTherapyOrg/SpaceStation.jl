@@ -83,6 +83,7 @@ function _file_helper_command(secret::String)
     env = copy(ENV)
     env["SPACESTATION_FILE_HELPER_SECRET"] = secret
     env["SPACESTATION_HUB"] = "1" # a helper never opens a notebook either: no registry parse at import
+    env["HOME"] = user_home()     # it reads the USER's files: `~`, ~/.ssh/config, the default folder to browse
     delete!(env, "JULIA_LOAD_PATH")
     code = "import SpaceStation; SpaceStation.file_helper_main()"
     setenv(`$(Base.julia_cmd()) --threads=2,1 --project=$(projdir) -e $(code)`, env)
@@ -222,7 +223,7 @@ function _request_path(request::HTTP.Request)::String
     catch
         ""
     end
-    path = !isempty(named) ? named : String(something(get(request.context, :workspace_root, nothing), get(ENV, "HOME", "/")))
+    path = !isempty(named) ? named : String(something(get(request.context, :workspace_root, nothing), user_home()))
     try tamepath(path) catch; path end
 end
 

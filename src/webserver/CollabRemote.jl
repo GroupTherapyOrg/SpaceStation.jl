@@ -847,6 +847,56 @@ function _mark_remote_ready!(r::RemoteSession, local_port::Integer, remote_port:
     end
 end
 
+"""
+The script that starts a hub on a node (run there through the login shell, so `julia` and the
+scheduler's variables are what the user has).
+
+It first stages SpaceStation's own runtime on the node's disk (`node/runtime.sh`: julia, a depot with
+exactly this app's packages and their compiled caches, the app) and starts the hub FROM it, with an
+environment that holds no path into shared storage: working directory, HOME, TMPDIR, depot, load
+path, PATH without the user's directories, no LD_LIBRARY_PATH. A Julia process touches its install
+and depot in ways nobody can list (even throwing an exception opens a package image), so the only
+robust rule is that there is nothing shared to touch. The environment the user launched from is
+saved first (`env -0`, on the node's disk) and handed to everything the hub starts FOR the user:
+terminals, workspace servers and their notebooks run with the user's julia, depot and PATH
+(UserEnv.jl). When staging is not possible the hub starts as it used to, from the shared install.
+"""
+function _remote_launch_script(julia::AbstractString)::String
+    raw"""
+    export SPACESTATION_TUNNELED=1 SPACESTATION_HUB=1
+    mkdir -p ~/.spacestation
+    chmod 700 ~/.spacestation 2>/dev/null
+    marker=~/.spacestation/nodedir-$(hostname)
+    d=$(cat "$marker" 2>/dev/null)
+    if [ -z "$d" ] || [ -L "$d" ] || [ ! -d "$d" ] || [ ! -O "$d" ]; then
+        d=$(mktemp -d "${SLURM_TMPDIR:-${TMPDIR:-/tmp}}/spacestation.XXXXXX") || exit 1
+        echo "$d" > "$marker"
+    fi
+    mkdir -p "$d/depot" "$d/state"
+    export SPACESTATION_STATE_HOME="$d/state" SPACESTATION_NODE_DIR="$d"
+    mv -f "$d/server.log" "$d/server.log.1" 2>/dev/null
+    ln -sfn "$d/server.log" ~/.spacestation/server.log
+    user_depot="$d/depot:${JULIA_DEPOT_PATH:-$HOME/.julia}:"
+    app=$(cd """ * REMOTE_BOOTSTRAP_DIR * raw""" && pwd)
+    julia=""" * _shquote(String(julia)) * "\n" * raw"""
+    rt=$(bash "$app/src/webserver/node/runtime.sh" "$julia" "$app" 2>"$d/runtime.log" | sed -n 's/^RUNTIME //p')
+    # (without a saved copy of this environment the hub could not give terminals and notebooks the user's own)
+    if [ -n "$rt" ] && [ -x "$rt/julia/bin/julia" ] && (umask 077; env -0 > "$d/user-env") 2>/dev/null && cd "$rt"; then
+        nohup env -u LD_LIBRARY_PATH -u JULIA_PROJECT -u JULIA_LOAD_PATH \
+            HOME="$rt/home" TMPDIR="$rt/tmp" PATH="$rt/julia/bin:/usr/local/bin:/usr/bin:/bin" \
+            JULIA_DEPOT_PATH="$rt/depot:" JULIA_CPU_TARGET="$(cat "$rt/cpu-target")" JULIA_PKG_OFFLINE=true \
+            SPACESTATION_USER_ENV_FILE="$d/user-env" SPACESTATION_USER_JULIA="$julia" SPACESTATION_USER_PROJECT="$app" \
+            SPACESTATION_USER_DEPOT_PATH="$user_depot" SPACESTATION_USER_HOME="$HOME" \
+            "$rt/julia/bin/julia" """ * SERVER_THREAD_FLAGS * raw""" --startup-file=no --history-file=no --project="$rt/app" \
+            -e 'import SpaceStation; SpaceStation.run(launch_browser=false, hub=true)' > "$d/server.log" 2>&1 < /dev/null & disown
+    else
+        export JULIA_DEPOT_PATH="$user_depot"
+        nohup "$julia" """ * SERVER_THREAD_FLAGS * raw""" --project="$app" -e 'import SpaceStation; SpaceStation.run(launch_browser=false, hub=true)' > "$d/server.log" 2>&1 < /dev/null & disown
+    fi
+    true
+    """
+end
+
 function _remote_connect_task!(r::RemoteSession)
     try
         _remote_bail(r) && return
@@ -1061,22 +1111,7 @@ function _remote_connect_task!(r::RemoteSession)
             # kept as server.log.1. The trailing ":" on the depot path keeps Julia's bundled depot
             # (the stdlib compile caches) on the stack. SLURM_TMPDIR is preferred when a job sets it:
             # /tmp on a compute node can be a small tmpfs, and packages a notebook adds land here.
-            _ssh_run(r.host, raw"""
-            export SPACESTATION_TUNNELED=1 SPACESTATION_HUB=1
-            mkdir -p ~/.spacestation
-            chmod 700 ~/.spacestation 2>/dev/null
-            marker=~/.spacestation/nodedir-$(hostname)
-            d=$(cat "$marker" 2>/dev/null)
-            if [ -z "$d" ] || [ -L "$d" ] || [ ! -d "$d" ] || [ ! -O "$d" ]; then
-                d=$(mktemp -d "${SLURM_TMPDIR:-${TMPDIR:-/tmp}}/spacestation.XXXXXX") || exit 1
-                echo "$d" > "$marker"
-            fi
-            mkdir -p "$d/depot" "$d/state"
-            export SPACESTATION_STATE_HOME="$d/state" SPACESTATION_NODE_DIR="$d"
-            export JULIA_DEPOT_PATH="$d/depot:${JULIA_DEPOT_PATH:-$HOME/.julia}:"
-            mv -f "$d/server.log" "$d/server.log.1" 2>/dev/null
-            ln -sfn "$d/server.log" ~/.spacestation/server.log
-            """ * "nohup $(r.julia) $(SERVER_THREAD_FLAGS) --project=$(REMOTE_BOOTSTRAP_DIR) -e 'import SpaceStation; SpaceStation.run(launch_browser=false, hub=true)' > \"\$d/server.log\" 2>&1 < /dev/null & disown; true")
+            _ssh_run(r.host, _remote_launch_script(r.julia))
             for _ in 1:90
                 sleep(2)
                 _remote_bail(r) && return

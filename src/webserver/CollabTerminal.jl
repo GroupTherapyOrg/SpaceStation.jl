@@ -113,9 +113,10 @@ function _resolve_terminal_cwd(session::ServerSession, requested::Union{Nothing,
         s = String(cand)
         isempty(s) && continue
         p = tamepath(s)
-        isdir(p) && return p
+        # a hub asks a file helper (one stat, with a deadline); no answer is not a no: the shell will see for itself
+        hub_isdir(p) === false || return p
     end
-    homedir()
+    user_home()
 end
 
 "Pick the interactive shell exe for a Windows terminal, VS Code-style: PowerShell 7, then

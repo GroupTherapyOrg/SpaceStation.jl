@@ -109,6 +109,7 @@ include("./webserver/MsgPack.jl")
 include("./webserver/SessionActions.jl")
 include("./webserver/Static.jl")
 include("./webserver/Authentication.jl")
+include("./webserver/UserEnv.jl")
 @static if Sys.iswindows()
     include("./webserver/PTYWindows.jl")  # ConPTY-backed PTY (Windows 10 1809+)
 else
