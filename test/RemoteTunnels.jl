@@ -506,36 +506,64 @@ drop_session!(host) = lock(() -> delete!(Pluto.REMOTE_SESSIONS, host), Pluto.REM
         # A connect goes back to the server the host gave us last time before it asks the node
         # anything over SSH: a tunnel starts no shell on the node, so a stalled $HOME cannot delay it.
         @testset "a connect tries the server it used last time first" begin
-            @test Pluto._reconnect_known_remote!(Pluto.RemoteSession("fresh-node", "connecting", "", 0, "", "", nothing, nothing, false)) == false # nothing known
+            fresh = Pluto.RemoteSession("fresh-node", "connecting", "", 0, "", "", nothing, nothing, false)
+            @test Pluto._reconnect_known_remote!(fresh) == false # nothing known
 
-            Pluto._set_known_remote!("known-node", (1234, "s3cret"))
-            Pluto._set_known_remote!("other-node", (1240, "other"))
-            @test Pluto._read_known_remotes()["known-node"] == (1234, "s3cret")
+            known = (port=1234, secret="s3cret", node="gpu-01")
+            Pluto._set_known_remote!("known-node", known)
+            Pluto._set_known_remote!("other-node", (port=1240, secret="other", node="gpu-02"))
+            Pluto._set_known_remote!("old-server", (port=1234, secret="x", node=""))     # no node on record: not remembered
+            Pluto._set_known_remote!("bad\tname", known)
+            @test Pluto._read_known_remotes()["known-node"] == known
+            @test sort(collect(keys(Pluto._read_known_remotes()))) == ["known-node", "other-node"]
             Sys.iswindows() || @test filemode(Pluto.known_remotes_path()) & 0o077 == 0 # holds secrets
 
             asked = Ref{Any}(nothing)
-            fake_tunnel(r, remote_port; attempts=3) = (asked[] = (remote_port, attempts); (:ok, 45999))
+            sent = String[]
+            updated = String[]
+            fake_tunnel(r, remote_port; kw...) = (asked[] = (remote_port, kw[:attempts], kw[:busy_polls]); (:ok, 45999))
+            reaches(port, secret) = (push!(sent, secret); port == 45999 && secret == "s3cret")
+            later(host) = push!(updated, host)
             r = add_session!(Pluto.RemoteSession("known-node", "connecting", "", 0, "", "", nothing, nothing, false))
             try
-                @test Pluto._reconnect_known_remote!(r; open_tunnel=fake_tunnel, reaches=(port, secret) -> port == 45999 && secret == "s3cret")
-                @test asked[] == (1234, 1)                                  # that port, one attempt
+                @test Pluto._reconnect_known_remote!(r; open_tunnel=fake_tunnel, node_of=p -> "gpu-01", reaches, after_ready=later)
+                @test asked[] == (1234, 1, 6)                               # that port, one attempt, a short wait on busy
                 @test r.state == "ready" && r.local_port == 45999 && r.secret == "s3cret"
                 @test "known-node" in Pluto._read_active_remotes()
+                @test updated == ["known-node"]                             # the node's clone still gets its update
+                @test Pluto._read_known_remotes()["known-node"] == known
 
-                # the port answers but it is not the server that owns the secret: forget it, discover
-                r.state = "connecting"
-                @test !Pluto._reconnect_known_remote!(r; open_tunnel=fake_tunnel, reaches=(port, secret) -> false)
+                # another machine answers behind the alias: the secret is never sent, the entry goes
+                empty!(sent); r.state = "connecting"
+                @test !Pluto._reconnect_known_remote!(r; open_tunnel=fake_tunnel, node_of=p -> "login-7", reaches, after_ready=later)
+                @test isempty(sent)
                 @test !haskey(Pluto._read_known_remotes(), "known-node")
-                @test haskey(Pluto._read_known_remotes(), "other-node")    # only this host's entry goes
+                @test haskey(Pluto._read_known_remotes(), "other-node")    # only this host's entry
                 @test r.state != "ready"
+                Pluto._stop_placeholder!("known-node")
 
-                # the tunnel does not come up at all (node gone): same
-                Pluto._set_known_remote!("known-node", (1234, "s3cret"))
-                @test !Pluto._reconnect_known_remote!(r; open_tunnel=(r, p; attempts=3) -> (:dead, 45999), reaches=(a, b) -> true)
+                # right machine, but the server there does not own the secret: same
+                Pluto._set_known_remote!("known-node", known)
+                @test !Pluto._reconnect_known_remote!(r; open_tunnel=fake_tunnel, node_of=p -> "gpu-01", reaches=(a, b) -> false, after_ready=later)
                 @test !haskey(Pluto._read_known_remotes(), "known-node")
+                Pluto._stop_placeholder!("known-node")
+
+                # the tunnel did not come up (a laptop waking, a slow hop): no verdict, the entry stays
+                Pluto._set_known_remote!("known-node", known)
+                @test !Pluto._reconnect_known_remote!(r; open_tunnel=(r, p; kw...) -> (:failed, 45999), node_of=p -> "gpu-01", reaches, after_ready=later)
+                @test Pluto._read_known_remotes()["known-node"] == known
+                Pluto._stop_placeholder!("known-node")
+
+                # disconnected while the identity request was out: not marked ready, not made active
+                Pluto._set_active_remote!("known-node", false)
+                r.state = "connecting"
+                @test Pluto._reconnect_known_remote!(r; open_tunnel=fake_tunnel, node_of=p -> "gpu-01", reaches=(a, b) -> (r.cancelled = true; true), after_ready=later)
+                @test r.state != "ready" && !("known-node" in Pluto._read_active_remotes())
             finally
+                Pluto._stop_placeholder!("known-node")
                 Pluto.remove_collab_registry_file(45999)
                 Pluto._set_active_remote!("known-node", false)
+                Pluto._set_known_remote!("known-node", nothing); Pluto._set_known_remote!("other-node", nothing)
                 lock(() -> delete!(Pluto.REMOTE_SESSIONS, "known-node"), Pluto.REMOTE_SESSIONS_LOCK)
             end
         end

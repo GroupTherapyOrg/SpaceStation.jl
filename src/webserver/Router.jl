@@ -14,7 +14,10 @@ function http_router_for(session::ServerSession)
     HTTP.register!(router, "GET", "/land", create_serve_onefile(project_relative_path(frontend_directory(), "land.html")))
     HTTP.register!(router, "GET", "/edit", create_serve_onefile(project_relative_path(frontend_directory(), "editor.html")))
 
-    HTTP.register!(router, "GET", "/ping", r -> HTTP.Response(200, "OK!"))
+    # The node's name rides along (it is no secret: `hostname` says as much to anyone on the machine).
+    # A remote reconnect checks it BEFORE it sends a remembered secret through a tunnel: see
+    # "the server we used last time" in CollabRemote.jl.
+    HTTP.register!(router, "GET", "/ping", r -> HTTP.Response(200, ["X-SpaceStation-Node" => gethostname()], "OK!"))
     HTTP.register!(router, "GET", "/auth-check", r -> HTTP.Response(200, "OK!"))
     HTTP.register!(router, "GET", "/possible_binder_token_please", r -> session.binder_token === nothing ? HTTP.Response(200,"") : HTTP.Response(200, session.binder_token))
     

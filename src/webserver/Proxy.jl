@@ -219,7 +219,7 @@ function proxy_ws(http::HTTP.Stream, s::LocalSession, rest::AbstractString; retr
     url = "ws://127.0.0.1:$(s.port)" * child_target(rest, s.secret)
     opened = Ref(false)
     try
-        HTTP.WebSockets.open(url; suppress_close_error=true, connect_timeout=3, retry=false) do childws
+        HTTP.WebSockets.open(url; suppress_close_error=true, connect_timeout=3, retry=false, cookies=false) do childws
             opened[] = true
             HTTP.WebSockets.upgrade(http) do clientws
                 HTTP.WebSockets.isclosed(clientws) && return

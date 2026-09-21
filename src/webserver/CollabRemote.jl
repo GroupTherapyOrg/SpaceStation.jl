@@ -595,7 +595,9 @@ struct RemoteCandidate
     pid::Int
     has_workspace::Bool # a folder is open in it: the one somebody is working in, given a choice
     is_hub::Bool        # a workspace hub (Proxy.jl): the one to tunnel to — its children are behind it
+    node::String        # the machine it runs on, as its connection file says ("" when it does not)
 end
+RemoteCandidate(status, port, secret, pid, has_workspace, is_hub) = RemoteCandidate(status, port, secret, pid, has_workspace, is_hub, "")
 
 "Parse a scan's output. `nothing` when the scan did not run to completion — an SSH failure is not a verdict about the node."
 function _parse_remote_candidates(out::AbstractString)::Union{Vector{RemoteCandidate},Nothing}
@@ -611,7 +613,8 @@ function _parse_remote_candidates(out::AbstractString)::Union{Vector{RemoteCandi
         pid = length(words) >= 2 ? something(tryparse(Int, words[2]), 0) : 0
         reg = _parse_remote_registry(rest)
         reg === nothing && continue
-        push!(cands, RemoteCandidate(status, reg.port, reg.secret, pid, occursin(r"\"workspace\": \"", rest), occursin(r"\"hub\": true", rest)))
+        push!(cands, RemoteCandidate(status, reg.port, reg.secret, pid, occursin(r"\"workspace\": \"", rest), occursin(r"\"hub\": true", rest),
+            (m = match(r"\"node\": \"([^\"\t\n]+)\"", rest); m === nothing ? "" : String(m.captures[1]))))
     end
     cands
 end
@@ -694,29 +697,54 @@ end
 # to the server you know, look for a new one only when it is gone.)
 known_remotes_path() = joinpath(collab_registry_dir(), "known-remotes.tsv")
 
-function _read_known_remotes()::Dict{String,Tuple{Int,String}}
-    d = Dict{String,Tuple{Int,String}}()
+const KnownRemote = @NamedTuple{port::Int, secret::String, node::String}
+
+function _read_known_remotes()::Dict{String,KnownRemote}
+    d = Dict{String,KnownRemote}()
     path = known_remotes_path()
     isfile(path) || return d
     try
         for line in eachline(path)
             parts = split(line, '\t')
-            length(parts) == 3 || continue
+            length(parts) == 4 || continue
             port = tryparse(Int, parts[2])
-            port === nothing || (d[String(parts[1])] = (port, String(parts[3])))
+            port === nothing || (d[String(parts[1])] = (port=port, secret=String(parts[3]), node=String(parts[4])))
         end
     catch
     end
     d
 end
 
-function _set_known_remote!(host::AbstractString, known::Union{Nothing,Tuple{Int,String}})
+_tsv_safe(x::AbstractString) = !isempty(x) && !occursin(r"[\t\r\n]", x)
+
+function _set_known_remote!(host::AbstractString, known::Union{Nothing,KnownRemote})
     try
         d = _read_known_remotes()
-        known === nothing ? delete!(d, String(host)) : (d[String(host)] = known)
+        if known === nothing
+            delete!(d, String(host))
+        elseif _tsv_safe(host) && _tsv_safe(known.secret) && _tsv_safe(known.node)
+            d[String(host)] = known
+        else
+            return # no node on record (an older server), or a name that does not fit a line: not remembered
+        end
         mkpath(collab_registry_dir())
-        _write_private_file(known_remotes_path(), join(["$(h)\t$(v[1])\t$(v[2])\n" for (h, v) in sort(collect(d); by=first)]))
+        _write_private_file(known_remotes_path(), join(["$(h)\t$(v.port)\t$(v.secret)\t$(v.node)\n" for (h, v) in sort(collect(d); by=first)]))
     catch
+    end
+end
+
+"""
+Which machine answers at the other end of the tunnel, by its own account (`/ping` carries it, no
+secret needed). Asked BEFORE the remembered secret is sent anywhere: an SSH alias can land on a
+different machine than last time (round-robin login nodes), where that port may belong to someone
+else's server, and a secret in a request is a secret handed over.
+"""
+function _tunnel_node(local_port::Integer)::String
+    try
+        resp = HTTP.get("http://127.0.0.1:$(local_port)/ping"; connect_timeout=3, readtimeout=10, retry=false, redirect=false, status_exception=false, cookies=false)
+        resp.status == 200 ? String(HTTP.header(resp, "X-SpaceStation-Node", "")) : ""
+    catch
+        ""
     end
 end
 
@@ -731,24 +759,48 @@ function _tunnel_reaches_server(local_port::Integer, secret::AbstractString; tim
     end
 end
 
-"Try the server this host gave us last time. True when the session is ready; false leaves `r` clean for discovery."
-function _reconnect_known_remote!(r::RemoteSession; known=get(_read_known_remotes(), r.host, nothing), open_tunnel=_open_tunnel!, reaches=_tunnel_reaches_server)::Bool
+"""
+Try the server this host gave us last time. True when the task is finished (ready, or cancelled);
+false hands over to discovery. The entry is forgotten only on a VERDICT, the tunnel came up and the
+other end is not our server. A tunnel that did not come up (a laptop just woke, the hop is slow)
+says nothing about the server, and forgetting it then would send every wake-up through discovery.
+The wait on a busy port is short here: discovery knows a busy server by its pid, this only
+remembers a number.
+"""
+function _reconnect_known_remote!(r::RemoteSession; known=get(_read_known_remotes(), r.host, nothing),
+        open_tunnel=_open_tunnel!, node_of=_tunnel_node, reaches=_tunnel_reaches_server, after_ready=_update_remote_clone_later)::Bool
     known === nothing && return false
-    remote_port, secret = known
     r.state = "tunneling"
     r.detail = "reconnecting to the SpaceStation server already running on $(r.host)"
-    outcome, local_port = open_tunnel(r, remote_port; attempts=1)
-    outcome == :cancelled && return true # the caller's next bail check ends the task
-    if outcome == :ok && reaches(local_port, secret)
-        _mark_remote_ready!(r, local_port, remote_port, secret)
-        return true
+    outcome, local_port = open_tunnel(r, known.port; attempts=1, polls=45, busy_polls=6)
+    outcome == :cancelled && return true
+    if outcome == :ok
+        if node_of(local_port) == known.node && reaches(local_port, known.secret)
+            _remote_bail(r) && return true # disconnected while we were asking: do not mark the host active
+            _mark_remote_ready!(r, local_port, known.port, known.secret, known.node)
+            after_ready(r.host)
+            return true
+        end
+        _set_known_remote!(r.host, nothing) # somebody else's server, or ours is gone and the port reused
     end
     _kill_tunnel!(r)
-    _set_known_remote!(r.host, nothing) # gone, or somebody else's server on that port now
+    _remote_bail(r) && return true
+    local_port > 0 && _hold_port!(r, local_port) # a tab reloading during discovery gets our page, not a refusal
     false
 end
 
-function _mark_remote_ready!(r::RemoteSession, local_port::Integer, remote_port::Integer, secret::AbstractString)
+# Discovery fast-forwards the node's clone on every connect; a reconnect that skips discovery would
+# leave a long-lived node on old code forever. Same fetch, in the background, no server touched: the
+# next server started on the node runs the new code.
+function _update_remote_clone_later(host::String)
+    @async try
+        _maybe_update_remote_clone!(host)
+    catch
+    end
+    nothing
+end
+
+function _mark_remote_ready!(r::RemoteSession, local_port::Integer, remote_port::Integer, secret::AbstractString, node::AbstractString="")
     remote = (port=remote_port, secret=String(secret))
     r.local_port = local_port
     r.secret = remote.secret
@@ -768,8 +820,8 @@ function _mark_remote_ready!(r::RemoteSession, local_port::Integer, remote_port:
     r.state = "ready"
     r.detail = "connected — the workspace runs on $(r.host)"
     # remembered for the next connect: see "the server we used last time". (A reconnect through this
-    # path skips the clone update; that runs whenever discovery does, i.e. when this server is gone.)
-    _set_known_remote!(r.host, (Int(remote_port), String(secret)))
+    # path updates the node's clone in the background: see _update_remote_clone_later.)
+    _set_known_remote!(r.host, (port=Int(remote_port), secret=String(secret), node=String(node)))
 end
 
 function _remote_connect_task!(r::RemoteSession)
@@ -1027,7 +1079,7 @@ function _remote_connect_task!(r::RemoteSession)
         end
         _remote_bail(r) && return
 
-        _mark_remote_ready!(r, local_port, remote.port, remote.secret)
+        _mark_remote_ready!(r, local_port, remote.port, remote.secret, remote.node)
     catch e
         r.state = "error"
         r.detail = sprint(showerror, e)

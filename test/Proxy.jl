@@ -79,6 +79,7 @@ end
                 @test Pluto._tunnel_reaches_server(hub_port, hub_secret)
                 @test !Pluto._tunnel_reaches_server(hub_port, "not-the-secret")
                 @test !Pluto._tunnel_reaches_server(child_port, hub_secret)
+                @test Pluto._tunnel_node(hub_port) == gethostname()
                 r = hget("$base/api/v1/config?secret=$hub_secret")
                 @test occursin("\"hub\": true", body(r)) || occursin("\"hub\":true", body(r))
                 @test occursin(wid, body(r))
@@ -184,7 +185,7 @@ end
                     dead = run(`sleep 0.2`; wait=false); dead_pid = getpid(dead); wait(dead)
                     write(regfile, replace(original, "\"pid\": $(getpid())" => "\"pid\": $(dead_pid)"))
                     @test Pluto._find_local_server(Pluto.tamepath(ws)) === nothing   # the port answers, the writer is gone
-                    @test !isfile(regfile)                                           # and the corpse is removed
+                    @test isfile(regfile)                                            # skipped, never deleted: the next server renames over this name
                     write(regfile, original)
                 end
                 @test Pluto._find_local_server(Pluto.tamepath(ws); pid=getpid()) !== nothing
@@ -193,8 +194,14 @@ end
                 # a hub holding the wrong secret (it read a dead child's file) heals on the first 403
                 held = lock(() -> Pluto.LOCAL_SESSIONS[Pluto.tamepath(ws)], Pluto.LOCAL_SESSIONS_LOCK)
                 held.secret = "stale000"
+                lock(() -> empty!(Pluto._credential_refreshes), Pluto._credential_refreshes_lock)
                 @test hget("$base/api/v1/notebooks?secret=$hub_secret").status == 200
                 @test held.secret == child_secret
+                # at most one registry walk per session every few seconds, however many 403s arrive
+                held.secret = "stale001"
+                @test hget("$base/api/v1/notebooks?secret=$hub_secret").status == 403
+                lock(() -> empty!(Pluto._credential_refreshes), Pluto._credential_refreshes_lock)
+                @test hget("$base/api/v1/notebooks?secret=$hub_secret").status == 200
 
                 # an id nobody has is answered from the miss cache, not a registry walk per request
                 hget("http://127.0.0.1:$hub_port/w/ffffffffffffffff/api/v1/notebooks?secret=$hub_secret")

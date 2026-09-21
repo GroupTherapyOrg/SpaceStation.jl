@@ -57,7 +57,7 @@ _find_local_server_now(path::String; pid::Union{Nothing,Integer}=nothing) = (wan
 "Is a process with this pid running on this machine? (Unix: signal 0. Elsewhere we cannot tell cheaply, so: yes.)"
 function _pid_alive(pid::Integer)::Bool
     Sys.isunix() || return true
-    pid > 0 || return false
+    0 < pid <= typemax(Cint) || return false
     ccall(:kill, Cint, (Cint, Cint), pid, 0) == 0 || Libc.errno() == Libc.EPERM
 end
 
@@ -70,8 +70,9 @@ nothing: ports are reused, and the next server for the same folder usually gets 
 it binds that port BEFORE it rewrites the file. So a file only counts if the process that wrote it
 is still running (its `pid`), and a caller that spawned the server passes that `pid` and accepts no
 other file. Without this the hub adopted a dead child's file while the new child held its port, and
-relayed every request with the dead child's secret: 403, forever. A same-node file whose process is
-gone is removed on sight.
+relayed every request with the dead child's secret: 403, forever. A dead process's file is skipped,
+not deleted: the next server for the port renames its own file over that very name, and a delete
+decided on text read a moment ago could remove the new file instead.
 """
 function _scan_registry_now(matches::Function; pid::Union{Nothing,Integer}=nothing)
     me = gethostname()
@@ -92,11 +93,8 @@ function _scan_registry_now(matches::Function; pid::Union{Nothing,Integer}=nothi
         matches(ws_path) || continue
         pid_m = match(r"\"pid\": (\d+)", txt)
         if pid_m !== nothing
-            file_pid = parse(Int, pid_m.captures[1])
-            if !_pid_alive(file_pid)
-                node_m !== nothing && try rm(joinpath(dir, name); force=true) catch end
-                continue
-            end
+            file_pid = tryparse(Int, pid_m.captures[1])
+            (file_pid === nothing || !_pid_alive(file_pid)) && continue
             pid !== nothing && file_pid != pid && continue
         end
         port_m = match(r"\"port\": (\d+)", txt)
@@ -202,11 +200,21 @@ function _child_env(path::AbstractString)::Dict{String,String}
     env
 end
 
+const CREDENTIAL_REFRESH_COOLDOWN = Ref(3.0)
+const _credential_refreshes = Dict{String,Float64}()
+const _credential_refreshes_lock = ReentrantLock()
+
 """
 The child refused the hub's credentials. Read them again from its connection file; true when they
 changed (the caller retries once). A hub that holds a wrong secret has no other way to notice.
 """
 function _refresh_child_credentials!(s::LocalSession)::Bool
+    # A child has 403s of its own (a path outside the workspace, a foreign Origin), and each one
+    # lands here. The answer is a directory walk on \$HOME: at most one per session every few seconds.
+    now = time()
+    last = lock(() -> get(_credential_refreshes, s.path, 0.0), _credential_refreshes_lock)
+    now - last < CREDENTIAL_REFRESH_COOLDOWN[] && return false
+    lock(() -> (_credential_refreshes[s.path] = now), _credential_refreshes_lock)
     pid = try (s.proc !== nothing && !process_exited(s.proc)) ? getpid(s.proc) : nothing catch; nothing end
     found = _find_local_server(s.path; pid)
     found === nothing && return false
@@ -257,7 +265,7 @@ function shutdown_local_session!(path::String)
     end
     if found !== nothing
         try
-            HTTP.post("http://127.0.0.1:$(found.port)/api/v1/shutdown?secret=$(HTTP.escapeuri(found.secret))";
+            HTTP.post("http://127.0.0.1:$(found.port)/api/v1/shutdown?secret=$(HTTP.escapeuri(found.secret))"; cookies=false,
                 connect_timeout=3, readtimeout=4, retry=false, status_exception=false)
         catch
         end
