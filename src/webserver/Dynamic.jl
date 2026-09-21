@@ -374,7 +374,7 @@ responses[:update_notebook] = function response_update_notebook(🙋::ClientRequ
     
         send_notebook_changes!(🙋; commentary=Dict(:update_went_well => :👍))
     catch ex
-        @error "Update notebook failed"  🙋.body["updates"] exception=(ex, stacktrace(catch_backtrace()))
+        @error "Update notebook failed"  🙋.body["updates"] exception=(ex, catch_backtrace())
         response = Dict(
             :update_went_well => :👎,
             :why_not => sprint(showerror, ex),
@@ -602,7 +602,7 @@ responses[:request_js_link_response] = function response_request_js_link_respons
         
         putclientupdates!(🙋.session, 🙋.initiator, UpdateMessage(:🐤, result, nothing, nothing, 🙋.initiator))
     catch ex
-        @error "Error in request_js_link_response" exception=(ex, stacktrace(catch_backtrace()))
+        @error "Error in request_js_link_response" exception=(ex, catch_backtrace())
     end
 end
 

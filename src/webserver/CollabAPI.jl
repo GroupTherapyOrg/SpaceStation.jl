@@ -149,7 +149,7 @@ node-local file alone. Removed at shutdown, best-effort; a leftover is harmless,
 """
 function legacy_registry_dir()::Union{Nothing,String}
     isempty(get(ENV, "SPACESTATION_STATE_HOME", "")) && return nothing
-    legacy = joinpath(get(ENV, "XDG_STATE_HOME", joinpath(homedir(), ".local", "state")), "pluto", "servers")
+    legacy = joinpath(get(ENV, "XDG_STATE_HOME", joinpath(user_home(), ".local", "state")), "pluto", "servers")
     legacy == collab_registry_dir() ? nothing : legacy
 end
 
@@ -316,7 +316,10 @@ exhausted budget must cost nothing more, not one `readdir` per folder it decline
 # Offload.jl): the sidebar asks for listings every 10s, and one `readdir` on a networked home that is
 # busy with somebody's precompile would otherwise hold the thread that serves the terminal and every
 # notebook. These handlers read `session.options` (immutable after startup) and nothing else shared.
-_offloaded(handler) = (request::HTTP.Request) -> offload_blocking(() -> handler(request))
+#
+# In a hub that is not enough (FileHelper.jl): there these handlers do not run at all, the request is
+# forwarded to a file-helper process, which runs them and may get stuck doing so.
+_offloaded(handler) = (request::HTTP.Request) -> file_helpers_active() ? relay_to_file_helper(request) : offload_blocking(() -> handler(request))
 
 function _workspace_entries(dir::String; depth::Int=6, budget::Ref{Int}=Ref(2000))
     root = _TreeListing()
@@ -815,6 +818,9 @@ function register_collab_api!(router, session::ServerSession)
         HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], body * "\n")
     end
     HTTP.register!(router, "GET", "/api/v1/browse", _offloaded(serve_api_browse))
+    HTTP.register!(router, "GET", "/api/v1/helper/stat", serve_helper_stat) # these answer in a file helper only (FileHelper.jl)
+    HTTP.register!(router, "POST", "/api/v1/helper/private_file", serve_helper_private_file)
+    HTTP.register!(router, "DELETE", "/api/v1/helper/private_file", serve_helper_private_file)
 
     function serve_api_workspace_open(request::HTTP.Request)
         query = HTTP.queryparams(HTTP.URI(request.target))
@@ -901,7 +907,13 @@ function register_collab_api!(router, session::ServerSession)
     # whole shape in one go — the hub does not, it expands folders one at a time via /listing below.
     # Under a hub's `/w/<id>/` the folder is the request's workspace (Proxy.jl records it in the
     # context); at the root it is the server's own.
-    _workspace_root(request::HTTP.Request) = get(request.context, :workspace_root, session.options.server.workspace_folder)
+    function _workspace_root(request::HTTP.Request)
+        if is_file_helper_process() # the hub names the workspace a forwarded request is about
+            root = HTTP.header(request, WORKSPACE_ROOT_HEADER, "")
+            isempty(root) || return HTTP.unescapeuri(root)
+        end
+        get(request.context, :workspace_root, session.options.server.workspace_folder)
+    end
 
     function serve_api_workspace(request::HTTP.Request)
         ws = _workspace_root(request)
@@ -996,6 +1008,12 @@ function register_collab_api!(router, session::ServerSession)
         query = HTTP.queryparams(HTTP.URI(request.target))
         haskey(query, "path") || return _api_error(400, "pass ?path=/abs/file", false)
         path = tamepath(query["path"])
+        if file_helpers_active()
+            # a hub: close the notebook where it runs (the workspace's child), then let a helper delete
+            child = get(request.context, :workspace_session, nothing)
+            child === nothing || _close_notebook_in_child(child, path)
+            return relay_to_file_helper(request)
+        end
         offload_blocking(() -> isfile(path)) || return _api_error(404, "not a file: $path", false)
         # if it's a notebook running in this session, shut it down first
         for nb in collect(values(session.notebooks))

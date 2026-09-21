@@ -1,4 +1,5 @@
 using Test
+import HTTP
 import SpaceStation as Pluto
 
 @testset "Pinning program code mapped from network filesystems" begin
@@ -84,4 +85,31 @@ end
         write(joinpath(v1, "memory.limit_in_bytes"), "$(10 * 2^30)\n")
         @test Pluto._job_memory_budget(; root, group="", group_v1="/slurm/job_9") == 2^30
     end
+end
+
+@testset "a hub's logger never symbolicates a backtrace" begin
+    import Logging
+    seen = Dict{Symbol,Any}()
+    struct CaptureLogger <: Logging.AbstractLogger; end
+    Logging.min_enabled_level(::CaptureLogger) = Logging.Debug
+    Logging.shouldlog(::CaptureLogger, args...) = true
+    Logging.handle_message(::CaptureLogger, level, message, args...; kwargs...) = (empty!(seen); merge!(seen, Dict(kwargs)); seen[:message] = message)
+    Logging.with_logger(Pluto.NoBacktraceLogger(CaptureLogger())) do
+        try error("boom") catch e
+            @warn "it failed" exception = (e, catch_backtrace()) other = 3 bare = catch_backtrace() plain = e
+        end
+    end
+    @test seen[:message] == "it failed" && seen[:other] == 3
+    @test seen[:exception] == "boom" && seen[:plain] == "boom"          # the error's own text, as a string
+    @test !haskey(seen, :bare)                                          # a backtrace never reaches the printer
+    # wrappers that carry a trace of their own are opened first
+    failed = try fetch(@async error("inner")) catch e; e end
+    @test Pluto.error_text(failed) == "inner" && !occursin("Stacktrace", Pluto.error_text(failed))
+    # HTTP.jl builds its messages eagerly, backtrace included: its message blocks must never run
+    ran = Ref(false)
+    Logging.with_logger(Pluto.NoBacktraceLogger(CaptureLogger())) do
+        Base.eval(HTTP, :(f_for_test(ran) = @error begin ran[] = true; "symbolicated" end))
+        Base.invokelatest(HTTP.f_for_test, ran)
+    end
+    @test !ran[] && occursin("HTTP reported an error", String(seen[:message]))
 end

@@ -170,3 +170,64 @@ function keep_code_pinned!()
     (locked + touched) > 0 && @info "SpaceStation: this program is mapped from a network filesystem; $(locked ÷ 2^20) MB of it is now locked in memory and $(touched ÷ 2^20) MB read ahead, so that running it never waits on that filesystem"
     nothing
 end
+
+
+# --- no stack traces in a process that must never wait on the depot ------------------------------
+#
+# Turning a backtrace into function names and line numbers reads debug information out of the
+# system image and the package images: it opens those files and maps parts of them that nothing
+# above has touched. On a cluster that is a read from the depot's filesystem, made while holding the
+# logging lock, and errors happen exactly when that filesystem hangs (a relay times out, a browser
+# gives up on a request). Measured in test/hangfs: a client disconnecting during a hang made the
+# hub open HTTP's package image, and the hub stopped for the length of the hang.
+# Every logging call goes through the logger, including the ones in packages we do not own, so that
+# is where the backtrace is dropped: the message and the error's own text stay.
+import Logging
+struct NoBacktraceLogger{L<:Logging.AbstractLogger} <: Logging.AbstractLogger
+    inner::L
+end
+Logging.min_enabled_level(l::NoBacktraceLogger) = Logging.min_enabled_level(l.inner)
+# HTTP.jl builds its error messages eagerly, backtrace and all (`current_exceptions_to_string` inside
+# the message block), so by the time a message reaches `handle_message` the depot has been read. A
+# message block only runs when `shouldlog` says yes: for HTTP's own modules it says no, and one
+# plain line is printed in its place.
+function Logging.shouldlog(l::NoBacktraceLogger, level, _module, group, id)
+    if _module isa Module && nameof(Base.moduleroot(_module)) === :HTTP
+        level >= Logging.Error && Logging.shouldlog(l.inner, level, _module, group, id) &&
+            Logging.handle_message(l.inner, level, "HTTP reported an error (details are not printed in a hub: see PinCode.jl)", _module, group, id, "", 0)
+        return false
+    end
+    Logging.shouldlog(l.inner, level, _module, group, id)
+end
+Logging.catch_exceptions(l::NoBacktraceLogger) = Logging.catch_exceptions(l.inner)
+
+"What an error says, without a stack trace. The wrappers that carry a trace of their own are opened first."
+function error_text(e)::String
+    e isa TaskFailedException && return error_text(e.task.result)
+    e isa CapturedException && return error_text(e.ex)
+    e isa CompositeException && return join((error_text(x) for x in e.exceptions), "; ")
+    e isa Exception ? sprint(showerror, e) : string(e)
+end
+
+function Logging.handle_message(l::NoBacktraceLogger, level, message, _module, group, id, file, line; kwargs...)
+    cleaned = Pair{Symbol,Any}[]
+    for (k, v) in kwargs
+        if v isa Tuple && length(v) == 2 && v[1] isa Exception
+            push!(cleaned, k => error_text(v[1]))               # (exception, backtrace): keep what it says
+        elseif v isa Exception
+            push!(cleaned, k => error_text(v))
+        elseif v isa AbstractVector && !isempty(v) && eltype(v) <: Union{Ptr{Nothing},Base.InterpreterIP,Base.StackTraces.StackFrame}
+            continue                                            # a bare backtrace
+        else
+            push!(cleaned, k => v)
+        end
+    end
+    Logging.handle_message(l.inner, level, message, _module, group, id, file, line; cleaned...)
+end
+
+"For a hub and its helpers: from here on, no log message symbolicates a backtrace. Idempotent."
+function log_without_backtraces!()
+    current = Logging.global_logger()
+    current isa NoBacktraceLogger || Logging.global_logger(NoBacktraceLogger(current))
+    nothing
+end

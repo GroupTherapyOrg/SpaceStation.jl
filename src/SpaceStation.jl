@@ -29,12 +29,26 @@ end
 const frontend_dist_exists = FRONTEND_DIR !== FRONTEND_DIST_DIR
 const SAMPLE_DIR = @path(joinpath(ROOT_DIR, "sample"))
 const RUNNER_DIR = @path(joinpath(ROOT_DIR, "src", "runner"))
+# A RelocatableFolders path re-checks that the install directory exists EVERY time a path is built
+# from it (`ispath`, a system call). Measured on a cluster node, where the install sits on an NFS
+# home: an idle hub asked that filesystem about `frontend/` eight times a second, and one such call
+# landing in a filesystem hang freezes the whole process (evaluation/PinCode.jl says why). Where the
+# directories are does not change while the process runs: resolve each once.
+const _resolved_dirs = Dict{String,String}()
+const _resolved_dirs_lock = ReentrantLock()
+function _resolved_dir(key::String, dir)
+    # never while precompiling: a path resolved then would be baked into a cache that may be moved
+    ccall(:jl_generating_output, Cint, ()) == 1 && return String(dir)
+    lock(_resolved_dirs_lock) do
+        get!(() -> String(dir), _resolved_dirs, key)
+    end
+end
 function project_relative_path(root, xs...)
-    root == joinpath("src", "runner") ? joinpath(RUNNER_DIR, xs...) :
-    root == "frontend-dist" && frontend_dist_exists ? joinpath(FRONTEND_DIST_DIR, xs...) :
-    root == "frontend" ? joinpath(FRONTEND_DIR, xs...) :
-    root == "sample" ? joinpath(SAMPLE_DIR, xs...) :
-        normpath(joinpath(pkgdir(Pluto), root, xs...))
+    root == joinpath("src", "runner") ? joinpath(_resolved_dir("runner", RUNNER_DIR), xs...) :
+    root == "frontend-dist" && frontend_dist_exists ? joinpath(_resolved_dir("frontend-dist", FRONTEND_DIST_DIR), xs...) :
+    root == "frontend" ? joinpath(_resolved_dir("frontend", FRONTEND_DIR), xs...) :
+    root == "sample" ? joinpath(_resolved_dir("sample", SAMPLE_DIR), xs...) :
+        normpath(joinpath(_resolved_dir("pkgdir", pkgdir(Pluto)), root, xs...))
 end
 
 import Pkg
@@ -95,6 +109,7 @@ include("./webserver/MsgPack.jl")
 include("./webserver/SessionActions.jl")
 include("./webserver/Static.jl")
 include("./webserver/Authentication.jl")
+include("./webserver/UserEnv.jl")
 @static if Sys.iswindows()
     include("./webserver/PTYWindows.jl")  # ConPTY-backed PTY (Windows 10 1809+)
 else
@@ -107,6 +122,7 @@ include("./webserver/CollabAPI.jl")
 include("./webserver/CollabRemote.jl")
 include("./webserver/CollabLocal.jl")
 include("./webserver/Proxy.jl")
+include("./webserver/FileHelper.jl")
 include("./webserver/Router.jl")
 include("./webserver/Dynamic.jl")
 include("./webserver/REPLTools.jl")

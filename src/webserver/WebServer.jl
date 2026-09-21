@@ -221,10 +221,21 @@ function run!(session::ServerSession)
     # connection file: lets external tools (e.g. coding agents) discover this server's port and secret.
     # Keep the path: the name carries the hostname, which can change while we run (VPN on/off), and
     # shutdown must remove the file we wrote, not the one today's hostname would name.
-    registry_file = write_collab_registry_file(session, port; announce_legacy=true)
-    # agent surface: put `pluto-collab` on PATH next to the app, and (opt-in) seed the workspace's AGENTS.md
-    ensure_pluto_collab_installed()
-    maybe_write_agents_md(session)
+    # A hub and its helpers never symbolicate a backtrace: that reads the depot (PinCode.jl).
+    (session.options.server.hub || is_file_helper_process()) && log_without_backtraces!()
+    # A file helper (FileHelper.jl) is nobody's server but its hub's: it is not announced, and installs nothing.
+    helper = is_file_helper_process()
+    # A hub decides here, once, that it never touches the user's files in its own process; its file
+    # helpers come up in the background, and until one answers those requests get 504 (FileHelper.jl).
+    session.options.server.hub && !helper && start_file_helpers!()
+    # The copy for older clients goes into the shared home: a hub with helpers has a helper write it.
+    registry_file = helper ? "" : write_collab_registry_file(session, port; announce_legacy=!file_helpers_active())
+    file_helpers_active() && announce_legacy_via_helper(registry_file)
+    if !helper
+        # agent surface: put `pluto-collab` on PATH next to the app, and (opt-in) seed the workspace's AGENTS.md
+        ensure_pluto_collab_installed()
+        maybe_write_agents_md(session)
+    end
 
     on_shutdown() = @sync begin
         # Triggered by HTTP.jl
@@ -233,7 +244,13 @@ function run!(session::ServerSession)
             isfile(registry_file) && rm(registry_file)
         catch
         end
-        remove_collab_registry_file(port; legacy=true)
+        if file_helpers_active()
+            retract_legacy_via_helper(registry_file)
+            remove_collab_registry_file(port)
+        elseif !helper
+            remove_collab_registry_file(port; legacy=true)
+        end
+        stop_file_helpers!()
         # tear down any SSH remote tunnels so the `ssh -N -L` children don't orphan onto the terminal
         try
             close_all_remote_tunnels()
@@ -264,6 +281,12 @@ function run!(session::ServerSession)
     server = HTTP.listen!(hostIP, port; stream=true, server=serversocket, on_shutdown, verbose=-1) do http::HTTP.Stream
         # A workspace served by this hub: `/w/<id>/…` (see Proxy.jl). The hub answers its own part of it
         # and relays the notebook part to the workspace's child server.
+        # A file helper answers the handful of routes its hub forwards, and nothing else (FileHelper.jl).
+        if is_file_helper_process() && !file_helper_serves(HTTP.URI(http.message.target).path)
+            http.message.body = read(http)
+            _write_response!(http, HTTP.Response(404, ["Content-Type" => "text/plain"], "not served by a file helper\n"))
+            return
+        end
         let ws = split_workspace_target(http.message.target; base_url=session.options.server.base_url)
             if ws !== nothing
                 handle_workspace_request(http, session, app, ws[1], ws[2])
@@ -342,7 +365,7 @@ function run!(session::ServerSession)
                             if ex isa InterruptException || ex isa HTTP.WebSockets.WebSocketError || ex isa EOFError || (ex isa Base.IOError && occursin("connection reset", ex.msg))
                                 # that's fine!
                             else
-                                bt = stacktrace(catch_backtrace())
+                                bt = catch_backtrace()
                                 @warn "Reading WebSocket client stream failed for unknown reason:" exception = (ex, bt)
                             end
                         finally
@@ -360,7 +383,7 @@ function run!(session::ServerSession)
                     elseif ex isa ArgumentError && occursin("stream is closed", ex.msg)
                         # that's fine!
                     else
-                        bt = stacktrace(catch_backtrace())
+                        bt = catch_backtrace()
                         @warn "HTTP upgrade failed for unknown reason" exception = (ex, bt)
                     end
                 finally

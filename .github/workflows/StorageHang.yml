@@ -1,0 +1,74 @@
+name: Storage hang stress test
+
+# A hub must keep answering while the filesystems that hold Julia, the depot and the checkout are
+# hung: that is a normal day on a cluster (NFS home, BeeGFS/Lustre depot). test/hangfs/hangtrace.c makes
+# chosen directory trees hang on demand for one process, without root, so this runs on a plain runner.
+on:
+    workflow_dispatch:
+    push:
+        branches: [main]
+        paths: ["src/**", "test/hangfs/**", ".github/workflows/StorageHang.yml", "Project.toml"]
+    pull_request:
+        paths: ["src/**", "test/hangfs/**", ".github/workflows/StorageHang.yml", "Project.toml"]
+
+jobs:
+    hang:
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        steps:
+            - uses: actions/checkout@v7
+            - uses: julia-actions/setup-julia@v3
+              with:
+                  version: "1.12"
+            - uses: julia-actions/cache@v3
+            - name: Install and precompile
+              run: julia --project=. -e 'import Pkg; Pkg.instantiate(); import SpaceStation'
+            - name: The hang injector itself (system-call level, so libuv's raw calls count too)
+              run: |
+                  set -e
+                  gcc -O2 -o /tmp/hangtrace test/hangfs/hangtrace.c
+                  d=$(mktemp -d); mkdir -p $d/tree/sub; echo hello > $d/tree/sub/f; echo other > $d/outside
+                  /tmp/hangtrace -p $d/tree -l $d/log -- sh -c "cat $d/tree/sub/f $d/outside; ls $d/tree >/dev/null; cd $d/tree && cat sub/f"
+                  echo "--- audit:"; cat $d/log
+                  grep -q "sub/f" $d/log && ! grep -q outside $d/log
+                  # Julia's stat/readdir go through libuv's raw system calls: they must be seen
+                  /tmp/hangtrace -p $d/tree -l $d/log2 -- julia --startup-file=no -e "isdir(\"$d/tree/sub\"); readdir(\"$d/tree\"); read(\"$d/tree/sub/f\")"
+                  echo "--- julia audit:"; grep "$d/tree" $d/log2 | cut -f1 | sort | uniq -c
+                  [ $(grep -c "$d/tree" $d/log2) -ge 3 ]
+                  touch $d/hang; ( sleep 3; rm -f $d/hang ) &
+                  s=$(date +%s); /tmp/hangtrace -p $d/tree -f $d/hang -- cat $d/tree/sub/f; e=$(date +%s)
+                  [ $((e - s)) -ge 2 ] || { echo "the injector did not block"; exit 1; }
+                  touch $d/hang; s=$(date +%s); /tmp/hangtrace -p $d/tree -f $d/hang -- cat $d/outside; e=$(date +%s); rm -f $d/hang
+                  [ $((e - s)) -le 1 ] || { echo "a path outside the tree was blocked"; exit 1; }
+            - name: "runtime.sh: build the node-local runtime, keep it as one file, restore it"
+              run: |
+                  set -e
+                  J=$(which julia)   # as found on PATH, symlink or not: the script asks julia where it really lives
+                  out=$(bash src/webserver/node/runtime.sh "$J" "$GITHUB_WORKSPACE" /tmp/bundles); echo "$out"
+                  RT=${out#RUNTIME }; [ -x "$RT/julia/bin/julia" ]
+                  du -sh "$RT"; case "$RT" in /tmp/spacestation-*) ;; *) echo "not in the fixed per-user place"; exit 1 ;; esac
+                  [ "$(bash src/webserver/node/runtime.sh "$J" "$GITHUB_WORKSPACE" /tmp/bundles)" = "RUNTIME $RT" ]   # already staged: at once
+                  for i in $(seq 1 120); do ls /tmp/bundles/*.sha256 >/dev/null 2>&1 && break; sleep 2; done
+                  ls -la /tmp/bundles
+                  rm -rf "$RT"                                                                                        # another node, another job
+                  s=$(date +%s); [ "$(bash src/webserver/node/runtime.sh "$J" "$GITHUB_WORKSPACE" /tmp/bundles)" = "RUNTIME $RT" ]; e=$(date +%s)
+                  echo "restored from the bundle in $((e - s)) s"
+                  # the caches in the bundle are the ones that get loaded: nothing is compiled again
+                  log=$(cd "$RT" && env -u JULIA_LOAD_PATH HOME="$RT/home" TMPDIR="$RT/tmp" JULIA_DEPOT_PATH="$RT/depot:" JULIA_CPU_TARGET="$(cat $RT/cpu-target)" \
+                        "$RT/julia/bin/julia" --startup-file=no --project="$RT/app" -e 'import SpaceStation; print("loaded")' 2>&1)
+                  echo "$log" | tail -2
+                  echo "$log" | grep -qi precompil && { echo "the restored runtime recompiled"; exit 1; }
+                  echo "RT=$RT" >> "$GITHUB_ENV"
+                  # a damaged bundle is rebuilt, never trusted
+                  echo garbage >> /tmp/bundles/*.tar.gz; rm -rf "$RT"
+                  bash src/webserver/node/runtime.sh "$J" "$GITHUB_WORKSPACE" /tmp/bundles 2>&1 | grep -E "damaged|RUNTIME"
+            - name: A hub started the launcher's way outlives a hang of the whole home directory and the Julia install
+              run: |
+                  julia_root=$(dirname $(dirname $(readlink -f $(which julia))))
+                  LAUNCHER=1 SPACESTATION_BUNDLE_DIR=/tmp/bundles bash test/hangfs/stress_hub.sh "$GITHUB_WORKSPACE" "$(readlink -f $(which julia))" 2471 "$HOME:$julia_root" 40
+            - name: A listing of a hung directory stalls a file helper, never the hub
+              run: |
+                  julia_root=$(dirname $(dirname $(readlink -f $(which julia))))
+                  mkdir -p "$GITHUB_WORKSPACE/userfiles" && touch "$GITHUB_WORKSPACE/userfiles/a.jl"
+                  LAUNCHER=1 SPACESTATION_BUNDLE_DIR=/tmp/bundles SCENARIO=userfiles USERFILES_DIR="$GITHUB_WORKSPACE/userfiles" \
+                    bash test/hangfs/stress_hub.sh "$GITHUB_WORKSPACE" "$(readlink -f $(which julia))" 2472 "$HOME:$julia_root" 40

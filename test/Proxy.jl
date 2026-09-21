@@ -81,7 +81,8 @@ end
     state = mktempdir()
     ws = mktempdir()
     write(joinpath(ws, "notes.txt"), "hello")
-    withenv("XDG_STATE_HOME" => state) do
+    # file helpers have their own tests (FileHelper.jl); here they would only add two Julia starts
+    withenv("XDG_STATE_HOME" => state, "SPACESTATION_FILE_HELPER" => "0") do
         child_session = Pluto.ServerSession(; options=Pluto.Configuration.from_flat_kwargs(;
             workspace_use_distributed=false, launch_browser=false, workspace=ws, port_hint=2450, on_code_change="autorun"))
         child = Pluto.run!(child_session)
