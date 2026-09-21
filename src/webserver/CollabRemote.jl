@@ -680,8 +680,102 @@ function _remote_bail(r::RemoteSession)::Bool
     true
 end
 
+# --- the server we used last time -----------------------------------------------------------------
+#
+# Discovery asks the node questions over SSH: is it reachable, what is running, is the clone current.
+# Each one starts a shell on the node, and a shell starts by reading its startup files from $HOME,
+# which on a cluster is a network filesystem that stalls for seconds to minutes. Three of those in a
+# row, in front of a server that was up the whole time, is how "Connecting…" sat for minutes while
+# the workspace behind it was fine. A tunnel starts no shell. So the port and secret of the server
+# a host last gave us are remembered (private file, like the connection files), and a connect tries
+# exactly that first: tunnel, then one authenticated request through it. Only the server that owns
+# the secret answers 200, so a different server on a reused port, or a dead node, fails this step
+# and the full discovery below runs as before. (Same idea as an editor's remote reconnect: go back
+# to the server you know, look for a new one only when it is gone.)
+known_remotes_path() = joinpath(collab_registry_dir(), "known-remotes.tsv")
+
+function _read_known_remotes()::Dict{String,Tuple{Int,String}}
+    d = Dict{String,Tuple{Int,String}}()
+    path = known_remotes_path()
+    isfile(path) || return d
+    try
+        for line in eachline(path)
+            parts = split(line, '\t')
+            length(parts) == 3 || continue
+            port = tryparse(Int, parts[2])
+            port === nothing || (d[String(parts[1])] = (port, String(parts[3])))
+        end
+    catch
+    end
+    d
+end
+
+function _set_known_remote!(host::AbstractString, known::Union{Nothing,Tuple{Int,String}})
+    try
+        d = _read_known_remotes()
+        known === nothing ? delete!(d, String(host)) : (d[String(host)] = known)
+        mkpath(collab_registry_dir())
+        _write_private_file(known_remotes_path(), join(["$(h)\t$(v[1])\t$(v[2])\n" for (h, v) in sort(collect(d); by=first)]))
+    catch
+    end
+end
+
+"One authenticated request through the tunnel: is the server on the other end the one that owns `secret`?"
+function _tunnel_reaches_server(local_port::Integer, secret::AbstractString; timeout::Integer=20)::Bool
+    try
+        resp = HTTP.get("http://127.0.0.1:$(local_port)/api/v1/config?secret=$(HTTP.escapeuri(secret))";
+            connect_timeout=3, readtimeout=timeout, retry=false, redirect=false, status_exception=false, cookies=false)
+        resp.status == 200
+    catch
+        false
+    end
+end
+
+"Try the server this host gave us last time. True when the session is ready; false leaves `r` clean for discovery."
+function _reconnect_known_remote!(r::RemoteSession; known=get(_read_known_remotes(), r.host, nothing), open_tunnel=_open_tunnel!, reaches=_tunnel_reaches_server)::Bool
+    known === nothing && return false
+    remote_port, secret = known
+    r.state = "tunneling"
+    r.detail = "reconnecting to the SpaceStation server already running on $(r.host)"
+    outcome, local_port = open_tunnel(r, remote_port; attempts=1)
+    outcome == :cancelled && return true # the caller's next bail check ends the task
+    if outcome == :ok && reaches(local_port, secret)
+        _mark_remote_ready!(r, local_port, remote_port, secret)
+        return true
+    end
+    _kill_tunnel!(r)
+    _set_known_remote!(r.host, nothing) # gone, or somebody else's server on that port now
+    false
+end
+
+function _mark_remote_ready!(r::RemoteSession, local_port::Integer, remote_port::Integer, secret::AbstractString)
+    remote = (port=remote_port, secret=String(secret))
+    r.local_port = local_port
+    r.secret = remote.secret
+    # a local connection file so pluto-collab and agents reach the REMOTE workspace transparently
+    try
+        dir = collab_registry_dir()
+        mkpath(dir)
+        try
+            Sys.iswindows() || chmod(dir, 0o700)
+        catch
+        end
+        path = collab_registry_path(local_port)
+        # 0o600 from creation (holds the remote's secret) — see _write_private_file.
+        _write_private_file(path, """{"pid": $(getpid()), "host": "127.0.0.1", "port": $(local_port), "node": $(_json_string(gethostname())), "secret": $(_json_string(remote.secret)), "remote_ssh_host": $(_json_string(r.host)), "spacestation_version": $(_json_string(PLUTO_VERSION_STR)), "pluto_version": $(_json_string(PLUTO_VERSION_STR)), "started_at": $(time())}\n""")
+    catch end
+    _set_active_remote!(r.host, true) # so a hub restart can put this tunnel back by itself
+    r.state = "ready"
+    r.detail = "connected — the workspace runs on $(r.host)"
+    # remembered for the next connect: see "the server we used last time". (A reconnect through this
+    # path skips the clone update; that runs whenever discovery does, i.e. when this server is gone.)
+    _set_known_remote!(r.host, (Int(remote_port), String(secret)))
+end
+
 function _remote_connect_task!(r::RemoteSession)
     try
+        _remote_bail(r) && return
+        _reconnect_known_remote!(r) && return
         _remote_bail(r) && return
         r.state = "connecting"
         r.detail = "reaching $(r.host) with your SSH keys"
@@ -933,23 +1027,7 @@ function _remote_connect_task!(r::RemoteSession)
         end
         _remote_bail(r) && return
 
-        r.local_port = local_port
-        r.secret = remote.secret
-        # a local connection file so pluto-collab and agents reach the REMOTE workspace transparently
-        try
-            dir = collab_registry_dir()
-            mkpath(dir)
-            try
-                Sys.iswindows() || chmod(dir, 0o700)
-            catch
-            end
-            path = collab_registry_path(local_port)
-            # 0o600 from creation (holds the remote's secret) — see _write_private_file.
-            _write_private_file(path, """{"pid": $(getpid()), "host": "127.0.0.1", "port": $(local_port), "node": $(_json_string(gethostname())), "secret": $(_json_string(remote.secret)), "remote_ssh_host": $(_json_string(r.host)), "spacestation_version": $(_json_string(PLUTO_VERSION_STR)), "pluto_version": $(_json_string(PLUTO_VERSION_STR)), "started_at": $(time())}\n""")
-        catch end
-        _set_active_remote!(r.host, true) # so a hub restart can put this tunnel back by itself
-        r.state = "ready"
-        r.detail = "connected — the workspace runs on $(r.host)"
+        _mark_remote_ready!(r, local_port, remote.port, remote.secret)
     catch e
         r.state = "error"
         r.detail = sprint(showerror, e)

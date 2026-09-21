@@ -503,6 +503,43 @@ drop_session!(host) = lock(() -> delete!(Pluto.REMOTE_SESSIONS, host), Pluto.REM
             @test Pluto._parse_remote_candidates("__SCAN_DONE__\n") == Pluto.RemoteCandidate[]
         end
 
+        # A connect goes back to the server the host gave us last time before it asks the node
+        # anything over SSH: a tunnel starts no shell on the node, so a stalled $HOME cannot delay it.
+        @testset "a connect tries the server it used last time first" begin
+            @test Pluto._reconnect_known_remote!(Pluto.RemoteSession("fresh-node", "connecting", "", 0, "", "", nothing, nothing, false)) == false # nothing known
+
+            Pluto._set_known_remote!("known-node", (1234, "s3cret"))
+            Pluto._set_known_remote!("other-node", (1240, "other"))
+            @test Pluto._read_known_remotes()["known-node"] == (1234, "s3cret")
+            Sys.iswindows() || @test filemode(Pluto.known_remotes_path()) & 0o077 == 0 # holds secrets
+
+            asked = Ref{Any}(nothing)
+            fake_tunnel(r, remote_port; attempts=3) = (asked[] = (remote_port, attempts); (:ok, 45999))
+            r = add_session!(Pluto.RemoteSession("known-node", "connecting", "", 0, "", "", nothing, nothing, false))
+            try
+                @test Pluto._reconnect_known_remote!(r; open_tunnel=fake_tunnel, reaches=(port, secret) -> port == 45999 && secret == "s3cret")
+                @test asked[] == (1234, 1)                                  # that port, one attempt
+                @test r.state == "ready" && r.local_port == 45999 && r.secret == "s3cret"
+                @test "known-node" in Pluto._read_active_remotes()
+
+                # the port answers but it is not the server that owns the secret: forget it, discover
+                r.state = "connecting"
+                @test !Pluto._reconnect_known_remote!(r; open_tunnel=fake_tunnel, reaches=(port, secret) -> false)
+                @test !haskey(Pluto._read_known_remotes(), "known-node")
+                @test haskey(Pluto._read_known_remotes(), "other-node")    # only this host's entry goes
+                @test r.state != "ready"
+
+                # the tunnel does not come up at all (node gone): same
+                Pluto._set_known_remote!("known-node", (1234, "s3cret"))
+                @test !Pluto._reconnect_known_remote!(r; open_tunnel=(r, p; attempts=3) -> (:dead, 45999), reaches=(a, b) -> true)
+                @test !haskey(Pluto._read_known_remotes(), "known-node")
+            finally
+                Pluto.remove_collab_registry_file(45999)
+                Pluto._set_active_remote!("known-node", false)
+                lock(() -> delete!(Pluto.REMOTE_SESSIONS, "known-node"), Pluto.REMOTE_SESSIONS_LOCK)
+            end
+        end
+
         # A connect task cannot be interrupted mid-SSH-call, so a session the user cancelled or
         # replaced can still be running. If it put the placeholder back after the new session had
         # released the port, the new tunnel lost the bind and the connect failed for no visible reason.

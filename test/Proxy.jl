@@ -75,6 +75,10 @@ end
                 @test r.status == 200
                 @test occursin(Pluto._json_string(Pluto.tamepath(ws)), body(r)) # the request's workspace, not the hub's (which has none); JSON-escaped (Windows paths have backslashes)
                 @test occursin("notes.txt", body(r))
+                # the remote reconnect's identity check: only the server that owns the secret says yes
+                @test Pluto._tunnel_reaches_server(hub_port, hub_secret)
+                @test !Pluto._tunnel_reaches_server(hub_port, "not-the-secret")
+                @test !Pluto._tunnel_reaches_server(child_port, hub_secret)
                 r = hget("$base/api/v1/config?secret=$hub_secret")
                 @test occursin("\"hub\": true", body(r)) || occursin("\"hub\":true", body(r))
                 @test occursin(wid, body(r))
@@ -174,6 +178,23 @@ end
                 write(regfile, original)
                 lock(() -> empty!(Pluto._adopt_misses), Pluto._adopt_misses_lock)
                 @test hget("$base/api/v1/notebooks?secret=$hub_secret").status == 200
+
+                # a connection file is a claim: it counts only while the process that wrote it runs
+                if Sys.isunix()
+                    dead = run(`sleep 0.2`; wait=false); dead_pid = getpid(dead); wait(dead)
+                    write(regfile, replace(original, "\"pid\": $(getpid())" => "\"pid\": $(dead_pid)"))
+                    @test Pluto._find_local_server(Pluto.tamepath(ws)) === nothing   # the port answers, the writer is gone
+                    @test !isfile(regfile)                                           # and the corpse is removed
+                    write(regfile, original)
+                end
+                @test Pluto._find_local_server(Pluto.tamepath(ws); pid=getpid()) !== nothing
+                @test Pluto._find_local_server(Pluto.tamepath(ws); pid=1) === nothing # somebody else's file
+
+                # a hub holding the wrong secret (it read a dead child's file) heals on the first 403
+                held = lock(() -> Pluto.LOCAL_SESSIONS[Pluto.tamepath(ws)], Pluto.LOCAL_SESSIONS_LOCK)
+                held.secret = "stale000"
+                @test hget("$base/api/v1/notebooks?secret=$hub_secret").status == 200
+                @test held.secret == child_secret
 
                 # an id nobody has is answered from the miss cache, not a registry walk per request
                 hget("http://127.0.0.1:$hub_port/w/ffffffffffffffff/api/v1/notebooks?secret=$hub_secret")
