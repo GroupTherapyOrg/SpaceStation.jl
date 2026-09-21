@@ -45,8 +45,16 @@ import SpaceStation as Pluto
     @test l == [0x7f0000000000] && length(r) == 2            # over the job's budget: read, not locked
     @test Pluto._pin_regions(regions, 100MB; lock_region=(a, len) -> error("boom"), read_region=(a, len) -> error("boom")) == (0, 0) # never throws
 
-    buffer = zeros(UInt8, 3 * 4096)
-    @test Pluto._prefault(UInt(pointer(buffer)), UInt(length(buffer))) == 0
+    if Sys.islinux()
+        # a real file mapping, one page of file and two pages of mapping: asking never faults, touching would
+        path, io = mktemp(); write(io, zeros(UInt8, 100)); close(io)
+        fd = ccall(:open, Cint, (Cstring, Cint), path, 0)
+        page = Int(ccall(:getpagesize, Cint, ()))
+        addr = ccall(:mmap, Ptr{Cvoid}, (Ptr{Cvoid}, Csize_t, Cint, Cint, Cint, Int64), C_NULL, 2page, 1, 2, fd, 0)
+        @test addr != Ptr{Cvoid}(-1)
+        @test Pluto._prefault(UInt(addr), UInt(2page)) isa Cint    # returns, whatever the kernel says about the hole
+        ccall(:munmap, Cint, (Ptr{Cvoid}, Csize_t), addr, 2page); ccall(:close, Cint, (Cint,), fd); rm(path)
+    end
     if Sys.islinux()
         locked, touched = Pluto.pin_network_code!(; lock_region=(a, len) -> Cint(-1), read_region=(a, len) -> Cint(0))
         @test locked == 0 && touched >= 0                    # the real maps of this machine, whatever they are

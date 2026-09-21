@@ -28,7 +28,8 @@
 #     are only read once: locking those would copy them into anonymous memory, per process.
 #   • Where the system allows little locked memory (RLIMIT_MEMLOCK is a few MB on many clusters;
 #     ones with InfiniBand set it to unlimited) the pages are still read once. Most of them were
-#     never touched rather than evicted, so that alone removes most of the exposure.
+#     never touched rather than evicted, so that alone removes most of the exposure. "Read" means
+#     asking the kernel (madvise), never touching the page: see _prefault.
 #   • Once, before the server announces itself. A hang during it delays the start; a repeat later
 #     could sit inside the kernel holding the process's memory map while the collector needs it.
 #   • The total is capped at a tenth of the job's memory limit (cgroup), and at PIN_CODE_LIMIT.
@@ -78,14 +79,18 @@ end
 
 _mlock(addr::UInt, len::UInt) = ccall(:mlock, Cint, (Ptr{Cvoid}, Csize_t), Ptr{Cvoid}(addr), len)
 
-"Read one byte of every page: the page is fetched now, and stays while memory is not short."
+"""
+Ask the kernel to bring a mapping's pages in, without touching them. Touching is not safe: a
+mapping can reach past the end of its file (the loader maps whole pages, files get truncated), and
+a read there is a SIGBUS, which would kill the server at start. `MADV_POPULATE_READ` (Linux 5.14)
+maps the pages and reports such a hole as an error; older kernels get `MADV_WILLNEED`, which reads
+the file into the page cache, so that a later first touch is served from memory, not from the
+file server.
+"""
 function _prefault(addr::UInt, len::UInt)
-    page = UInt(4096)
-    acc = 0x00
-    for p in addr:page:(addr + len - 1)
-        acc ⊻= unsafe_load(Ptr{UInt8}(p))
-    end
-    Cint(acc & 0x00) # always 0; `acc` keeps the loads from being optimised away
+    rc = ccall(:madvise, Cint, (Ptr{Cvoid}, Csize_t, Cint), Ptr{Cvoid}(addr), len, 22) # MADV_POPULATE_READ
+    rc == 0 && return rc
+    ccall(:madvise, Cint, (Ptr{Cvoid}, Csize_t, Cint), Ptr{Cvoid}(addr), len, 3)        # MADV_WILLNEED
 end
 
 "A tenth of the job's memory limit (cgroup v2, then v1), or `nothing` when there is none."
