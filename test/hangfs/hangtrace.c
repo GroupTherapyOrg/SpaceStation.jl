@@ -84,6 +84,50 @@ static int under(const char *path) {
     return 0;
 }
 
+static int want_stacks;
+
+// Who made this call? Walk the stopped thread's frame pointers (Julia's generated code and its
+// runtime keep them) and name, for each return address, the mapped file it lies in and the offset
+// there. Symbol names are looked up afterwards (test/hangfs/resolve_stack.py), not here.
+static long peek(pid_t tid, unsigned long addr, int *ok) {
+    errno = 0; long v = ptrace(PTRACE_PEEKDATA, tid, (void *)addr, 0); *ok = (errno == 0); return v;
+}
+static void describe(pid_t tid, unsigned long addr, FILE *out) {
+    char mapsfile[64], line[4600]; snprintf(mapsfile, sizeof mapsfile, "/proc/%d/maps", tid);
+    FILE *m = fopen(mapsfile, "r");
+    if (!m) { fprintf(out, "    %#lx\n", addr); return; }
+    while (fgets(line, sizeof line, m)) {
+        unsigned long a, b, off; char perms[8], path[4200]; path[0] = 0;
+        if (sscanf(line, "%lx-%lx %7s %lx %*s %*s %4199[^\n]", &a, &b, perms, &off, path) >= 4 && addr >= a && addr < b) {
+            char *p = path; while (*p == ' ') p++;
+            fprintf(out, "    %#lx\t%s\t%#lx\n", addr, *p ? p : "[anonymous: JIT code]", addr - a + off);
+            fclose(m); return;
+        }
+    }
+    fclose(m); fprintf(out, "    %#lx\t?\n", addr);
+}
+static void dump_stack(pid_t tid, FILE *out) {
+    unsigned long pc, fp;
+#if defined(__x86_64__)
+    struct user_regs_struct r; struct iovec io = {&r, sizeof r};
+    if (ptrace(PTRACE_GETREGSET, tid, NT_PRSTATUS, &io) < 0) return;
+    pc = r.rip; fp = r.rbp;
+#else
+    struct user_pt_regs r; struct iovec io = {&r, sizeof r};
+    if (ptrace(PTRACE_GETREGSET, tid, NT_PRSTATUS, &io) < 0) return;
+    pc = r.pc; fp = r.regs[29];
+#endif
+    fprintf(out, "  stack of %d:\n", tid);
+    describe(tid, pc, out);
+    for (int depth = 0; depth < 48 && fp; depth++) {
+        int ok1, ok2; unsigned long next = (unsigned long)peek(tid, fp, &ok1), ret = (unsigned long)peek(tid, fp + sizeof(long), &ok2);
+        if (!ok1 || !ok2 || !ret) break;
+        describe(tid, ret, out);
+        if (next <= fp) break;
+        fp = next;
+    }
+}
+
 static int read_string(pid_t tid, unsigned long addr, char *out, size_t cap) {
     size_t got = 0;
     while (got + 1 < cap) {
@@ -159,6 +203,7 @@ int main(int argc, char **argv) {
         if (!strcmp(argv[i], "-p") && i + 1 < argc) prefixes = argv[++i];
         else if (!strcmp(argv[i], "-f") && i + 1 < argc) flag = argv[++i];
         else if (!strcmp(argv[i], "-l") && i + 1 < argc) logpath = argv[++i];
+        else if (!strcmp(argv[i], "-b")) want_stacks = 1; // with -l: the stack of every call that is HELD
     }
     if (!prefixes || i + 1 >= argc) { fprintf(stderr, "usage: hangtrace -p prefix[:prefix] [-f flagfile] [-l log] -- command...\n"); return 2; }
     if (logpath) logf = fopen(logpath, "a");
@@ -195,7 +240,10 @@ int main(int argc, char **argv) {
                     resolve(tid, &table[k], args, path, sizeof path);
                     if (path[0] && under(path) && !(logpath && !strcmp(path, logpath))) {
                         if (logf) { fprintf(logf, "%s\t%s\t%d\n", table[k].name, path, tid); fflush(logf); }
-                        if (flag && access(flag, F_OK) == 0 && nheld < MAXHELD) { held[nheld++] = tid; goto next; }
+                        if (flag && access(flag, F_OK) == 0 && nheld < MAXHELD) {
+                            if (want_stacks && logf) { dump_stack(tid, logf); fflush(logf); }
+                            held[nheld++] = tid; goto next;
+                        }
                     }
                     break;
                 }

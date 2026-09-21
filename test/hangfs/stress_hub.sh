@@ -16,7 +16,7 @@ mkdir -p "$d/state" "$d/depot"
 export SPACESTATION_HUB=1 SPACESTATION_STATE_HOME="$d/state" SPACESTATION_NODE_DIR="$d"
 export JULIA_DEPOT_PATH="${STRESS_DEPOT_PATH:-$d/depot:${JULIA_DEPOT_PATH:-$HOME/.julia}:}"
 cd "$d"; : > "$d/calls.log"
-nohup "$d/hangtrace" -p "$PREFIXES" -f "$d/hang" -l "$d/calls.log" -- "$J" --threads=4,1 --project="$APP" -e "import SpaceStation; SpaceStation.run(launch_browser=false, hub=true, port=$PORT, require_secret_for_access=false, require_secret_for_open_links=false)" > "$d/hub.log" 2>&1 &
+nohup "$d/hangtrace" -b -p "$PREFIXES" -f "$d/hang" -l "$d/calls.log" -- "$J" --threads=4,1 --project="$APP" -e "import SpaceStation; SpaceStation.run(launch_browser=false, hub=true, port=$PORT, require_secret_for_access=false, require_secret_for_open_links=false)" > "$d/hub.log" 2>&1 &
 hub=$!
 cleanup() { rm -f "$d/hang"; kill "$hub" 2>/dev/null; sleep 1; kill -9 "$hub" 2>/dev/null; cd /; rm -rf "$d"; }
 trap cleanup EXIT
@@ -47,7 +47,10 @@ fi
 read -r w n b < <(ask "$HANG"); echo "during hang:  worst ${w}s over $n requests, $b failed   (hang of ${HANG}s on $PREFIXES)"
 blocked=$(( $(wc -l < "$d/calls.log") - calls_before ))
 echo "path calls into the hung trees during the hang: $blocked"
-[ "$blocked" -gt 0 ] && tail -n "$blocked" "$d/calls.log" | awk -F'\t' '{print "    "$1"\t"$2}' | sort | uniq -c | sort -rn | head -8
+if [ "$blocked" -gt 0 ]; then
+    echo "  held calls and who made them:"
+    tail -n "$blocked" "$d/calls.log" > "$d/held.log"; python3 "$here/resolve_stack.py" "$d/held.log" | head -150
+fi
 rm -f "$d/hang"
 read -r w2 n2 b2 < <(ask 5); echo "after:        worst ${w2}s over $n2 requests, $b2 failed"
 awk -v w="$w" -v l="$LIMIT" -v b="$b" 'BEGIN{ if (w+0 > l+0 || b+0 > 0) { print "FAIL: the hub waited on the hung filesystem"; exit 1 } print "PASS: the hub never waited on the hung filesystem" }'
