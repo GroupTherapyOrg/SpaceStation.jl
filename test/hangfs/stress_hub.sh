@@ -34,8 +34,8 @@ else
     export JULIA_DEPOT_PATH="${STRESS_DEPOT_PATH:-$d/depot:${JULIA_DEPOT_PATH:-$HOME/.julia}:}"
     nohup "$d/hangtrace" -b -p "$PREFIXES" -f "$d/hang" -l "$d/calls.log" -- "$J" --threads=4,1 --project="$APP" -e "$code" > "$d/hub.log" 2>&1 &
 fi
-hub=$!
-cleanup() { rm -f "$d/hang"; pkill -f "port=$PORT" 2>/dev/null; kill "$hub" 2>/dev/null; sleep 1; pkill -9 -f "port=$PORT" 2>/dev/null; kill -9 "$hub" 2>/dev/null; cd /; rm -rf "$d"; }
+hub=${!:-}
+cleanup() { rm -f "$d/hang"; pkill -f "port=$PORT" 2>/dev/null; [ -n "$hub" ] && kill "$hub" 2>/dev/null; sleep 1; pkill -9 -f "port=$PORT" 2>/dev/null; [ -n "$hub" ] && kill -9 "$hub" 2>/dev/null; cd /; rm -rf "$d"; }
 trap cleanup EXIT
 for i in $(seq 1 150); do curl -fsS -m 2 -o /dev/null "http://127.0.0.1:$PORT/ping" 2>/dev/null && break; sleep 2; done
 curl -fsS -m 2 -o /dev/null "http://127.0.0.1:$PORT/ping" || { echo "hub did not start"; cat "$d/launch.out" 2>/dev/null | tail -5; tail -5 "$d/hub.log"; exit 4; }
