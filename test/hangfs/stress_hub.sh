@@ -56,6 +56,17 @@ ask() { # ask <seconds> -> prints worst latency, count, failures
     done
     echo "$worst $n $bad"
 }
+if [ "${SCENARIO:-}" = workspace ]; then
+    # SCENARIO=workspace: a workspace server (the USER's julia, from the tree that will hang) is up and
+    # has answered before the hang starts: the state a person is in when the storage goes away.
+    for i in $(seq 1 120); do [ "$(curl -s -m 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/api/v1/browse?path=${USERFILES_DIR}")" = 200 ] && break; sleep 2; done
+    opened=$(curl -s -m 60 -X POST "http://127.0.0.1:$PORT/api/v1/local/open?path=${USERFILES_DIR}")
+    wid=$(echo "$opened" | sed -n 's/.*"wid":"\([0-9a-f]*\)".*/\1/p')
+    [ -n "$wid" ] || { echo "FAIL: the workspace could not be opened: $opened"; exit 7; }
+    for i in $(seq 1 150); do curl -s -m 5 "http://127.0.0.1:$PORT/api/v1/local/status?path=${USERFILES_DIR}" | grep -q '"state":"ready"' && break; sleep 2; done
+    [ "$(curl -s -m 30 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/w/$wid/api/v1/notebooks")" = 200 ] || { echo "FAIL: the workspace server did not come up"; tail -5 "$d/hub.log"; exit 7; }
+    echo "workspace $wid is up (its server runs the user's julia, from the tree that is about to hang)"
+fi
 if [ "${SCENARIO:-}" = userfiles ]; then # the helpers come up in the background: wait for a first listing
     for i in $(seq 1 120); do [ "$(curl -s -m 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/api/v1/browse?path=${USERFILES_DIR}")" = 200 ] && break; sleep 2; done
 fi
@@ -75,6 +86,15 @@ touch "$d/hang"
 # SCENARIO=userfiles: meanwhile a browser keeps asking for a listing of a directory that IS on the hung
 # filesystem (the sidebar during a home-directory hang). Those requests may fail or time out; every
 # OTHER request must still be answered at once.
+if [ "${SCENARIO:-}" = workspace ]; then
+    # what an open workspace tab keeps asking: the notebook list (relayed to the workspace server, which
+    # is about to stop answering) and the file tree (a file helper). Neither may cost the hub anything.
+    ( while [ -e "$d/hang" ]; do
+        curl -s -m 30 -o /dev/null -w "notebooks %{http_code} %{time_total}\n" "http://127.0.0.1:$PORT/w/$wid/api/v1/notebooks" >> "$d/ws.log"
+        curl -s -m 30 -o /dev/null -w "files %{http_code} %{time_total}\n" "http://127.0.0.1:$PORT/w/$wid/api/v1/workspace" >> "$d/ws.log"
+        sleep 1
+      done ) &
+fi
 if [ "${SCENARIO:-}" = userfiles ]; then
     ( while [ -e "$d/hang" ]; do curl -s -m 20 -o /dev/null -w "%{http_code} %{time_total}\n" "http://127.0.0.1:$PORT/api/v1/browse?path=${USERFILES_DIR}" >> "$d/browse.log"; sleep 0.5; done ) &
 fi
@@ -107,6 +127,15 @@ if [ "${SCENARIO:-}" = userfiles ]; then
     awk -v m="$late" 'BEGIN{ exit !(m+0 > 2) }' && { echo "FAIL: once the filesystem was marked hung, a refusal still took ${late}s"; verdict=1; }
     back=000; for i in $(seq 1 30); do back=$(curl -s -m 5 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/api/v1/browse?path=${USERFILES_DIR}"); [ "$back" = 200 ] && break; sleep 1; done
     [ "$back" = 200 ] && echo "the listing works again ${i}s after the hang" || { echo "FAIL: the listing did not come back after the hang (last status $back)"; verdict=1; }
+fi
+if [ "${SCENARIO:-}" = workspace ]; then
+    echo "what the open workspace was told during the hang:"; awk '{print "    "$1" "$2}' "$d/ws.log" | sort | uniq -c
+    slow=$(awk '{ if ($3>m) m=$3 } END { print m+0 }' "$d/ws.log")
+    awk -v m="$slow" 'BEGIN{ exit !(m+0 > 25) }' && { echo "FAIL: a request of the open workspace was left waiting ${slow}s"; verdict=1; }
+    back=000; for i in $(seq 1 90); do back=$(curl -s -m 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/w/$wid/api/v1/notebooks"); [ "$back" = 200 ] && break; sleep 1; done
+    [ "$back" = 200 ] && echo "the workspace answers again ${i}s after the hang" || { echo "FAIL: the workspace did not come back after the hang (last status $back)"; verdict=1; }
+    files=000; for i in $(seq 1 30); do files=$(curl -s -m 10 -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/w/$wid/api/v1/workspace"); [ "$files" = 200 ] && break; sleep 1; done
+    [ "$files" = 200 ] || { echo "FAIL: the file tree did not come back after the hang (last status $files)"; verdict=1; }
 fi
 awk -v w="$w" -v l="$LIMIT" -v b="$b" 'BEGIN{ exit !(w+0 > l+0 || b+0 > 0) }' && { echo "FAIL: requests waited on the hung filesystem (worst ${w}s, $b failed)"; verdict=1; }
 [ "$verdict" -eq 0 ] && echo "PASS: the hub never waited on the hung filesystem, and never asked it anything"
