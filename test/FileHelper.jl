@@ -127,7 +127,7 @@ import SpaceStation as Pluto
         request = HTTP.Request("GET", "/api/v1/ssh_hosts")
         @test Pluto._request_path(request) == Pluto.tamepath(homedir())                               # no path named: the home directory, never ""
         withenv("SPACESTATION_USER_HOME" => "/real/home") do
-            @test Pluto._request_path(request) == "/real/home"                                         # the USER's, when this hub runs from a staged runtime
+            @test Pluto._request_path(request) == Pluto.tamepath("/real/home")                         # the USER's, when this hub runs from a staged runtime
         end
         request = HTTP.Request("GET", "/api/v1/workspace/listing?path=%2Fa%2Fb"); request.context[:workspace_root] = "/a"
         @test Pluto._request_path(request) == Pluto.tamepath("/a/b")                                  # the most specific path wins
