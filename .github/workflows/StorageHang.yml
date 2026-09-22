@@ -72,3 +72,9 @@ jobs:
                   mkdir -p "$GITHUB_WORKSPACE/userfiles" && touch "$GITHUB_WORKSPACE/userfiles/a.jl"
                   LAUNCHER=1 SPACESTATION_BUNDLE_DIR=/tmp/bundles SCENARIO=userfiles USERFILES_DIR="$GITHUB_WORKSPACE/userfiles" \
                     bash test/hangfs/stress_hub.sh "$GITHUB_WORKSPACE" "$(readlink -f $(which julia))" 2472 "$HOME:$julia_root" 40
+            - name: A workspace that was open when the storage hung does not take the hub down with it
+              run: |
+                  julia_root=$(dirname $(dirname $(readlink -f $(which julia))))
+                  mkdir -p "$GITHUB_WORKSPACE/userfiles" && touch "$GITHUB_WORKSPACE/userfiles/a.jl"
+                  LAUNCHER=1 SPACESTATION_BUNDLE_DIR=/tmp/bundles SCENARIO=workspace USERFILES_DIR="$GITHUB_WORKSPACE/userfiles" \
+                    bash test/hangfs/stress_hub.sh "$GITHUB_WORKSPACE" "$(readlink -f $(which julia))" 2473 "$HOME:$julia_root" 40
