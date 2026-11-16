@@ -90,7 +90,11 @@ const Main = ({ children }) => {
 /**
  * Map of status => Bool. In order of decreasing priority.
  */
-const statusmap = (/** @type {EditorState} */ state, /** @type {LaunchParameters} */ launch_params) => ({
+const statusmap = (
+    /** @type {EditorState} */ state,
+    /** @type {LaunchParameters} */ launch_params,
+    /** @type {boolean} */ notebook_content_comes_from_url_params
+) => ({
     disconnected: !(state.connected || state.initializing || state.static_preview),
     loading:
         (state.backend_launch_phase != null &&
@@ -128,7 +132,7 @@ const statusmap = (/** @type {EditorState} */ state, /** @type {LaunchParameters
     recording_waiting_to_start: state.recording_waiting_to_start,
     is_recording: state.is_recording,
     isolated_cell_view: launch_params.isolated_cell_ids != null && launch_params.isolated_cell_ids.length > 0,
-    sanitize_html: state.notebook.process_status === ProcessStatus.waiting_for_permission,
+    sanitize_html: state.notebook.process_status === ProcessStatus.waiting_for_permission || (state.static_preview && notebook_content_comes_from_url_params),
 })
 
 const first_true_key = (obj) => {
@@ -300,6 +304,7 @@ export const url_logo_small = get_included_external_source("pluto-logo-small")?.
  * @typedef EditorProps
  * @type {{
  * launch_params: LaunchParameters,
+ * notebook_content_comes_from_url_params: boolean,
  * initial_notebook_state: NotebookData,
  * preamble_element: preact.ReactElement?,
  * pluto_editor_element: HTMLElement,
@@ -1607,7 +1612,7 @@ ${t("t_key_autosave_description")}`
     }
 
     componentWillUpdate(new_props, new_state) {
-        this.cached_status = statusmap(new_state, this.props.launch_params)
+        this.cached_status = statusmap(new_state, this.props.launch_params, this.props.notebook_content_comes_from_url_params)
 
         Object.entries(this.cached_status).forEach(([k, v]) => {
             new_props.pluto_editor_element.classList.toggle(k, v === true)
@@ -1618,7 +1623,7 @@ ${t("t_key_autosave_description")}`
         const { launch_params } = this.props
         let { export_menu_open, notebook } = this.state
 
-        const status = this.cached_status ?? statusmap(this.state, launch_params)
+        const status = this.cached_status ?? statusmap(this.state, launch_params, this.props.notebook_content_comes_from_url_params)
         const statusval = first_true_key(status)
 
         if (status.isolated_cell_view) {
@@ -1742,7 +1747,7 @@ ${t("t_key_autosave_description")}`
                                 // (Upstream's desktop-app branch is kept for merge hygiene: is_desktop() is never true here.)
                                 window.self !== window.top
                                     ? html`<a class="spacestation-inert-logo" onClick=${(e) => e.preventDefault()}>
-                                          <h1><img id="logo-big" src=${url_logo_big} alt="Pluto.jl" /><img id="logo-small" src=${url_logo_small} aria-hidden="true" /></h1>
+                                          <h1><img id="logo-big" src=${url_logo_big} alt="Pluto.jl" /><img id="logo-small" src=${url_logo_small} alt="Pluto.jl" /></h1>
                                       </a>`
                                     : html`<a
                                           href=${this.state.binder_session_url != null
@@ -1755,7 +1760,7 @@ ${t("t_key_autosave_description")}`
                                               }
                                           }}
                                       >
-                                          <h1><img id="logo-big" src=${url_logo_big} alt="Pluto.jl" /><img id="logo-small" src=${url_logo_small} aria-hidden="true" /></h1>
+                                          <h1><img id="logo-big" src=${url_logo_big} alt="Pluto.jl" /><img id="logo-small" src=${url_logo_small} alt="Pluto.jl" /></h1>
                                       </a>`
                             }
                             ${
@@ -1780,6 +1785,7 @@ ${t("t_key_autosave_description")}`
                                               base: this.client.session_options?.server?.notebook_path_suggestion ?? "",
                                           }}
                                           placeholder=${t("t_save_notebook_ellipsis")}
+                                          aria_label=${t("t_aria_label_filepicker_save")}
                                           button_label=${notebook.in_temp_dir
                                               ? t("t_save_notebook_button_label_when_currently_not_saved")
                                               : t("t_save_notebook_button_label_when_currently_saved")}

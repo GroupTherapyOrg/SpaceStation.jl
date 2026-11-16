@@ -728,7 +728,10 @@ export const CellInput = ({
                     keymap.of([...closeBracketsKeymap, ...defaultKeymap, ...historyKeymap, ...foldKeymap]),
                     placeholder(t("t_cell_input_placeholder")),
 
-                    EditorView.contentAttributes.of({ spellcheck: String(get_settings().CM_SPELLCHECK) }),
+                    EditorView.contentAttributes.of({
+                        spellcheck: String(get_settings().CM_SPELLCHECK),
+                        "aria-label": t("t_aria_label_code_cell"),
+                    }),
 
                     EditorView.lineWrapping,
                     awesome_line_wrapping,
@@ -1158,6 +1161,7 @@ const StaticCodeMirrorFaker = ({ value }) => {
                     role="textbox"
                     aria-multiline="true"
                     aria-autocomplete="list"
+                    aria-label=${t("t_aria_label_code_cell")}
                 >
                     ${lines}
                 </div>

@@ -527,7 +527,7 @@ function handle_terminal_websocket(ws, session::ServerSession, query::Dict{Strin
             end
         end
     catch e
-        if !(e isa InterruptException || e isa HTTP.WebSockets.WebSocketError || e isa EOFError || e isa Base.IOError)
+        if !(e isa InterruptException || e isa HTTP.WebSockets.WebSocketError || is_disconnection_exception(e))
             @warn "Terminal websocket failed" error = sprint(showerror, e) # no backtrace: see PinCode.jl
         end
     finally

@@ -1524,8 +1524,8 @@ function register_collab_remote!(router, session::ServerSession)
 
     # Shut the whole server down cleanly from the UI — the terminal-independent way out. Behind the
     # normal secret (auth_middleware gates /api/v1/*). Respond FIRST, then tear down on a short delay
-    # so the 200 reaches the browser: close SSH tunnels, then stop the HTTP server (which fires
-    # on_shutdown — notebooks, registry file — and unblocks `wait`, so a CLI launch exits).
+    # so the 200 reaches the browser: close SSH tunnels, then run the server's shutdown hook (notebooks,
+    # registry file) and stop the HTTP server, which unblocks `wait`, so a CLI launch exits.
     function serve_shutdown(request::HTTP.Request)
         @info "Shutdown requested from the SpaceStation UI"
         @async begin

@@ -96,6 +96,114 @@ end
     close(server)
 end
 
+@testset "HTTP.jl $(pkgversion(HTTP).major).x" begin
+    # Pluto supports both HTTP.jl 1.x and 2.x, see src/webserver/HTTPCompat.jl. The two
+    # differ in the parts exercised below: response framing, reading a request body, the
+    # WebSocket upgrade, and closing a server that still has a WebSocket connected.
+    @test Pluto.HTTP_IS_V2 == (pkgversion(HTTP) ≥ v"2")
+    # CI runs this file against several HTTP.jl versions, see .github/workflows/Test.yml
+    let pinned = get(ENV, "PLUTO_TEST_HTTP_VERSION", "")
+        # `pinned` is a version prefix, like "1" or "2.7.0"
+        isempty(pinned) || @test startswith("$(pkgversion(HTTP)).", "$pinned.")
+    end
+
+    port = 13434
+    local_url(suffix) = "http://localhost:$port/$suffix"
+    ws_url(suffix) = "ws://localhost:$port/$suffix"
+
+    options = Pluto.Configuration.from_flat_kwargs(;
+        port, launch_browser=false,
+        workspace_use_distributed=true,
+        require_secret_for_access=false,
+        require_secret_for_open_links=false,
+    )
+    🍭 = Pluto.ServerSession(; options)
+    server = Pluto.run!(🍭)
+
+    try
+        @testset "responses" begin
+            r = HTTP.get(local_url("ping"))
+            @test r.status == 200
+            @test String(r.body) == "OK!"
+            # Pluto sends every response as one non-chunked body, and adds its own headers.
+            @test HTTP.header(r, "Content-Length") == "3"
+            @test !HTTP.hasheader(r, "Transfer-Encoding")
+            @test HTTP.header(r, "Referrer-Policy") == "same-origin"
+            @test startswith(HTTP.header(r, "Server"), "Pluto.jl/")
+
+            r = HTTP.get(local_url("edit"))
+            @test r.status == 200
+            @test HTTP.header(r, "Content-Length") == string(length(r.body))
+            @test startswith(HTTP.header(r, "Content-Type"), "text/html")
+
+            r = HTTP.get(local_url("nonexistent-path-🌡"); status_exception=false)
+            @test r.status == 404
+        end
+
+        @testset "request body" begin
+            # `POST /notebookupload` is the only route that reads the request body.
+            codes = ["x = 1 + 1", "y = x * 3 # 🐧"]
+            contents = sprint(Pluto.save_notebook, Pluto.Notebook(Pluto.Cell.(codes)))
+            r = HTTP.post(local_url("notebookupload?name=uploaded"); body=contents)
+            @test r.status == 200
+
+            @test poll(20) do
+                length(🍭.notebooks) == 1
+            end
+            notebook = only(values(🍭.notebooks))
+            # `numbered_until_new` appends a number if `uploaded.jl` already exists
+            @test startswith(basename(notebook.path), "uploaded")
+            @test [c.code for c in notebook.cells] == codes
+        end
+
+        @testset "handler error" begin
+            # The upload cannot be saved in a directory that does not exist, so the route handler throws.
+            r = HTTP.post(local_url("notebookupload?name=directory-that-does-not-exist/uploaded"); body="x = 1", status_exception=false)
+            @test r.status == 500
+            @test startswith(HTTP.header(r, "Content-Type"), "text/html")
+            @test HTTP.header(r, "Content-Length") == string(length(r.body))
+            @test length(🍭.notebooks) == 1
+        end
+
+        @testset "websocket" begin
+            notebook = only(values(🍭.notebooks))
+            reply = Ref{Any}(nothing)
+            # Upstream Pluto accepts any `Origin` here (for reverse proxies that rewrite the scheme and
+            # host). SpaceStation does not: an upgrade whose `Origin` does not match its `Host` is
+            # refused (`origin_matches_host`), which is checked below. So this is the page's own origin.
+            HTTP.WebSockets.open(ws_url(""); headers=["Origin" => "http://localhost:$port"]) do ws
+                HTTP.WebSockets.send(ws, Pluto.pack(Dict(
+                    "type" => "connect",
+                    "client_id" => "test_client",
+                    "request_id" => "test_request",
+                    "notebook_id" => string(notebook.notebook_id),
+                    "body" => Dict(),
+                )))
+                reply[] = Pluto.unpack(HTTP.WebSockets.receive(ws))
+            end
+
+            @test reply[]["type"] == "👋"
+            @test reply[]["message"]["notebook_exists"]
+            @test reply[]["message"]["version_info"]["pluto"] == Pluto.PLUTO_VERSION_STR
+            @test reply[]["initiator_id"] == "test_client"
+
+            # A cross-site `Origin` gets a 403 instead of an upgrade. (Its own connection pool: the
+            # server closes this connection, and a later request must not be handed it again.)
+            r = HTTP.get(local_url(""); headers=[
+                "Connection" => "Upgrade", "Upgrade" => "websocket",
+                "Sec-WebSocket-Version" => "13", "Sec-WebSocket-Key" => "dGhlIHNhbXBsZSBub25jZQ==",
+                "Origin" => "https://proxy.example.com",
+            ], status_exception=false, retry=false, pool=HTTP.Pool(1))
+            @test r.status == 403
+        end
+    finally
+        close(server)
+    end
+
+    # closing the server shuts down the notebooks it was running
+    @test isempty(🍭.notebooks)
+end
+
 @testset "pretty_address" begin
     make_session(; kwargs...) = Pluto.ServerSession(;
         options=Pluto.Configuration.from_flat_kwargs(;
