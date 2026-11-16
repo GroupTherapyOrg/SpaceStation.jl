@@ -828,8 +828,15 @@ export const CellInput = ({
             // this happens when pasting or dropping cells
             return
         }
+        const previous_remote_code = remote_code_ref.current
         remote_code_ref.current = remote_code
         if (current_value !== remote_code) {
+            // Someone is typing in this cell, and what they typed has not been synced yet: their text
+            // wins. Replacing the document here threw away everything typed since the last sync and put
+            // the cursor at the start of the cell (#123). The next sync after a pause in typing sends the
+            // local text, so the notebook ends up with what is on the screen.
+            const has_unsynced_edits = previous_remote_code != null && current_value !== previous_remote_code
+            if (has_unsynced_edits && newcm_ref.current.hasFocus) return
             setValue6(newcm_ref.current, remote_code)
         }
     }, [remote_code])

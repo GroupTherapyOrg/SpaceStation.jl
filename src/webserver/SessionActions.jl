@@ -209,7 +209,7 @@ function add(session::ServerSession, notebook::Notebook; run_async::Bool=true)
 
                 if modified_time == 0.0
                     # @warn "Failed to hot reload: file no longer exists."
-                elseif disk_content_hash == notebook.last_saved_file_hash
+                elseif disk_content_hash !== nothing && is_own_file_content(notebook, disk_content_hash)
                     # The file contains exactly what we last wrote: this event is our own save, not an external change. (A content check instead of a time-based cooldown — a cooldown can swallow a real external edit that lands just after our save.)
                 else
                     update_from_file_throttled()
