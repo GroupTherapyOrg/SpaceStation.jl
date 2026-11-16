@@ -643,6 +643,50 @@ function _choose_remote_server(cands::Vector{RemoteCandidate}, secret::AbstractS
     nothing
 end
 
+# The launch script leaves the pid of the hub it started in the node's directory. A hub that dies while
+# starting (its runtime damaged, a package that does not load) never answers /ping, and a connect that
+# only waits for the answer sits on "starting" for a quarter of an hour in front of a process that was
+# gone in the first ten seconds, with the reason one `cat` away in its log. This asks: is it still there,
+# and if not, what did it say. Under a launch wrapper the pid may be the wrapper's: no verdict then.
+const _LAUNCHED_HUB_SNIPPET = raw"""
+d=$(cat "$HOME/.spacestation/nodedir-$(hostname)" 2>/dev/null)
+pid=$(cat "$d/hub.pid" 2>/dev/null)
+if [ -z "$d" ] || [ -z "$pid" ] || [ -n "${SPACESTATION_LAUNCH_WRAPPER:-}" ]; then
+    echo __HUB_UNKNOWN__
+elif kill -0 "$pid" 2>/dev/null; then
+    echo __HUB_ALIVE__
+else
+    echo __HUB_GONE__
+    line=$(grep -m 1 -E '^(ERROR|FATAL|fatal|signal|\[[0-9]+\] signal)' "$d/server.log" 2>/dev/null)
+    [ -n "$line" ] || line=$(grep -v '^[[:space:]]*$' "$d/server.log" 2>/dev/null | tail -n 1)
+    printf '%s\n' "$line" | cut -c1-400
+fi
+"""
+
+"What `_LAUNCHED_HUB_SNIPPET` printed, as `(state, line)`: `:alive`, `:gone` (with what its log says, if anything) or `:unknown` (nothing can be concluded, an SSH failure included)."
+function _parse_launched_hub(out::AbstractString)::Tuple{Symbol,String}
+    occursin("__HUB_ALIVE__", out) && return (:alive, "")
+    i = findfirst("__HUB_GONE__", out)
+    i === nothing && return (:unknown, "")
+    lines = filter(!isempty, strip.(split(out[nextind(out, last(i)):end], '\n')))
+    (:gone, isempty(lines) ? "" : String(first(lines)))
+end
+
+function _launched_hub(host::String)::Tuple{Symbol,String}
+    out = try
+        _ssh_run(host, _LAUNCHED_HUB_SNIPPET)
+    catch
+        ""
+    end
+    _parse_launched_hub(out)
+end
+
+"What the launcher shows when the hub it started is gone: the reason first, then where the rest is."
+function _hub_gone_detail(host::AbstractString, line::AbstractString)::String
+    said = isempty(line) ? "" : ": " * first(line, 180)
+    "the SpaceStation server on $(host) stopped while starting$(said) — full log: ~/.spacestation/server.log on $(host)"
+end
+
 "Scan `host`. Returns `(scanned, chosen)`: `scanned == false` means the scan itself failed and nothing can be concluded from it."
 function _find_remote_server(host::String, secret::AbstractString)
     out = try
@@ -888,12 +932,14 @@ function _remote_launch_script(julia::AbstractString; app::AbstractString=REMOTE
             HOME="$rt/home" TMPDIR="$rt/tmp" PATH="$rt/julia/bin:/usr/local/bin:/usr/bin:/bin" \
             JULIA_DEPOT_PATH="$rt/depot:" JULIA_CPU_TARGET="$(cat "$rt/cpu-target")" JULIA_PKG_OFFLINE=true \
             SPACESTATION_USER_ENV_FILE="$d/user-env" SPACESTATION_USER_JULIA="$julia" SPACESTATION_USER_PROJECT="$app" \
-            SPACESTATION_USER_DEPOT_PATH="$user_depot" SPACESTATION_USER_HOME="$HOME" \
+            SPACESTATION_USER_DEPOT_PATH="$user_depot" SPACESTATION_USER_HOME="$HOME" SPACESTATION_RUNTIME_DIR="$rt" \
             ${SPACESTATION_LAUNCH_WRAPPER:-} "$rt/julia/bin/julia" """ * SERVER_THREAD_FLAGS * raw""" --startup-file=no --history-file=no --project="$rt/app" \
-            -e """ * _shquote(String(code)) * raw""" > "$d/server.log" 2>&1 < /dev/null & disown
+            -e """ * _shquote(String(code)) * raw""" > "$d/server.log" 2>&1 < /dev/null &
+        echo $! > "$d/hub.pid"; disown
     else
         export JULIA_DEPOT_PATH="$user_depot" SPACESTATION_TUNNELED=1 SPACESTATION_HUB=1
-        nohup ${SPACESTATION_LAUNCH_WRAPPER:-} "$julia" """ * SERVER_THREAD_FLAGS * raw""" --project="$app" -e """ * _shquote(String(code)) * raw""" > "$d/server.log" 2>&1 < /dev/null & disown
+        nohup ${SPACESTATION_LAUNCH_WRAPPER:-} "$julia" """ * SERVER_THREAD_FLAGS * raw""" --project="$app" -e """ * _shquote(String(code)) * raw""" > "$d/server.log" 2>&1 < /dev/null &
+        echo $! > "$d/hub.pid"; disown
     fi
     true
     """
@@ -1118,7 +1164,7 @@ function _remote_connect_task!(r::RemoteSession)
             # once); every later one restores or reuses it in seconds. The launch script does that before
             # it starts the hub, so this wait covers both.
             r.detail = "starting the SpaceStation server on $(r.host) (the first start of a new version prepares its runtime on the node's own disk: a few minutes, once)"
-            for _ in 1:480 # a little longer than node/runtime.sh waits for a build already under way
+            for i in 1:480 # a little longer than node/runtime.sh waits for a build already under way
                 sleep(2)
                 _remote_bail(r) && return
                 # the server we just launched announces itself by answering /ping on this node
@@ -1126,6 +1172,15 @@ function _remote_connect_task!(r::RemoteSession)
                 if scanned && found !== nothing && found.status == :live
                     remote = found
                     break
+                end
+                # ...unless it is no longer there to answer: say so now, with what it said, instead of waiting out the clock
+                if i % 5 == 0 && scanned && found === nothing
+                    state, line = _launched_hub(r.host)
+                    if state == :gone
+                        r.state = "error"
+                        r.detail = _hub_gone_detail(r.host, line)
+                        return
+                    end
                 end
             end
             if remote === nothing

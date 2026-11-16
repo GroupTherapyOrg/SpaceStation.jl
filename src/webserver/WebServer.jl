@@ -167,6 +167,28 @@ function serve_terminal_upgrade(http::HTTP.Stream, session::ServerSession, termi
     nothing
 end
 
+# On a remote machine a hub's runtime and its state live under /tmp on that machine (CollabRemote.jl),
+# and a /tmp cleaner deletes what has not been read or changed for some days (systemd-tmpfiles: 10 on
+# most clusters), file by file. A hub that lives longer than that would lose the sources its compiled
+# caches are checked against (the next workspace server would not start), its own connection file (the
+# next connect would not find it and would start a second hub) and the saved environment it gives to
+# terminals. node/runtime.sh marks the runtime as read at every launch; this does the same, for the
+# runtime and the node directory, for as long as the hub runs. The access time only: the caches are
+# validated against modification times.
+const NODE_FILES_FRESH_EVERY = 6 * 60 * 60 # seconds
+node_dirs_to_keep_fresh() = filter(isdir, unique(filter(!isempty, [get(ENV, "SPACESTATION_RUNTIME_DIR", ""), get(ENV, "SPACESTATION_NODE_DIR", "")])))
+freshen_command(dirs::Vector{String}) = `find $dirs -exec touch -a -c -h '{}' +`
+function keep_node_files_fresh(; every::Real=NODE_FILES_FRESH_EVERY)
+    dirs = node_dirs_to_keep_fresh()
+    (isempty(dirs) || Sys.iswindows()) && return nothing
+    Timer(every; interval=every) do _
+        try
+            Base.run(pipeline(ignorestatus(freshen_command(dirs)); stdin=devnull, stdout=devnull, stderr=devnull); wait=false)
+        catch
+        end
+    end
+end
+
 function run!(session::ServerSession)
     # Before we spawn ANY notebook worker or integrated terminal, drop the Pkg-app launcher's
     # JULIA_LOAD_PATH pin so those children honor their own `--project=` / Pkg.activate instead of
@@ -187,6 +209,7 @@ function run!(session::ServerSession)
         session.options.server.workspace_folder === nothing || error("a workspace hub (hub=true) has no workspace of its own: it serves workspaces at /w/<id>/, each in a child server. Drop `workspace=` or `hub=true`.")
         session.options.server.notebook === nothing || error("a workspace hub (hub=true) cannot open notebooks itself: drop `notebook=` or `hub=true`.")
         ASSET_CACHE_ALL[] = true
+        keep_node_files_fresh()
         if !PkgCompat.is_hub_process()
             @warn "SpaceStation: this hub was started without SPACESTATION_HUB=1 in its environment, so the package registries were parsed at import — set it in the launcher so the hub never touches the depot."
         end

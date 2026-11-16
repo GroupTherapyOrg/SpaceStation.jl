@@ -85,11 +85,26 @@ read -r JULIA_VERSION JULIA_ROOT < <("$JULIA" --startup-file=no --history-file=n
 [ -n "${JULIA_VERSION:-}" ] && [ -n "${JULIA_ROOT:-}" ] || fail "julia does not run: $JULIA"
 [ -x "$JULIA_ROOT/bin/julia" ] && [ -d "$JULIA_ROOT/lib/julia" ] || fail "not a julia install: $JULIA_ROOT"
 APP_ID=$(cd "$APP" && { git rev-parse HEAD 2>/dev/null || true; cat Project.toml Manifest.toml 2>/dev/null | sha | cut -c1-16; } | tr '\n' ' ')
-KEY=$(printf '%s\n' "format-1" "$APP_ID" "$JULIA_VERSION" "$(uname -m)" "$CPU_TARGET" "$ROOT" | sha | cut -c1-16)
+KEY=$(printf '%s\n' "format-2" "$APP_ID" "$JULIA_VERSION" "$(uname -m)" "$CPU_TARGET" "$ROOT" | sha | cut -c1-16)
 RT="$ROOT/rt-$KEY"
 BUNDLE="$BUNDLES/$KEY.tar.gz"
 
-ready() { [ -f "$RT/.complete" ] && [ -x "$RT/julia/bin/julia" ]; }
+# A marker is not enough to call a runtime whole. A /tmp cleaner (systemd-tmpfiles: 10 days on most
+# clusters) removes FILES, one by one, by when each was last read or changed, and leaves the directories.
+# Once a package is compiled its sources are never read again, only looked at, so they are the first to
+# go, while the marker, which every launch touches, stays: a runtime that says it is complete and holds a
+# tenth of its files. Julia then finds a cache with no source behind it and the hub dies at its first
+# import ("Package ... is required but does not seem to be installed"). So the number of files is written
+# down when the runtime is made, and counted again before it is used: under these directories nothing is
+# written after the build, so fewer files means files were deleted. (The compiled caches are left out:
+# Julia adds to them, and a cache that is gone is compiled again from a source that is there.)
+PARTS="julia app depot/packages depot/artifacts"
+count_files() { (cd "$1" 2>/dev/null && find $PARTS \( -type f -o -type l \) 2>/dev/null | wc -l | tr -d ' '); }
+intact() { local want; want=$(cat "$RT/.files" 2>/dev/null); [ -n "$want" ] && [ "$(count_files "$RT")" -ge "$want" ] 2>/dev/null; }
+ready() { [ -f "$RT/.complete" ] && [ -x "$RT/julia/bin/julia" ] && intact; }
+# ...and a runtime that is used is kept from aging: every launch marks all of it as read. The access
+# time only (-a): the compiled caches are checked against the modification times of the sources.
+keep_fresh() { find "$RT" -exec touch -a -c -h {} + 2>/dev/null; touch "$RT/.complete" 2>/dev/null; }
 # A runtime a live process runs from is never removed, whatever else looks wrong with it (a tmp cleaner
 # may have aged its marker away): a hub is serving from it.
 in_use() { readlink /proc/[0-9]*/exe 2>/dev/null | grep -q "^$1/"; } # one pass, however many processes
@@ -97,7 +112,8 @@ LOCK="$ROOT/rt-$KEY.lock"
 # ...but a runtime that is still being BUILT also has a julia running from it (the precompile step):
 # the builder marks it, and holds the lock, for as long as that is so.
 if ! ready && [ -x "$RT/julia/bin/julia" ] && [ ! -e "$RT/.building" ] && [ ! -e "$LOCK" ] && in_use "$RT"; then touch "$RT/.complete"; fi
-ready && { touch "$RT/.complete" 2>/dev/null; echo "RUNTIME $RT"; exit 0; }
+ready && { keep_fresh; echo "RUNTIME $RT"; exit 0; }
+[ -f "$RT/.complete" ] && [ -x "$RT/julia/bin/julia" ] && say "the runtime at $RT has lost files (a /tmp cleaner?): staging it again"
 
 # One builder per node at a time, for at most as long as the client waits for a first start (15 min).
 # With flock the kernel lets go when the holder dies: nothing to steal, no pid to be reused. Without
@@ -126,8 +142,8 @@ else
     unlock() { [ "$(cat "$LOCK/pid" 2>/dev/null)" = "$$" ] && rm -rf "$LOCK"; }
 fi
 trap unlock EXIT
-ready && { echo "RUNTIME $RT"; exit 0; }
-in_use "$RT" && fail "the runtime at $RT is in use but incomplete"
+ready && { keep_fresh; echo "RUNTIME $RT"; exit 0; }
+in_use "$RT" && fail "the runtime at $RT is in use but incomplete or missing files"
 rm -rf "$RT"
 give_up() { rm -rf "$RT"; fail "$@"; } # never leave a partial runtime behind
 
@@ -135,7 +151,7 @@ give_up() { rm -rf "$RT"; fail "$@"; } # never leave a partial runtime behind
 if [ -f "$BUNDLE" ] && [ -f "$BUNDLE.sha256" ]; then
     say "restoring $BUNDLE"
     mkdir -p "$RT" && : > "$RT/.building"
-    if [ "$(sha "$BUNDLE" | cut -d' ' -f1)" = "$(cut -d' ' -f1 "$BUNDLE.sha256")" ] && tar -xzf "$BUNDLE" -C "$ROOT" && [ -x "$RT/julia/bin/julia" ]; then
+    if [ "$(sha "$BUNDLE" | cut -d' ' -f1)" = "$(cut -d' ' -f1 "$BUNDLE.sha256")" ] && tar -xzf "$BUNDLE" -C "$ROOT" && [ -x "$RT/julia/bin/julia" ] && intact; then
         mkdir -p "$RT/home" "$RT/tmp" "$RT/depot/logs"; rm -f "$RT/.building"; touch "$RT/.complete"; echo "RUNTIME $RT"; exit 0
     fi
     say "the bundle is damaged: building afresh"; rm -rf "$RT"
@@ -181,6 +197,7 @@ mkdir -p "$RT/app" && (cd "$APP" && for f in Project.toml Manifest.toml src fron
 ( cd "$RT" && env -u JULIA_LOAD_PATH -u JULIA_PROJECT HOME="$RT/home" TMPDIR="$RT/tmp" JULIA_DEPOT_PATH="$RT/depot:" JULIA_CPU_TARGET="$CPU_TARGET" JULIA_PKG_OFFLINE=true \
     "$RT/julia/bin/julia" --startup-file=no --history-file=no --project="$RT/app" -e 'import SpaceStation' >&2 ) || give_up "the app does not load from the local runtime"
 echo "$CPU_TARGET" > "$RT/cpu-target"
+count_files "$RT" > "$RT/.files" # what "whole" means for this runtime, here and wherever its bundle is restored
 rm -f "$RT/.building"
 touch "$RT/.complete"
 echo "RUNTIME $RT"
@@ -195,16 +212,25 @@ done
 # A runtime in a place that changes from job to job is of no use to the next job: no bundle for it.
 [ "$(cat "$ROOT/.place" 2>/dev/null)" = fixed ] || exit 0
 
-# keep it as one file for every other node and job: in the background, the hub does not wait for it
+# keep it as one file for every other node and job: in the background, the hub does not wait for it.
+# What is packed is a COPY made now, before this script returns, not the runtime itself. The hub starts
+# from the runtime the moment this script exits: it makes a directory in the depot and touches the caches
+# it loads, and a tar that sees either says "file changed as we read it" and reports failure. Packing the
+# live runtime, the bundle was thrown away on every real launch and each node built its own. (A copy on
+# the same disk: seconds, or nothing at all where the filesystem can share the blocks.)
+SNAP="$ROOT/.snap-$KEY.$$"
+rm -rf "$ROOT/.snap-$KEY".* 2>/dev/null # a copy left behind by a build that was killed
+mkdir -p "$SNAP" && { cp -a --reflink=auto "$RT" "$SNAP/" 2>/dev/null || { rm -rf "$SNAP/rt-$KEY"; cp -a "$RT" "$SNAP/" 2>/dev/null; }; } || { rm -rf "$SNAP"; exit 0; }
 (
     mkdir -p "$BUNDLES" && chmod 700 "$BUNDLES" 2>/dev/null
     tmp="$BUNDLE.tmp.$(hostname).$$"
-    if tar -C "$ROOT" --exclude="rt-$KEY/.complete" --exclude="rt-$KEY/home" --exclude="rt-$KEY/tmp" --exclude="rt-$KEY/depot/logs" --exclude="rt-$KEY/depot/scratchspaces" -czf "$tmp" "rt-$KEY" 2>/dev/null; then
+    if tar -C "$SNAP" --exclude="rt-$KEY/.complete" --exclude="rt-$KEY/home" --exclude="rt-$KEY/tmp" --exclude="rt-$KEY/depot/logs" --exclude="rt-$KEY/depot/scratchspaces" -czf "$tmp" "rt-$KEY" 2>/dev/null; then
         sha "$tmp" | cut -d' ' -f1 > "$BUNDLE.sha256.tmp.$$" && mv -f "$tmp" "$BUNDLE" && mv -f "$BUNDLE.sha256.tmp.$$" "$BUNDLE.sha256"
         ls -t "$BUNDLES"/*.tar.gz 2>/dev/null | tail -n +3 | while read -r old; do rm -f "$old" "$old.sha256"; done # the two newest stay
     else
         rm -f "$tmp"
     fi
+    rm -rf "$SNAP"
 ) >/dev/null 2>&1 &
 disown 2>/dev/null
 exit 0

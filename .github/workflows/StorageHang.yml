@@ -48,8 +48,12 @@ jobs:
                   RT=${out#RUNTIME }; [ -x "$RT/julia/bin/julia" ]
                   du -sh "$RT"; case "$RT" in /tmp/spacestation-*) ;; *) echo "not in the fixed per-user place"; exit 1 ;; esac
                   [ "$(bash src/webserver/node/runtime.sh "$J" "$GITHUB_WORKSPACE" /tmp/bundles)" = "RUNTIME $RT" ]   # already staged: at once
-                  for i in $(seq 1 120); do ls /tmp/bundles/*.sha256 >/dev/null 2>&1 && break; sleep 2; done
-                  ls -la /tmp/bundles
+                  # the hub starts the moment the script returns: it makes a directory in the depot and touches the
+                  # caches it loads. The bundle is saved all the same (packed from the live runtime, tar saw the
+                  # changes, reported failure, and the bundle was thrown away on every real launch).
+                  mkdir -p "$RT/depot/bin"; echo x > "$RT/depot/bin/pluto-collab"
+                  for i in $(seq 1 120); do ls /tmp/bundles/*.sha256 >/dev/null 2>&1 && break; find "$RT/depot/compiled" -name '*.ji' -exec touch {} +; sleep 2; done
+                  ls -la /tmp/bundles /tmp/bundles/*.sha256
                   rm -rf "$RT"                                                                                        # another node, another job
                   s=$(date +%s); [ "$(bash src/webserver/node/runtime.sh "$J" "$GITHUB_WORKSPACE" /tmp/bundles)" = "RUNTIME $RT" ]; e=$(date +%s)
                   echo "restored from the bundle in $((e - s)) s"
@@ -59,6 +63,21 @@ jobs:
                   echo "$log" | tail -2
                   echo "$log" | grep -qi precompil && { echo "the restored runtime recompiled"; exit 1; }
                   echo "RT=$RT" >> "$GITHUB_ENV"
+                  # a runtime in use is marked as read, all of it, so a /tmp cleaner does not age it away file by
+                  # file; the sources keep their modification times (the caches are checked against those)
+                  src=$(find "$RT/depot/packages" -name '*.jl' | head -1); touch -a -d '20 days ago' "$src"; m=$(stat -c %Y "$src")
+                  bash src/webserver/node/runtime.sh "$J" "$GITHUB_WORKSPACE" /tmp/bundles
+                  [ $(( $(date +%s) - $(stat -c %X "$src") )) -lt 60 ]
+                  [ "$(stat -c %Y "$src")" = "$m" ]
+                  # what a cleaner leaves of one that was NOT used for a while: the directories, the marker, a
+                  # fraction of the files. The marker is not believed: the runtime is staged again.
+                  n=$(cat "$RT/.files"); find "$RT/depot/packages" -type f -name '*.jl' | head -200 | xargs rm -f
+                  [ -f "$RT/.complete" ]
+                  out=$(bash src/webserver/node/runtime.sh "$J" "$GITHUB_WORKSPACE" /tmp/bundles 2>&1); echo "$out"
+                  echo "$out" | grep -q "has lost files"
+                  echo "$out" | grep -q "restoring"
+                  echo "$out" | grep -qx "RUNTIME $RT"
+                  [ "$(cd "$RT" && find julia app depot/packages depot/artifacts \( -type f -o -type l \) | wc -l)" -ge "$n" ]
                   # a damaged bundle is rebuilt, never trusted
                   echo garbage >> /tmp/bundles/*.tar.gz; rm -rf "$RT"
                   bash src/webserver/node/runtime.sh "$J" "$GITHUB_WORKSPACE" /tmp/bundles 2>&1 | grep -E "damaged|RUNTIME"
