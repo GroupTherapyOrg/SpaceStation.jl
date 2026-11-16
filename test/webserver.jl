@@ -34,11 +34,11 @@ using SpaceStation.WorkspaceManager: WorkspaceManager, poll
     @test Pluto.secret_cookie_name(session, req("Host" => "localhost:45200")) == "pluto_secret_45200"
 end
 
-# Desktop PDF export opens `/edit?id=…&secret=…&pluto_print=1` in the system browser. On Windows it went
-# through `cmd /c start`, and cmd.exe splits a command line at `&`: the browser got `/edit?id=…` alone
-# and showed "Not yet authenticated".
+# A URL opened in the system browser carries `&secret=…` after its first parameter. On Windows it once
+# went through `cmd /c start`, and cmd.exe splits a command line at `&`: the browser got `/edit?id=…`
+# alone and showed "Not yet authenticated".
 @testset "the default-browser command keeps the whole URL" begin
-    url = "http://127.0.0.1:1234/edit?id=abc&secret=S3cr3t&pluto_print=1"
+    url = "http://127.0.0.1:1234/edit?id=abc&secret=S3cr3t&x=1"
 
     # What Windows actually receives is this one command-line string. The URL must sit inside a single
     # PowerShell-quoted token, so no `&` is ever exposed to a shell.

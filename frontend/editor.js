@@ -1,7 +1,6 @@
 import { html, render, useEffect, useRef, useState } from "./imports/Preact.js"
 import "./common/NodejsCompatibilityPolyfill.js"
 import "./common/ColorScheme.js" // applies the app-wide light/dark override + follows hub toggles live
-import "./common/DesktopZoomKeys.js" // forwards ⌘= / ⌘- / ⌘0 to the desktop shell (no-op elsewhere)
 
 import { Editor, default_path } from "./components/Editor.js"
 import { FetchProgress, read_Uint8Array_with_progress } from "./components/FetchProgress.js"
@@ -11,15 +10,6 @@ import { ProcessStatus } from "./common/ProcessStatus.js"
 import { parse_launch_params } from "./common/parse_launch_params.js"
 
 const url_params = new URLSearchParams(window.location.search)
-
-// &pluto_print=1: the desktop app's PDF export opens this page in a real browser purely to print
-// (its own WKWebView has no window.print) — pop the dialog once the page has settled. The delay is
-// crude but printing is user-supervised: worst case they close the dialog and press Cmd/Ctrl+P.
-if (url_params.get("pluto_print") === "1") {
-    window.addEventListener("load", () => {
-        setTimeout(() => window.print(), 2500)
-    })
-}
 
 //////////////
 // utils:

@@ -51,13 +51,12 @@ export const set_cm_value = (/** @type{EditorView} */ cm, /** @type {string} */ 
  *  placeholder: String,
  *  aria_label?: String,
  *  on_submit: (new_path: String) => Promise<void>,
- *  on_desktop_submit?: () => Promise<void>,
  *  client: import("../common/PlutoConnection.js").PlutoConnection,
  *  clear_on_blur: Boolean,
  *  readonly: Boolean,
  * }} props
  */
-export const FilePicker = ({ value, readonly, suggest_new_file, button_label, placeholder, aria_label, on_submit, on_desktop_submit, client, clear_on_blur }) => {
+export const FilePicker = ({ value, readonly, suggest_new_file, button_label, placeholder, aria_label, on_submit, client, clear_on_blur }) => {
     const [current_value, set_current_value] = useState(value)
 
     const [url_value, set_url_value] = useState("")
@@ -66,7 +65,7 @@ export const FilePicker = ({ value, readonly, suggest_new_file, button_label, pl
     const base = useRef(/** @type {any} */ (null))
     const cm = useRef(/** @type {EditorView?} */ (null))
 
-    const is_button_disabled = on_desktop_submit == null && (current_value.length === 0 || current_value === forced_value.current)
+    const is_button_disabled = current_value.length === 0 || current_value === forced_value.current
     const value_different = current_value !== forced_value.current
     const suggest_button = current_value !== forced_value.current && /\.\w*$/.test(current_value)
 
@@ -88,11 +87,7 @@ export const FilePicker = ({ value, readonly, suggest_new_file, button_label, pl
         if (current_cm == null) return
         run(async () => {
             try {
-                if (on_desktop_submit != null) {
-                    await on_desktop_submit()
-                } else {
-                    await on_submit(current_cm.state.doc.toString())
-                }
+                await on_submit(current_cm.state.doc.toString())
                 current_cm.dom.blur()
             } catch (error) {
                 set_cm_value(current_cm, forced_value.current, true)

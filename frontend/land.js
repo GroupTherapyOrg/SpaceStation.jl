@@ -16,7 +16,6 @@
 import { html, render, useState, useEffect, useCallback, useRef } from "./imports/Preact.js"
 import { pluto_file_extensions, has_pluto_file_extension } from "./common/PlutoFileExtensions.js"
 import { cycle_color_scheme, get_color_scheme, prefers_dark } from "./common/ColorScheme.js"
-import "./common/DesktopZoomKeys.js" // forwards ⌘= / ⌘- / ⌘0 to the desktop shell (no-op elsewhere)
 
 const get_text = async (url, opts) => {
     const r = await fetch(url, opts)
@@ -79,23 +78,10 @@ const homebase_self_url = () => window.location.origin + window.location.pathnam
 // workspace it opens knows where "home" is.
 const with_homebase = (url) => (url == null ? url : `${url}#homebase=${encodeURIComponent(homebase_self_url())}`)
 
-// The desktop shell (desktop/) frames every hub page inside its deck — the tab-strip chrome — so
-// being framed IS the desktop signal: structural, known synchronously, and it survives auth
-// redirects and reattached child servers that never saw the env var. The ?desktop=1 the shell
-// appends and the /api/v1/config flag remain as secondary hints.
-const in_desktop_frame = (() => {
-    try {
-        return window.self !== window.top
-    } catch (e) {
-        return true // a cross-origin parent blocked the check — framed by definition
-    }
-})()
-const desktop_boot_hint = in_desktop_frame || new URLSearchParams(window.location.search).has("desktop")
-
 // App-wide light/dark/auto — LAUNCHER-ONLY control (so the terminal's own scheme toggle stays
 // unambiguous), applied to every workspace immediately: same-origin pages follow via storage
-// events, and workspaces on other ports get it via the deck broadcast + a ?scheme= seed on
-// workspace links (ColorScheme.js handles both ends).
+// events, and workspaces on other ports get it via a ?scheme= seed on workspace links
+// (ColorScheme.js handles both ends).
 const AppSchemeToggle = ({ classname }) => {
     const [scheme, set_scheme] = useState(get_color_scheme())
     return html`<button
@@ -105,18 +91,10 @@ const AppSchemeToggle = ({ classname }) => {
         onClick=${() => {
             const next = cycle_color_scheme()
             set_scheme(next)
-            // the deck rebroadcasts to every workspace tab (they live on other ports/origins)
-            post_to_deck({ type: "spacestation:color-scheme", scheme: next })
         }}
     >
         ${scheme === "system" ? "◐" : scheme === "light" ? "☀" : "☾"}
     </button>`
-}
-// Ask the deck to do something (open a workspace tab, focus the Launcher tab).
-const post_to_deck = (message) => {
-    try {
-        window.parent.postMessage(message, "*")
-    } catch (e) {}
 }
 
 // `new URL(..., import.meta.url)` works unbundled in the browser AND gets rewritten by
@@ -260,15 +238,8 @@ const FileEntry = ({ entry, listings, expanded, on_toggle, on_open_notebook, on_
  *  list of every running workspace — local children AND SSH remotes — to reattach to or shut down.
  *  Picking a folder spawns a child server in a new tab (see connect_local); this view never leaves.
  *  `on_cancel` (optional) shows a back button when opened on top of an existing workspace. */
-const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
-    // Read through a ref inside the long-running connect polls: they can outlive a `desktop` flip
-    // (the config fetch landing just after mount), and must honour the value at COMPLETION time.
-    const desktop_ref = useRef(desktop)
-    desktop_ref.current = desktop
-    // Workspace links: a browser homebase opens them in a new tab; the desktop's single webview
-    // window navigates in place. Both carry the homebase fragment — the workspace's way back — and
-    // desktop destinations also carry ?desktop=1 so the workspace knows its mode synchronously.
-    const desktop_url = (url) => (desktop_ref.current ? `${url}${url.includes("?") ? "&" : "?"}desktop=1` : url)
+const WorkspaceOpener = ({ on_cancel, tunneled }) => {
+    // Workspace links open in a new tab and carry the homebase fragment — the workspace's way back.
     // Stamp the launcher's appearance choice on workspace links: workspaces are other origins
     // (their own ports), so localStorage can't carry it — the ?scheme= seed does.
     const scheme_url = (url) => {
@@ -276,12 +247,10 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
         return s === "system" ? url : `${url}${url.includes("?") ? "&" : "?"}scheme=${s}`
     }
     // A workspace's URL is the hub's own page for it (`/w/<id>/`, relative to the hub — see
-    // src/webserver/Proxy.jl), so resolve it against this page before handing it to a tab or the deck.
+    // src/webserver/Proxy.jl), so resolve it against this page before handing it to a tab.
     const abs_url = (url) => new URL(url, window.location.href).href
-    const open_href = (url) => with_homebase(desktop_url(scheme_url(abs_url(url))))
-    const open_target = desktop ? "_self" : "_blank"
-    // Desktop: workspaces open as DECK TABS — the deck dedupes by workspace, so reopening focuses.
-    const post_open_tab = (url, title) => post_to_deck({ type: "spacestation:open-workspace", url: desktop_url(abs_url(url)), title })
+    const open_href = (url) => with_homebase(scheme_url(abs_url(url)))
+    const open_target = "_blank"
     const [listing, set_listing] = useState(
         /** @type {{path: String, parent: String, entries: Array<{name: String, path: String}>, crumbs: Array<{name: String, path: String}>}?} */ (null)
     )
@@ -330,9 +299,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
                 set_remote_states((s) => ({ ...s, [host]: status }))
             }
             if (status.state === "ready" && status.url != null) {
-                // Desktop: open this remote workspace as a deck tab.
-                if (desktop_ref.current) post_open_tab(status.url, host)
-                else window.open(open_href(status.url), "_blank") // may be blocked: the pill stays a clickable link either way
+                window.open(open_href(status.url), "_blank") // may be blocked: the pill stays a clickable link either way
             }
         } catch (e) {
             if (cancelled_hosts.current.has(host)) return
@@ -369,9 +336,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
             }
             if (status.state === "ready" && status.url != null) {
                 remember_workspace(path)
-                // Desktop: open this workspace as a deck tab.
-                if (desktop_ref.current) post_open_tab(status.url, basename(path) || path)
-                else window.open(open_href(status.url), "_blank") // may be blocked: the ready card stays a clickable link either way
+                window.open(open_href(status.url), "_blank") // may be blocked: the ready card stays a clickable link either way
             }
         } catch (e) {
             if (cancelled_paths.current.has(path)) return
@@ -415,8 +380,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
 
     // Open a folder as a workspace: spawn (or reattach to) its child server and open the hub's page
     // for it (connect_local). The same over an SSH tunnel: the page is the hub's, under its one
-    // forwarded port, and the hub relays to the child on the node — nothing else is forwarded. The
-    // desktop shell does the same, as a deck tab instead of a browser tab.
+    // forwarded port, and the hub relays to the child on the node — nothing else is forwarded.
     const open_workspace = useCallback(async (path) => connect_local(path), [connect_local])
 
     // The ✕ on a Running Workspace card: cancel a connecting one, dismiss an errored one, disconnect a
@@ -514,15 +478,6 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
                 <img class="land-logo opener-logo" src=${logo_url} alt="SpaceStation" />
                 <h1>Space<span class="land-accent">Station</span></h1>
                 <p class="subtitle">Open a folder as your workspace — notebooks inside it open as tabs.</p>
-                ${desktop
-                    ? html`<button
-                          class="opener-julia-version"
-                          title="Pick which Julia the app runs on (restarts the SpaceStation server)"
-                          onClick=${() => post_to_deck({ type: "spacestation:julia-version" })}
-                      >
-                          Julia version…
-                      </button>`
-                    : null}
                 <${AppSchemeToggle} classname=${on_cancel == null ? "opener-corner" : "opener-corner beside-cancel"} />
                 ${on_cancel == null ? null : html`<button class="opener-cancel" title="Close — back to your workspace" onClick=${on_cancel}><span class="opener-cancel-icon"></span></button>`}
             </header>
@@ -540,12 +495,6 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
                                             target=${open_target}
                                             rel="opener"
                                             title=${`Open ${w.name}`}
-                                            onClick=${desktop
-                                                ? (e) => {
-                                                      e.preventDefault()
-                                                      post_open_tab(w.url, w.name)
-                                                  }
-                                                : undefined}
                                         >
                                             <span class="recent-icon">${w.kind === "remote" ? "🛰" : "🗂"}</span>
                                             <span class="recent-name">${w.name}</span>
@@ -659,12 +608,6 @@ const WorkspaceOpener = ({ on_cancel, tunneled, desktop }) => {
                                         target=${open_target}
                                         rel="opener"
                                         title=${st.detail}
-                                        onClick=${desktop
-                                            ? (e) => {
-                                                  e.preventDefault()
-                                                  post_open_tab(st.url, h)
-                                              }
-                                            : undefined}
                                     >
                                         <span class="dir-icon">🛰</span>${h} →
                                     </a>`
@@ -869,10 +812,10 @@ const TerminalView = ({ tid, cwd, visible, scheme, notebook_env }) => {
         started.current = true
         ;(async () => {
             const [{ Terminal }, { FitAddon }, config] = await Promise.all([
-                // 6.0.0, not 5.5.0: 5.5 predates two upstream fixes that hit the desktop app directly —
-                // "Fixed CapsLock triggering input twice in MacOS" (#5282) and "Fix duplicate input for
-                // some IMEs" (#5024). The desktop shell is WKWebView (WebKit), where xterm 5.5's input
-                // layer garbles caps/fast typing into TUIs like Claude Code; Chrome never showed it.
+                // 6.0.0, not 5.5.0: 5.5 predates two upstream fixes — "Fixed CapsLock triggering input
+                // twice in MacOS" (#5282) and "Fix duplicate input for some IMEs" (#5024). In WebKit,
+                // xterm 5.5's input layer garbles caps/fast typing into TUIs like Claude Code; Chrome
+                // never showed it.
                 import("https://esm.sh/@xterm/xterm@6.0.0?target=es2020"),
                 import("https://esm.sh/@xterm/addon-fit@0.11.0?target=es2020"),
                 get_json("./api/v1/config").catch(() => null),
@@ -1336,9 +1279,6 @@ const Land = () => {
     // in a child server the hub relays to; the hub itself never freezes with them. Known
     // synchronously from the URL, so nothing waits on the config fetch to behave right.
     const [hub, set_hub] = useState(/^\/w\/[^/]+\//.test(window.location.pathname))
-    // The desktop shell (desktop/): one webview window, no browser tabs — workspaces open in-place
-    // like tunneled ones, but the SSH sections stay (their tunnels come FROM this local server).
-    const [desktop, set_desktop] = useState(desktop_boot_hint)
     // Nothing is answering on our own origin. For an SSH workspace this is the ordinary consequence
     // of the laptop having been shut — see the recovery loop further down.
     const [offline, set_offline] = useState(false)
@@ -1351,7 +1291,6 @@ const Land = () => {
         get_json("./api/v1/config")
             .then((c) => {
                 set_tunneled(!!(c && c.tunneled))
-                set_desktop(desktop_boot_hint || !!(c && c.desktop))
                 set_hub(!!(c && c.hub && c.wid != null))
                 if (Array.isArray(c?.notebook_extensions) && c.notebook_extensions.length > 0) set_notebook_extensions(c.notebook_extensions)
             })
@@ -1377,18 +1316,7 @@ const Land = () => {
     // remote homebase). Otherwise: focus the homebase tab if open, or reopen it if it was closed — one
     // shared homebase, never a disconnected duplicate. (In-tab opener only when no homebase is known.)
     const go_home = useCallback(() => {
-        // Desktop: the deck chrome has a pinned Launcher tab — just focus it. This workspace's
-        // tab and child server stay alive.
-        if (desktop && in_desktop_frame) {
-            post_to_deck({ type: "spacestation:focus-launcher" })
-            return
-        }
-        // Desktop outside the deck (shouldn't happen): fall back to navigating home in place.
-        if (desktop && homebase_url.current != null) {
-            window.location.href = homebase_url.current
-            return
-        }
-        if (!hub && (tunneled || desktop)) {
+        if (!hub && tunneled) {
             fetch("./api/v1/workspace/close", { method: "POST" }).finally(() => window.location.reload())
             return
         }
@@ -1436,7 +1364,7 @@ const Land = () => {
             return
         }
         set_show_opener(true)
-    }, [tunneled, desktop, hub])
+    }, [tunneled, hub])
 
     // Terminals are tabs INSIDE the terminal panel (like VS Code). Each is a persistent shell
     // keyed by tid; the list + active terminal are restored on reload. `terminal_seq` numbers them.
@@ -1991,7 +1919,7 @@ const Land = () => {
     // workspace" button). Picking a folder spawns a child server in a new tab — it never takes over this
     // tab — so the launcher persists as the place you see and manage every running workspace.
     if (no_workspace || show_opener) {
-        return html`<${WorkspaceOpener} on_cancel=${no_workspace ? null : () => set_show_opener(false)} tunneled=${tunneled} desktop=${desktop} />`
+        return html`<${WorkspaceOpener} on_cancel=${no_workspace ? null : () => set_show_opener(false)} tunneled=${tunneled} />`
     }
 
     return html`
@@ -2219,8 +2147,8 @@ const Land = () => {
 
 // Loaded inside one of a Land's own notebook frames — any relative "./" followed from an editor lands
 // here — this page would render the whole workspace nested in that tab, with its own polling, sockets
-// and terminals. A same-origin parent that is itself a Land means exactly that (the desktop deck is
-// another origin, so its frames never match): ask the parent to close the tab instead of rendering.
+// and terminals. A same-origin parent that is itself a Land means exactly that: ask the parent to
+// close the tab instead of rendering.
 const framed_by_land = (() => {
     try {
         return window.frameElement != null && window.parent.document.getElementById("land-app") != null

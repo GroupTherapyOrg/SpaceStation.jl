@@ -164,7 +164,7 @@ mkdir -p "$RT/depot" "$RT/home" "$RT/tmp" && : > "$RT/.building" || give_up "can
 cp -a "$JULIA_ROOT" "$RT/julia" || give_up "could not copy julia"
 rm -rf "$RT/julia/share/doc" "$RT/julia/share/julia/test" "$RT/julia/share/man" 2>/dev/null
 # the app, mtimes kept (its cache is validated by path and mtime), without its history
-# and only what a running server reads: not the bundler, the desktop shell, the tests
+# and only what a running server reads: not the bundler, the tests
 mkdir -p "$RT/app" && (cd "$APP" && for f in Project.toml Manifest.toml src frontend frontend-dist bin sample assets; do [ -e "$f" ] && echo "$f"; done | tar --exclude=node_modules --exclude=.parcel-cache -cf - -T -) | tar -xf - -C "$RT/app" || give_up "could not copy the app"
 # the packages and artifacts this app's Manifest names, copied out of the user's depot: no network needed
 "$JULIA" --startup-file=no --history-file=no --project="$APP" -e '

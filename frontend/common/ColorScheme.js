@@ -13,8 +13,7 @@
 const KEY = "spacestation color scheme"
 
 // Workspaces run on their own ports — separate localStorage origins — so the launcher's choice
-// reaches them two ways: a ?scheme= seed stamped on workspace links (browser tabs), and
-// "spacestation:color-scheme" postMessages rebroadcast by the desktop deck (live switching).
+// reaches them through a ?scheme= seed stamped on workspace links.
 const seed = new URLSearchParams(window.location.search).get("scheme")
 if (seed === "light" || seed === "dark" || seed === "system") {
     try {
@@ -45,7 +44,7 @@ const original_condition = new WeakMap()
 
 // Substituted for the color-scheme clause ONLY — never the whole condition. A compound query
 // like (max-width: 700px) and (prefers-color-scheme: dark) must keep its width clause, or
-// forcing dark turns mobile-only rules on at desktop width.
+// forcing dark turns mobile-only rules on at full width.
 const ALWAYS = "(min-width: 0px)"
 const NEVER = "(min-width: 999999px)"
 
@@ -86,8 +85,7 @@ const apply = (scheme) => {
     // (default text, form controls, scrollbars) from the page's declared color-scheme and the OS.
     // With a dark OS and a forced-light page that meant white UA text on light backgrounds
     // (invisible buttons, washed-out logs). The color-scheme PROPERTY on :root overrides the
-    // meta and pins the UA side too. (The desktop shell additionally flips the native window
-    // appearance to match, so WKWebView's own chrome follows along.)
+    // meta and pins the UA side too.
     document.documentElement.style.colorScheme = scheme === "system" ? "" : scheme
     // apply() re-runs constantly (new stylesheets arrive with cell output) — only nudge the
     // scroller when the scheme actually changed, or it would flicker on every mutation.
@@ -171,10 +169,4 @@ new MutationObserver((mutations) => {
 }).observe(document.documentElement, { childList: true, subtree: true })
 window.addEventListener("storage", (e) => {
     if (e.key === KEY) apply(get_color_scheme())
-})
-window.addEventListener("message", (e) => {
-    const d = e.data
-    if (d != null && d.type === "spacestation:color-scheme" && (d.scheme === "light" || d.scheme === "dark" || d.scheme === "system")) {
-        set_color_scheme(d.scheme)
-    }
 })

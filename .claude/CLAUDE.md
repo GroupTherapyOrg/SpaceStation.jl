@@ -44,9 +44,9 @@ Pluto.jl is a reactive Julia notebook: a Julia web server that executes notebook
 
 Releases are cut by hand: bump `version` in `Project.toml` on `main` (one commit or PR), then run
 `.github/workflows/Release.yml` (Actions → Release → Run workflow, or `gh workflow run Release.yml`).
-It tags that commit, publishes the GitHub release, dispatches the desktop installer build
-(`Desktop.yml`) against it, and comments `@JuliaRegistrator register` on the release commit; General's
-AutoMerge registers the version ~15-20 min later. It refuses to run if the tag already exists.
+It tags that commit, publishes the GitHub release, and comments `@JuliaRegistrator register` on the
+release commit; General's AutoMerge registers the version ~15-20 min later. It refuses to run if the
+tag already exists.
 `CHANGELOG.md` is hand-maintained (or left alone); nothing generates it. Commit message style no longer
 drives anything — release-please was removed in 2026-09.
 

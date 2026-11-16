@@ -141,8 +141,8 @@ end
 
 """
 Where connection files lived before SPACESTATION_STATE_HOME, when that variable has moved them
-(`nothing` otherwise). An older client (another laptop, a desktop app a version behind, pluto-collab
-in a plain ssh shell) only looks there; not finding this server, it would start a second one next to
+(`nothing` otherwise). An older client (another laptop, pluto-collab in a plain ssh shell) only
+looks there; not finding this server, it would start a second one next to
 it. So a server ANNOUNCES itself there as well: once, at start, before it serves anything (a hang
 on that filesystem then only delays the start), and never again; later rewrites go to the
 node-local file alone. Removed at shutdown, best-effort; a leftover is harmless, readers check the pid.
@@ -860,10 +860,6 @@ function register_collab_api!(router, session::ServerSession)
     function serve_api_config(request::HTTP.Request)
         body = _json(Pair[
             "tunneled" => haskey(ENV, "SPACESTATION_TUNNELED") || haskey(ENV, "PLUTOSPACE_TUNNELED"),
-            # The desktop shell (desktop/) sets this: one webview window, no browser tabs — so the
-            # hub opens workspaces in-place like a tunneled server, but keeps the SSH sections
-            # (which `tunneled` hides, since tunnel-over-tunnel ports would be unreachable).
-            "desktop" => haskey(ENV, "SPACESTATION_DESKTOP"),
             "pluto_version" => PLUTO_VERSION_STR,
             # A hub never runs notebooks itself: this page's workspace (if any) is relayed to a child
             # server under /w/<id>/ (see Proxy.jl). `wid` names it.

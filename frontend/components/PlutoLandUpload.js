@@ -5,7 +5,7 @@ import _ from "../imports/lodash-es.js"
 import { useDialog } from "../common/useDialog.js"
 import { useEventListener } from "../common/useEventListener.js"
 import { t, th } from "../common/lang.js"
-import { exportNotebookDesktop, WarnForVisisblePasswords } from "./ExportBanner.js"
+import { WarnForVisisblePasswords } from "./ExportBanner.js"
 import { useMillisSinceTruthy } from "./RunArea.js"
 import { cl } from "../common/ClassTable.js"
 
@@ -97,10 +97,7 @@ export const PlutoLandUpload = ({ notebook_id }) => {
                     href=${String(download_url)}
                     target="_blank"
                     download=${download_filename ?? ""}
-                    onClick=${(e) => {
-                        exportNotebookDesktop(e, "html", notebook_id)
-                        close()
-                    }}
+                    onClick=${() => close()}
                 >
                     ${th("t_plutoland_download")} ${InlineIonicon("download-outline", { inlineMargin: true })}
                 </a>
