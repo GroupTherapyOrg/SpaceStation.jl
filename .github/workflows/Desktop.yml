@@ -54,7 +54,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, windows-latest, ubuntu-latest]
+        os: [macos-15, windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
@@ -150,7 +150,7 @@ jobs:
           # `built` is what the build produces — always the clean product name, because the
           # bundle inside inherits it (an .app named SpaceStation-mac-arm64 would install into
           # /Applications under that name). `file` is the platform-suffixed release asset.
-          - { name: mac-arm64, os: macos-14, task: "build:dmg", built: SpaceStation.dmg, file: SpaceStation-mac-arm64.dmg }
+          - { name: mac-arm64, os: macos-15, task: "build:dmg", built: SpaceStation.dmg, file: SpaceStation-mac-arm64.dmg }
           - { name: mac-x64, os: macos-15-intel, task: "build:dmg-intel", built: SpaceStation.dmg, file: SpaceStation-mac-x64.dmg }
           - { name: windows-x64, os: windows-latest, task: "build:msi", built: SpaceStation.msi, file: SpaceStation-win-x64.msi }
           - { name: linux-x64, os: ubuntu-latest, task: "build:linux", built: SpaceStation.AppImage, file: SpaceStation-linux-x64.AppImage }
