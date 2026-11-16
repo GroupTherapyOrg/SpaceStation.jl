@@ -61,7 +61,7 @@ const PLUTO_VERSION_STR = "v$(string(PLUTO_VERSION))"
 # line of every saved notebook instead of SpaceStation's own version: nothing reads that line back, and
 # writing ours made a notebook shared with plain Pluto flip it (`# v1.0.3` ⇄ `# v0.6.1`) on every save,
 # a diff in git that meant nothing. Bump it when merging a newer upstream release.
-const PLUTO_UPSTREAM_VERSION_STR = "v1.0.3"
+const PLUTO_UPSTREAM_VERSION_STR = "v1.1.0"
 const JULIA_VERSION_STR = "v$(string(VERSION))"
 
 import PlutoDependencyExplorer: PlutoDependencyExplorer, TopologicalOrder, NotebookTopology, ExprAnalysisCache, ImmutableVector, ExpressionExplorerExtras, topological_order, all_cells, disjoint, where_assigned, where_referenced
@@ -86,6 +86,7 @@ include("./notebook/saving and loading.jl")
 include("./notebook/OutputCache.jl")
 include("./notebook/frontmatter.jl")
 include("./notebook/Events.jl")
+include("./webserver/HTTPCompat.jl")
 include("./webserver/Session.jl")
 include("./webserver/timer callback.jl")
 include("./webserver/PutUpdates.jl")
@@ -143,7 +144,11 @@ include("./precompile.jl")
 const pluto_boot_environment_path = Ref{String}()
 
 function julia_compat_issue(short::String)
-    "Search [github.com/fonsp/Pluto.jl/issues](https://github.com/fonsp/Pluto.jl/issues) for `Julia $short`"
+    if short == "1.14"
+        "Check [https://github.com/fonsp/Pluto.jl/issues/3444](https://github.com/fonsp/Pluto.jl/issues/3444)"
+    else
+        "Search [github.com/fonsp/Pluto.jl/issues](https://github.com/fonsp/Pluto.jl/issues) for `Julia $short`"
+    end
 end
 
 # Julia 1.13 is supported: its `@doc` change (JuliaLang/julia#59882) is handled in PlutoRunner's

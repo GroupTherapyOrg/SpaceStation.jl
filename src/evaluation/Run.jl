@@ -730,7 +730,12 @@ function update_from_file(session::ServerSession, notebook::Notebook; allow_dest
 	include_nbpg = !session.options.server.auto_reload_from_file_ignore_pkg
 
 	just_loaded = try
-		load_notebook_nobackup(notebook.path)
+		# The file is read once, so that what is checked is what is loaded. A file that holds one of our
+		# own saves has nothing to tell us: when memory is ahead of it (someone typed, and the save that
+		# carries it is still being written) "reloading" would take that typing back. See `is_own_file_content`.
+		file_content = offload_blocking(() -> read(notebook.path, String)) # off the serving thread: see Offload.jl
+		is_own_file_content(notebook, hash(file_content)) && return true
+		load_notebook_nobackup(IOBuffer(file_content), notebook.path)
 	catch e
 		@error "Skipping hot reload because loading the file went wrong" exception=(e,catch_backtrace())
 		return false

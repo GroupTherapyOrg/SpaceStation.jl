@@ -87,26 +87,37 @@ const is_first_run = Ref(true)
 
 "Return a port and serversocket to use while taking into account the `favourite_port`."
 function port_serversocket(hostIP::Sockets.IPAddr, favourite_port, port_hint)
-    local port, serversocket
     if favourite_port === nothing
-        port, serversocket = Sockets.listenany(hostIP, UInt16(port_hint))
+        port = UInt16(port_hint)
+        while true
+            try
+                return port, listen_socket(hostIP, port)
+            catch e
+                port == typemax(UInt16) && rethrow(e)
+                port += UInt16(1)
+            end
+        end
     else
         port = UInt16(favourite_port)
-        try
-            serversocket = Sockets.listen(hostIP, port)
+        serversocket = try
+            listen_socket(hostIP, port)
         catch e
             error("Cannot listen on port $port. It may already be in use, or you may not have sufficient permissions. Use Pluto.run() to automatically select an available port.")
         end
+        return port, serversocket
     end
-    return port, serversocket
 end
 
 struct RunningPlutoServer
     http_server
+    on_shutdown::Function
     initial_registry_update_task::Task
 end
 
 function Base.close(ssc::RunningPlutoServer)
+    # Disconnect clients and shut down notebooks first: closing the HTTP server
+    # is graceful, i.e. it waits for the open (WebSocket) connections to finish.
+    ssc.on_shutdown()
     close(ssc.http_server)
     wait(ssc.http_server)
     wait(ssc.initial_registry_update_task)
@@ -121,8 +132,9 @@ function Base.wait(ssc::RunningPlutoServer)
     catch e
         println()
         println()
-        Base.close(ssc)
         (e isa InterruptException) || rethrow(e)
+    finally
+        Base.close(ssc)
     end
 
     nothing
@@ -130,18 +142,55 @@ end
 
 # Set once the server is listening, so a UI "Shut down" action can stop it without needing Ctrl+C
 # in the launching terminal (the whole point: that terminal may be gone, or ssh'd away).
+# Holds `(; http_server, on_shutdown)`: the same two things a `RunningPlutoServer` closes.
 const RUNNING_HTTP_SERVER = Ref{Any}(nothing)
 
 """
-Stop the running SpaceStation server cleanly. Closing the listen socket fires HTTP.jl's `on_shutdown`
-(notebooks, registry file) and unblocks `wait(::RunningPlutoServer)`, so a CLI launch returns and the
-process exits; a library/REPL launch simply returns from `run`. Done async so the caller (an HTTP
-handler) can finish responding first.
+Wrap the server's shutdown hook `f` (registry files, file helpers, remote tunnels, child workspace
+servers, terminals, clients, notebooks) so that it runs exactly once, whoever asks for it and
+however often. HTTP.jl is no longer given the hook (its `on_shutdown=` keyword is HTTP.jl 1 only),
+so it runs where the server is closed:
+
+- `Base.close(::RunningPlutoServer)`: a library launch's `close(server)`, and the `finally` of
+  `Base.wait(::RunningPlutoServer)`, which is how Ctrl+C and the end of a CLI launch get here;
+- `request_server_shutdown()`: the UI's and the desktop shell's `POST /api/v1/shutdown`.
+
+Those overlap: a shutdown asked over HTTP closes the listen socket, which ends `wait`, which closes
+the server again. A caller that arrives while the hook runs waits for it to finish, and one that
+arrives afterwards returns at once. An error in the hook is logged and not thrown, as HTTP.jl did
+with it, so that the HTTP server is closed and the port released all the same.
+"""
+function shutdown_hook_once(f::Function)
+    guard = ReentrantLock()
+    ran = Ref(false)
+    function ()
+        lock(guard) do
+            ran[] && return nothing
+            ran[] = true
+            try
+                f()
+            catch e
+                @error "SpaceStation: the shutdown hook failed" exception = (e, catch_backtrace())
+            end
+            nothing
+        end
+    end
+end
+
+"""
+Stop the running SpaceStation server cleanly: run its shutdown hook (notebooks, registry file, and
+the rest: see `shutdown_hook_once`), then close the HTTP server. Closing the listen socket unblocks
+`wait(::RunningPlutoServer)`, so a CLI launch returns and the process exits; a library/REPL launch
+simply returns from `run`. Done async so the caller (an HTTP handler) can finish responding first.
 """
 function request_server_shutdown()
     srv = RUNNING_HTTP_SERVER[]
     srv === nothing && return
-    @async swallow_exception(() -> close(srv), Exception)
+    @async swallow_exception(Exception) do
+        # the same order as `Base.close(::RunningPlutoServer)`
+        srv.on_shutdown()
+        close(srv.http_server)
+    end
 end
 
 """
@@ -156,11 +205,11 @@ end
 "The SpaceStation integrated terminal: a raw PTY bridge, separate from the notebook protocol. Called for an authenticated websocket upgrade on `/terminal` (at the root, or under a hub's `/w/<id>/`)."
 function serve_terminal_upgrade(http::HTTP.Stream, session::ServerSession, terminal_query)
     try
-        HTTP.WebSockets.upgrade(http) do clientstream
+        HTTP.WebSockets.upgrade(http; WEBSOCKET_UPGRADE_KWARGS...) do clientstream
             HTTP.WebSockets.isclosed(clientstream) || handle_terminal_websocket(clientstream, session, terminal_query)
         end
     catch ex
-        if !(ex isa InterruptException || ex isa HTTP.WebSockets.WebSocketError || ex isa EOFError || ex isa Base.IOError)
+        if !(ex isa InterruptException || ex isa HTTP.WebSockets.WebSocketError || is_disconnection_exception(ex))
             @warn "Terminal websocket connection failed" error = sprint(showerror, ex) # no backtrace: symbolicating one reads the depot (PinCode.jl)
         end
     end
@@ -186,6 +235,51 @@ function keep_node_files_fresh(; every::Real=NODE_FILES_FRESH_EVERY)
             Base.run(pipeline(ignorestatus(freshen_command(dirs)); stdin=devnull, stdout=devnull, stderr=devnull); wait=false)
         catch
         end
+    end
+end
+
+"""
+Generate a middleware that records the `token` url parameter passed in by Binder,
+so that it can be added to every URL that Pluto prints (and you can share that URL
+to collaborate).
+"""
+function create_binder_token_middleware(session::ServerSession)
+    function binder_token_middleware(handler)
+        function (request::HTTP.Request)
+            params = HTTP.queryparams(HTTP.URI(request.target))
+            if haskey(params, "token") && params["token"] ∉ ("null", "undefined", "") && session.binder_token === nothing
+                session.binder_token = params["token"]
+            end
+            handler(request)
+        end
+    end
+end
+
+"""
+Middleware that turns an exception thrown while handling a request into a `500` error page,
+and logs it. The details only go to the log, since the request might not be authenticated.
+"""
+function internal_error_middleware(handler)
+    function (request::HTTP.Request)
+        try
+            handler(request)
+        catch e
+            @error "Failed to handle request" request.method path = HTTP.URI(request.target).path exception = (e, catch_backtrace())
+            error_response(500, "Internal server error", "Pluto ran into an unexpected error while handling this request. The details are in the terminal where Pluto is running. Please <a href='https://github.com/JuliaPluto/Pluto.jl/issues'>report this error</a>!")
+        end
+    end
+end
+
+"Middleware that adds the headers that Pluto sets on every HTTP response."
+function default_headers_middleware(handler)
+    function (request::HTTP.Request)
+        response = handler(request)
+        set_content_length!(response)
+        # https://github.com/fonsp/Pluto.jl/pull/722
+        HTTP.setheader(response, "Referrer-Policy" => "same-origin")
+        # https://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#:~:text=is%202%20minutes.-,14.38%20Server
+        HTTP.setheader(response, "Server" => "Pluto.jl/$(PLUTO_VERSION_STR[2:end]) Julia/$(JULIA_VERSION_STR[2:end])")
+        response
     end
 end
 
@@ -216,7 +310,10 @@ function run!(session::ServerSession)
     end
     pluto_router = http_router_for(session)
     store_session_middleware = create_session_context_middleware(session)
-    app = pluto_router |> auth_middleware |> store_session_middleware
+    store_binder_token_middleware = create_binder_token_middleware(session)
+    app = pluto_router |> auth_middleware |> store_session_middleware |> store_binder_token_middleware |> internal_error_middleware |> default_headers_middleware
+    # `HTTP.streamhandler` reads the request body, calls `app`, and writes the response.
+    streamed_app = HTTP.streamhandler(app)
 
     let n = session.options.server.notebook
         SessionActions.open.((session,), 
@@ -261,7 +358,8 @@ function run!(session::ServerSession)
     end
 
     on_shutdown() = @sync begin
-        # Triggered by HTTP.jl
+        # Called by `Base.close(::RunningPlutoServer)` before the HTTP server is closed, and by
+        # `request_server_shutdown()`: through `shutdown_once` below, never directly.
         @info("\nClosing SpaceStation... Restart Julia for a fresh session. \n\nHave a nice day! 🎈🏝\n\n")
         try
             isfile(registry_file) && rm(registry_file)
@@ -291,9 +389,9 @@ function run!(session::ServerSession)
         catch
         end
         # TODO: put do_work tokens back
-        @async swallow_exception(() -> close(serversocket), Base.IOError)
+        @async swallow_exception(() -> close(serversocket), Exception)
         for client in values(session.connected_clients)
-            @async swallow_exception(() -> close(client.stream), Base.IOError)
+            @async swallow_exception(() -> close(client.stream), Exception)
         end
         empty!(session.connected_clients)
         for nb in values(session.notebooks)
@@ -301,7 +399,10 @@ function run!(session::ServerSession)
         end
     end
 
-    server = HTTP.listen!(hostIP, port; stream=true, server=serversocket, on_shutdown, verbose=-1) do http::HTTP.Stream
+    # This hook has several callers (`shutdown_hook_once` lists them), and it must run exactly once.
+    shutdown_once = shutdown_hook_once(on_shutdown)
+
+    server = http_listen!(serversocket) do http::HTTP.Stream
         # A workspace served by this hub: `/w/<id>/…` (see Proxy.jl). The hub answers its own part of it
         # and relays the notebook part to the workspace's child server.
         # A file helper answers the handful of routes its hub forwards, and nothing else (FileHelper.jl).
@@ -328,7 +429,7 @@ function run!(session::ServerSession)
                 write(http, "Forbidden")
                 HTTP.closewrite(http)
             catch e
-                if !(e isa Base.IOError)
+                if !is_disconnection_exception(e)
                     rethrow(e)
                 end
             end
@@ -343,9 +444,11 @@ function run!(session::ServerSession)
                     serve_terminal_upgrade(http, session, HTTP.queryparams(HTTP.URI(http.message.target)))
                     return
                 end
+                upgraded = Ref(false)
                 try
                     # "upgrade" means accept and start the websocket connection that the client requested
-                    HTTP.WebSockets.upgrade(http) do clientstream
+                    HTTP.WebSockets.upgrade(http; WEBSOCKET_UPGRADE_KWARGS...) do clientstream
+                        upgraded[] = true
                         if HTTP.WebSockets.isclosed(clientstream)
                             return
                         end
@@ -385,7 +488,7 @@ function run!(session::ServerSession)
                                 end
                             end
                         catch ex
-                            if ex isa InterruptException || ex isa HTTP.WebSockets.WebSocketError || ex isa EOFError || (ex isa Base.IOError && occursin("connection reset", ex.msg))
+                            if ex isa InterruptException || ex isa HTTP.WebSockets.WebSocketError || is_disconnection_exception(ex)
                                 # that's fine!
                             else
                                 bt = catch_backtrace()
@@ -399,11 +502,7 @@ function run!(session::ServerSession)
                         end
                     end
                 catch ex
-                    if ex isa InterruptException
-                        # that's fine!
-                    elseif ex isa Base.IOError
-                        # that's fine!
-                    elseif ex isa ArgumentError && occursin("stream is closed", ex.msg)
+                    if ex isa InterruptException || is_disconnection_exception(ex)
                         # that's fine!
                     else
                         bt = catch_backtrace()
@@ -411,7 +510,7 @@ function run!(session::ServerSession)
                     end
                 finally
                     # if we never wrote a response, then do it now
-                    if isopen(http) && !iswritable(http)
+                    if !upgraded[] && isopen(http)
                         finish()
                     end
                 end
@@ -420,49 +519,21 @@ function run!(session::ServerSession)
             end
         else
             # then it's a regular HTTP request, not a WS upgrade
-
-            request::HTTP.Request = http.message
-            request.body = read(http)
-            # HTTP.closeread(http)
-
-            # If a "token" url parameter is passed in from binder, then we store it to add to every URL (so that you can share the URL to collaborate).
-            let
-                params = HTTP.queryparams(HTTP.URI(request.target))
-                if haskey(params, "token") && params["token"] ∉ ("null", "undefined", "") && session.binder_token === nothing
-                    session.binder_token = params["token"]
-                end
-            end
-
-            ###
-            response_body = app(request)
-            ###
-
-            request.response::HTTP.Response = response_body
-            request.response.request = request
             try
-                HTTP.setheader(http, "Content-Length" => string(length(request.response.body)))
-                # https://github.com/fonsp/Pluto.jl/pull/722
-                HTTP.setheader(http, "Referrer-Policy" => "same-origin")
-                # https://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#:~:text=is%202%20minutes.-,14.38%20Server
-                HTTP.setheader(http, "Server" => "Pluto.jl/$(PLUTO_VERSION_STR[2:end]) Julia/$(JULIA_VERSION_STR[2:end])")
-                HTTP.startwrite(http)
-                write(http, request.response.body)
+                streamed_app(http)
             catch e
-                if isa(e, Base.IOError) || isa(e, ArgumentError)
-                    # @warn "Attempted to write to a closed stream at $(request.target)"
-                else
-                    rethrow(e)
-                end
+                # @warn "Attempted to write to a closed stream at $(http.message.target)"
+                is_disconnection_exception(e) || rethrow(e)
             end
         end
     end
 
     # expose the live server so the UI "Shut down" action can stop it without Ctrl+C in the terminal
-    RUNNING_HTTP_SERVER[] = server
+    RUNNING_HTTP_SERVER[] = (; http_server=server, on_shutdown=shutdown_once)
 
     server_running() =
         try
-            HTTP.get("http://$(hostIP):$(port)$(session.options.server.base_url)ping"; status_exception=false, retry=false, connect_timeout=10, readtimeout=10).status == 200
+            HTTP.get("http://$(hostIP):$(port)$(session.options.server.base_url)ping"; status_exception=false, retry=false, CLIENT_TIMEOUT_KWARGS...).status == 200
         catch
             false
         end
@@ -498,7 +569,7 @@ function run!(session::ServerSession)
         end
     end
 
-    return RunningPlutoServer(server, initial_registry_update_task)
+    return RunningPlutoServer(server, shutdown_once, initial_registry_update_task)
 end
 precompile(run, (ServerSession, HTTP.Handlers.Router{Symbol("##001")}))
 

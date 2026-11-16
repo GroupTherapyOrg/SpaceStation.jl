@@ -164,3 +164,49 @@ end
 end
 @test true
 end
+
+# The file watcher tells our own saves from other people's edits by content. A save takes time, and
+# while it runs the file still holds the save before it: that older content is ours too. Taken for an
+# edit, it was "reloaded" over what had been typed since, and the cell someone was typing in went back
+# a save, cursor at the start (#123).
+@testset "A reload never takes back what was typed since the last save" begin
+    🍭 = ServerSession()
+    🍭.options.evaluation.workspace_use_distributed = false
+    notebook = Notebook([Cell("x = 1"), Cell("y = 2")], tempname() * ".jl")
+    cell = notebook.cells[1]
+    save_notebook(notebook)
+    first_save = read(notebook.path, String)
+    @test Pluto.is_own_file_content(notebook, hash(first_save))
+    @test !Pluto.is_own_file_content(notebook, hash(first_save * "\n# someone else\n"))
+    @test !Pluto.is_own_file_content(Notebook([Cell("z")], tempname() * ".jl"), zero(UInt64))   # never saved: nothing is ours
+
+    # The person types on. Memory is now ahead of the file, and the save that carries it has started
+    # and not finished: the file still holds the first save.
+    cell.code = "x = 12"
+    second_save = sprint(io -> save_notebook(io, notebook))
+    Pluto.own_write_started!(notebook, hash(second_save))
+    @test Pluto.is_own_file_content(notebook, hash(first_save)) && Pluto.is_own_file_content(notebook, hash(second_save))
+    @test Pluto.update_from_file(🍭, notebook)
+    @test cell.code == "x = 12"                                  # the older save is not news
+    # the save lands
+    write(notebook.path, second_save); Pluto.own_write_finished!(notebook, hash(second_save), true)
+    @test isempty(notebook.pending_file_hashes) && Pluto.is_own_file_content(notebook, hash(second_save))
+    @test !Pluto.is_own_file_content(notebook, hash(first_save)) # the older content turning up NOW is someone putting it back
+    @test Pluto.update_from_file(🍭, notebook) && cell.code == "x = 12"
+
+    # A save that fails is not what is on disk: the last one that landed still is.
+    Pluto.own_write_started!(notebook, UInt64(42)); Pluto.own_write_finished!(notebook, UInt64(42), false)
+    @test isempty(notebook.pending_file_hashes) && Pluto.is_own_file_content(notebook, hash(second_save)) && !Pluto.is_own_file_content(notebook, UInt64(42))
+
+    # An edit by someone else is still picked up, the one that puts the old content back included.
+    @test occursin("x = 12", second_save)
+    write(notebook.path, replace(second_save, "x = 12" => "x = 99"))
+    @test Pluto.update_from_file(🍭, notebook; run_async=false) && cell.code == "x = 99"
+    write(notebook.path, first_save)
+    @test Pluto.update_from_file(🍭, notebook; run_async=false) && cell.code == "x = 1"
+
+    # save_notebook itself keeps the books: after it returns, what it wrote is the last save and nothing is pending.
+    cell.code = "x = 7"; save_notebook(notebook)
+    @test isempty(notebook.pending_file_hashes) && Pluto.is_own_file_content(notebook, hash(read(notebook.path, String)))
+    WorkspaceManager.unmake_workspace((🍭, notebook); verbose=false)
+end

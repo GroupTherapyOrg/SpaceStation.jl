@@ -221,7 +221,7 @@ function proxy_ws(http::HTTP.Stream, s::LocalSession, rest::AbstractString; retr
     try
         HTTP.WebSockets.open(url; suppress_close_error=true, connect_timeout=3, retry=false, cookies=false) do childws
             opened[] = true
-            HTTP.WebSockets.upgrade(http) do clientws
+            HTTP.WebSockets.upgrade(http; WEBSOCKET_UPGRADE_KWARGS...) do clientws
                 HTTP.WebSockets.isclosed(clientws) && return
                 downstream = @async try
                     for msg in childws
@@ -259,7 +259,7 @@ function proxy_ws(http::HTTP.Stream, s::LocalSession, rest::AbstractString; retr
                 end
             catch
             end
-        elseif !(e isa HTTP.WebSockets.WebSocketError || e isa EOFError || e isa Base.IOError || e isa InterruptException)
+        elseif !(e isa HTTP.WebSockets.WebSocketError || is_disconnection_exception(e) || e isa InterruptException)
             @debug "workspace websocket relay ended" exception = (e, catch_backtrace())
         end
     end
@@ -270,16 +270,16 @@ end
 
 function _write_response!(http::HTTP.Stream, response::HTTP.Response)
     try
+        set_content_length!(response)
         HTTP.setstatus(http, response.status)
         for h in response.headers
             HTTP.setheader(http, h)
         end
-        HTTP.setheader(http, "Content-Length" => string(length(response.body)))
         HTTP.setheader(http, "Referrer-Policy" => "same-origin")
         HTTP.startwrite(http)
         write(http, response.body)
     catch e
-        (e isa Base.IOError || e isa ArgumentError) || rethrow()
+        is_disconnection_exception(e) || rethrow()
     end
 end
 

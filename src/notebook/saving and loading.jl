@@ -193,6 +193,32 @@ function _write_atomic_now(path::String, content::AbstractString)
     path
 end
 
+# Which file contents are OURS: what this server last finished writing to the notebook's file, and
+# what it is writing right now. A save takes time (it is offloaded, and on a networked home it can
+# take long), and for as long as it runs the file holds the save BEFORE it. `last_saved_file_hash`
+# used to be set to the new content before the write: in that window the watcher read the older save
+# from disk, found that it was not "what we last wrote", took it for an external edit and reloaded
+# the notebook from it, which put the cell someone was typing in back to what it was a save ago
+# (text typed since disappears, the cursor jumps to the start, "Reloaded from file" pops up).
+# So: a save is "pending" while it runs and becomes "the last one" only once it is on disk.
+# Older saves are deliberately not remembered: the previous content showing up after the newer save
+# has landed is somebody putting it back (git checkout, an agent's undo), and that is an edit.
+const _own_file_hash_lock = ReentrantLock()
+
+"Is a file with this content hash one of our own saves (the last finished one, or one being written now), rather than someone else's edit?"
+is_own_file_content(notebook::Notebook, content_hash::UInt64)::Bool = lock(_own_file_hash_lock) do
+    content_hash != zero(UInt64) && (content_hash == notebook.last_saved_file_hash || content_hash in notebook.pending_file_hashes)
+end
+own_write_started!(notebook::Notebook, content_hash::UInt64) = lock(() -> (push!(notebook.pending_file_hashes, content_hash); nothing), _own_file_hash_lock)
+function own_write_finished!(notebook::Notebook, content_hash::UInt64, written::Bool)
+    lock(_own_file_hash_lock) do
+        i = findfirst(==(content_hash), notebook.pending_file_hashes)
+        i === nothing || deleteat!(notebook.pending_file_hashes, i)
+        written && (notebook.last_saved_file_hash = content_hash)
+        nothing
+    end
+end
+
 function save_notebook(notebook::Notebook, path::String)
     # @warn "Saving to file!!" exception=(ErrorException(""), backtrace())
     notebook.last_save_time = time()
@@ -210,13 +236,24 @@ function save_notebook(notebook::Notebook, path::String)
                 catch
                     nothing
                 end
-                if disk_hash !== nothing && disk_hash != notebook.last_saved_file_hash && disk_hash != hash(file_content)
+                if disk_hash !== nothing && !is_own_file_content(notebook, disk_hash) && disk_hash != hash(file_content)
                     @warn "The notebook file was modified externally since the last save, and those changes were not yet synced — this save overwrites them. (If this was an agent edit: edit, then `status`/`run`; don't edit during a browser interaction.)" path
                 end
             end
-            notebook.last_saved_file_hash = hash(file_content)
         end
-        write_atomic(path, file_content)
+        if path == notebook.path
+            new_hash = hash(file_content)
+            own_write_started!(notebook, new_hash)
+            written = false
+            try
+                write_atomic(path, file_content)
+                written = true
+            finally
+                own_write_finished!(notebook, new_hash, written)
+            end
+        else
+            write_atomic(path, file_content)
+        end
     end
 end
 
