@@ -398,22 +398,34 @@ body.resizing-v .terminal-host {
 
 /* ---- sidebar ---- */
 
+/* Which workspace this is: the mark and the name on one row, then, under both, the folder's path
+   and the branch it is on. */
 .side-head {
     position: relative;
     display: flex;
-    align-items: center;
+    flex-direction: column;
     gap: 8px;
     flex-shrink: 0;
-    height: var(--land-strip);
-    padding: 0 8px 0 12px;
+    padding: 12px 10px 10px 12px;
     box-sizing: border-box;
+}
+.side-brand {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+}
+.side-brand .menu-button {
+    margin-left: auto;
+}
+.side-brand .icon-button + .icon-button {
+    margin-left: -7px;
 }
 
 .land-logo {
     display: block;
     flex-shrink: 0;
-    width: 22px;
-    height: 22px;
+    width: 30px;
+    height: 30px;
 }
 
 /* the logo is the way back to the launcher */
@@ -436,39 +448,81 @@ body.resizing-v .terminal-host {
     transform: translateY(-1px) rotate(-6deg);
 }
 
-.side-title {
-    flex: 1;
+.side-brand .wordmark {
     min-width: 0;
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-}
-.side-title .workspace-name {
-    min-width: 0;
-    font-weight: 650;
-    font-size: 13.5px;
+    font-family: var(--land-display-font);
+    font-size: 19px;
+    font-weight: 700;
+    line-height: 1.1;
+    letter-spacing: -0.005em;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
-.git-branch {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    min-width: 0;
-    flex-shrink: 2;
+.side-brand .wordmark .land-accent {
     color: var(--land-muted);
-    font-size: 11.5px;
+    font-weight: 500;
 }
-.git-branch .ico {
+.side-where {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1px;
+    min-width: 0;
+    padding-left: 2px;
+    color: var(--land-muted);
+    font-family: var(--julia-mono-font-stack);
+    font-size: 11px;
+    line-height: 1.4;
+}
+.side-where .ico {
     width: 12px;
     height: 12px;
-    align-self: center;
+    flex-shrink: 0;
 }
-.git-branch-name {
+.side-where .where-text {
+    min-width: 0;
+    white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    white-space: nowrap;
+}
+.side-where .workspace-path,
+.side-where .git-branch {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+    box-sizing: border-box;
+    padding: 2px 6px 2px 4px;
+    margin-left: -4px;
+    border-radius: 6px;
+}
+.side-where .workspace-path {
+    border: none;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+}
+/* the path keeps its end, the folder's own name; the start gives way */
+.side-where .workspace-path .where-text {
+    direction: rtl;
+}
+.side-where .workspace-path:hover {
+    background-color: var(--land-hover);
+    color: var(--land-fg);
+}
+.side-where .git-branch .ico {
+    color: var(--land-julia-green);
+}
+.git-detached {
+    flex-shrink: 0;
+    padding: 0 5px;
+    border-radius: 999px;
+    background-color: var(--land-warn-bg);
+    color: var(--land-warn);
+    font-family: var(--land-ui-font);
+    font-size: 10.5px;
 }
 
 .header-menu {
@@ -1434,6 +1488,110 @@ dialog.land-dialog .buttons .text-button {
     margin: -2px 0 8px;
     color: var(--land-muted);
     font-size: 12px;
+}
+
+/* Workspaces that are open, and recent ones: a card each, the way Pluto's welcome page shows
+   notebooks. A card is a small island; it lifts under the pointer. */
+.ws-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+    gap: 10px;
+}
+.ws-card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    border-radius: var(--land-island-radius);
+    background-color: var(--land-sidebar-bg);
+    box-shadow: var(--land-glass);
+    transition: transform 0.16s cubic-bezier(0.3, 1.4, 0.5, 1), box-shadow 0.16s ease-out;
+}
+.ws-card:has(.ws-card-open:not(.inert):hover) {
+    transform: translateY(-2px);
+    box-shadow: var(--land-glass), 0 10px 22px -12px rgba(0, 0, 0, 0.35);
+}
+.ws-card-open {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1px;
+    min-width: 0;
+    padding: 14px 14px 13px;
+    border: none;
+    border-radius: inherit;
+    background: none;
+    color: inherit;
+    text-align: left;
+    text-decoration: none;
+}
+.ws-card-open.inert {
+    cursor: default;
+}
+.ws-card-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    margin-bottom: 9px;
+    border-radius: 11px;
+    background-color: color-mix(in srgb, var(--land-julia-purple) 15%, transparent);
+    color: var(--land-julia-purple);
+}
+.ws-card-icon.remote {
+    background-color: color-mix(in srgb, var(--land-julia-green) 15%, transparent);
+    color: var(--land-julia-green);
+}
+.ws-card-icon.quiet {
+    background-color: var(--land-hover);
+    color: var(--land-muted);
+}
+.ws-card-icon .ico {
+    width: 18px;
+    height: 18px;
+}
+.ws-card .ws-name {
+    max-width: 100%;
+    font-size: 14px;
+    font-weight: 650;
+}
+.ws-card .ws-path {
+    flex: none;
+    max-width: 100%;
+    width: 100%;
+}
+.ws-card .ws-state {
+    margin-top: 8px;
+}
+.ws-card-corner {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+}
+.ws-card-corner.on-hover {
+    opacity: 0;
+    transition: opacity 0.12s ease-out;
+}
+.ws-card:hover .ws-card-corner.on-hover,
+.ws-card-corner.on-hover:focus-visible {
+    opacity: 1;
+}
+.ws-card-detail {
+    margin: -6px 14px 10px;
+    color: var(--land-muted);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+    user-select: text;
+}
+.ws-card.error .ws-card-detail {
+    color: var(--land-danger);
+}
+.ws-card-actions {
+    display: flex;
+    gap: 6px;
+    padding: 0 14px 13px;
+    margin-top: -4px;
 }
 
 /* A list of places to open: workspaces that are running, recent ones, hosts. One raised panel

@@ -680,6 +680,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
         const listed = running.find((w) => w.kind === "remote" && w.host === h)
         return remote_states[h] ?? (listed == null ? null : { state: listed.state, detail: "", url: listed.url })
     }
+    const connected_hosts = ssh_hosts.map((host) => ({ host, st: remote_state(host) })).filter(({ st }) => st?.state === "ready" && st.url != null)
     const anything_busy = local_rows.some((r) => is_busy(r.st)) || ssh_hosts.some((h) => is_busy(remote_state(h)))
     useEffect(() => {
         if (!anything_busy) return
@@ -712,45 +713,70 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
             </header>
             <p class="subtitle">Open a folder as a workspace: its notebooks open as tabs, beside a terminal and the files.</p>
 
-            ${!tunneled && local_rows.length > 0
+            ${!tunneled && (local_rows.length > 0 || connected_hosts.length > 0)
                 ? html`<section class="opener-section">
                       <h2>Open workspaces</h2>
-                      <ul class="ws-list">
+                      <div class="ws-grid">
                           ${local_rows.map(({ path, st }) => {
                               const name = basename(path) || path
-                              const body = html`<span class="ico i-folder"></span><span class="ws-name">${name}</span><span class="ws-path" title=${path}>${"‎" + path}</span>`
                               const time = elapsed(`local:${path}`, st)
-                              return html`<li class="ws-row ${st.state === "error" ? "error" : ""}" key=${path}>
-                                  ${st.state === "ready" && st.url != null ? open_link(st.url, name, body) : html`<div class="ws-open inert">${body}</div>`}
+                              const body = html`<span class="ws-card-icon"><span class="ico i-folder"></span></span>
+                                  <span class="ws-name">${name}</span>
+                                  <span class="ws-path" title=${path}>${"‎" + path}</span>
                                   ${st.state === "ready"
-                                      ? html`<span class="ws-state"><span class="dot ok"></span>Running</span>
-                                            <button class="icon-button danger" title="Shut down this workspace" aria-label=${`Shut down ${name}`} onClick=${() => shutdown_local(path)}>
-                                                <span class="ico i-power"></span>
-                                            </button>`
+                                      ? html`<span class="ws-state"><span class="dot ok"></span>Running</span>`
                                       : st.state === "error"
-                                        ? html`<span class="ws-state"><span class="dot bad"></span>Did not start</span>
-                                              <button class="text-button" onClick=${() => open_workspace(path)}>Try again</button>
-                                              <button class="icon-button" title="Dismiss" aria-label="Dismiss" onClick=${() => cancel_local(path)}><span class="ico i-close"></span></button>`
-                                        : html`<span class="ws-state"><span class="spinner"></span>${state_label(st)} · ${time}</span>
-                                              <button class="text-button" onClick=${() => cancel_local(path)}>Cancel</button>`}
-                                  ${st.state !== "ready" && st.detail ? html`<p class="ws-detail">${st.detail}</p>` : null}
-                              </li>`
+                                        ? html`<span class="ws-state"><span class="dot bad"></span>Did not start</span>`
+                                        : html`<span class="ws-state"><span class="spinner"></span>${state_label(st)} · ${time}</span>`}`
+                              return html`<div class="ws-card ${st.state === "error" ? "error" : ""} ${is_busy(st) ? "busy" : ""}" key=${path}>
+                                  ${st.state === "ready" && st.url != null ? open_link(st.url, name, body, "ws-card-open") : html`<div class="ws-card-open inert">${body}</div>`}
+                                  ${st.state !== "ready" && st.detail ? html`<p class="ws-card-detail">${st.detail}</p>` : null}
+                                  ${st.state === "ready"
+                                      ? html`<button class="icon-button danger ws-card-corner" title="Shut down this workspace" aria-label=${`Shut down ${name}`} onClick=${() => shutdown_local(path)}>
+                                            <span class="ico i-power"></span>
+                                        </button>`
+                                      : st.state === "error"
+                                        ? html`<div class="ws-card-actions">
+                                                  <button class="text-button" onClick=${() => open_workspace(path)}>Try again</button>
+                                              </div>
+                                              <button class="icon-button ws-card-corner" title="Dismiss" aria-label="Dismiss" onClick=${() => cancel_local(path)}><span class="ico i-close"></span></button>`
+                                        : html`<div class="ws-card-actions"><button class="text-button" onClick=${() => cancel_local(path)}>Cancel</button></div>`}
+                              </div>`
                           })}
-                      </ul>
+                          ${connected_hosts.map(({ host, st }) => {
+                              const body = html`<span class="ws-card-icon remote"><span class="ico i-server"></span></span>
+                                  <span class="ws-name">${host}</span>
+                                  <span class="ws-path">over SSH</span>
+                                  <span class="ws-state"><span class="dot ok"></span>Connected</span>`
+                              return html`<div class="ws-card" key=${`remote:${host}`}>
+                                  ${open_link(st.url, host, body, "ws-card-open")}
+                                  <button
+                                      class="icon-button ws-card-corner"
+                                      title=${`Disconnect: close the tunnel to ${host}. Its server and whatever runs on it keep going.`}
+                                      aria-label=${`Disconnect from ${host}`}
+                                      onClick=${() => cancel_remote(host)}
+                                  >
+                                      <span class="ico i-close"></span>
+                                  </button>
+                              </div>`
+                          })}
+                      </div>
                   </section>`
                 : null}
 
             ${recent.length > 0
                 ? html`<section class="opener-section">
                       <h2>Recent</h2>
-                      <ul class="ws-list">
+                      <div class="ws-grid">
                           ${recent.map(
-                              (p) => html`<li class="ws-row" key=${p}>
-                                  <button class="ws-open" title=${`Open ${p}`} onClick=${() => open_workspace(p)}>
-                                      <span class="ico i-folder"></span><span class="ws-name">${basename(p) || p}</span><span class="ws-path">${"‎" + p}</span>
+                              (p) => html`<div class="ws-card" key=${p}>
+                                  <button class="ws-card-open" title=${`Open ${p}`} onClick=${() => open_workspace(p)}>
+                                      <span class="ws-card-icon quiet"><span class="ico i-folder"></span></span>
+                                      <span class="ws-name">${basename(p) || p}</span>
+                                      <span class="ws-path">${"‎" + p}</span>
                                   </button>
                                   <button
-                                      class="icon-button"
+                                      class="icon-button ws-card-corner on-hover"
                                       title="Remove from this list"
                                       aria-label=${`Remove ${basename(p) || p} from recent`}
                                       onClick=${() => {
@@ -760,9 +786,9 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                                   >
                                       <span class="ico i-close"></span>
                                   </button>
-                              </li>`
+                              </div>`
                           )}
-                      </ul>
+                      </div>
                   </section>`
                 : null}
 
@@ -1531,6 +1557,7 @@ const Land = () => {
     const terminal_ever_opened = useRef(false)
     if (terminal_open) terminal_ever_opened.current = true
     const [show_opener, set_show_opener] = useState(false)
+    const [path_copied, set_path_copied] = useState(false)
     // which file tabs have unsaved changes (the panes report it; the strip marks them)
     const [dirty_tabs, set_dirty_tabs] = useState(/** @type {Set<String>} */ (new Set()))
     const set_tab_dirty = useCallback((path, dirty) => {
@@ -2438,23 +2465,41 @@ const Land = () => {
                 ? null
                 : html`<aside class="island" style=${`width: ${sidebar_width}px`}>
                       <header class="side-head">
-                          <button class="land-logo-button" title="Launcher: open and manage workspaces" aria-label="Launcher" onClick=${go_home}>
-                              <img class="land-logo" src=${logo_url} alt="" />
-                          </button>
-                          <div class="side-title">
-                              <span class="workspace-name" title=${workspace?.root ?? ""}>${workspace?.root ? basename(workspace.root) || workspace.root : "SpaceStation"}</span>
-                              ${workspace?.git == null
-                                  ? null
-                                  : html`<span class="git-branch" title=${workspace.git.detached ? `Detached HEAD at ${workspace.git.branch}` : `On branch ${workspace.git.branch}`}>
-                                        <span class="ico i-branch"></span><span class="git-branch-name">${workspace.git.branch}</span>
-                                    </span>`}
+                          <div class="side-brand">
+                              <button class="land-logo-button" title="Launcher: open and manage workspaces" aria-label="Launcher" onClick=${go_home}>
+                                  <img class="land-logo" src=${logo_url} alt="" />
+                              </button>
+                              <span class="wordmark">Space<span class="land-accent">Station</span></span>
+                              <button class="icon-button menu-button" title="More" aria-label="More" aria-haspopup="menu" onClick=${(e) => open_header_menu(e.currentTarget)}>
+                                  <span class="ico i-more"></span>
+                              </button>
+                              <button class="icon-button collapse-button" title="Hide the sidebar" aria-label="Hide the sidebar" onClick=${() => set_sidebar_hidden(true)}>
+                                  <span class="ico i-sidebar"></span>
+                              </button>
                           </div>
-                          <button class="icon-button menu-button" title="More" aria-label="More" aria-haspopup="menu" onClick=${(e) => open_header_menu(e.currentTarget)}>
-                              <span class="ico i-more"></span>
-                          </button>
-                          <button class="icon-button collapse-button" title="Hide the sidebar" aria-label="Hide the sidebar" onClick=${() => set_sidebar_hidden(true)}>
-                              <span class="ico i-sidebar"></span>
-                          </button>
+                          ${workspace?.root
+                              ? html`<div class="side-where">
+                                    <button
+                                        class="workspace-path"
+                                        title=${`${workspace.root}\nClick to copy the path`}
+                                        aria-label=${`Workspace folder ${workspace.root}. Copy the path`}
+                                        onClick=${() => {
+                                            copy_text(workspace.root)
+                                            set_path_copied(true)
+                                            setTimeout(() => set_path_copied(false), 1200)
+                                        }}
+                                    >
+                                        <span class="ico i-folder"></span><span class="where-text">${path_copied ? "Copied" : "\u200e" + workspace.root}</span>
+                                    </button>
+                                    ${workspace.git == null
+                                        ? null
+                                        : html`<span class="git-branch" title=${workspace.git.detached ? `Detached HEAD at ${workspace.git.branch}` : `On branch ${workspace.git.branch}`}>
+                                              <span class="ico i-branch"></span><span class="where-text git-branch-name">${workspace.git.branch}</span>${workspace.git.detached
+                                                  ? html`<span class="git-detached">detached</span>`
+                                                  : null}
+                                          </span>`}
+                                </div>`
+                              : null}
                       </header>
                       <section class="files">
                           <h2>
