@@ -16,6 +16,6 @@
         "resolveJsonModule": true,
         "moduleResolution": "bundler",
     },
-    "include": ["frontend/**/*.js", "node_modules/**/*.js", "frontend/Desktop.d.ts"],
+    "include": ["frontend/**/*.js", "node_modules/**/*.js"],
     "exclude": ["frontend/components/CellInput/tests/"]
 }

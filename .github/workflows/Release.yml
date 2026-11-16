@@ -1,8 +1,8 @@
 # Releases, on demand.
 #
 # Bump `version` in Project.toml on main, then run this workflow (Actions → Release → Run workflow,
-# or `gh workflow run Release.yml`). It tags that commit, publishes the GitHub release, dispatches the
-# desktop installer build against it, and asks JuliaRegistrator to register the version in General.
+# or `gh workflow run Release.yml`). It tags that commit, publishes the GitHub release, and asks
+# JuliaRegistrator to register the version in General.
 #
 # Nothing here decides what the version is or writes a changelog; that is done by hand.
 
@@ -13,7 +13,6 @@ on:
 
 permissions:
     contents: write
-    actions: write
 
 jobs:
     release:
@@ -49,13 +48,6 @@ jobs:
                       --title "SpaceStation ${{ steps.version.outputs.tag }}" \
                       --notes "SpaceStation ${{ steps.version.outputs.tag }}. Changes: https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md" \
                       --target "${{ steps.version.outputs.sha }}"
-
-            # A release created with GITHUB_TOKEN cannot trigger the `release` event, so the desktop
-            # installer build (.dmg/.msi/.AppImage attached to the release) is dispatched explicitly.
-            - name: Build the desktop installers for this release
-              env:
-                  GH_TOKEN: ${{ github.token }}
-              run: gh workflow run Desktop.yml --repo "$GITHUB_REPOSITORY" -f release_tag="${{ steps.version.outputs.tag }}"
 
             # JuliaRegistrator listens for this comment on the release commit; General's AutoMerge
             # then merges the registration in ~15-20 min. The notes must contain "breaking" or

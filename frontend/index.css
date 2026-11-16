@@ -86,12 +86,6 @@ pluto-filepicker {
     background: var(--white);
 }
 
-.desktop_picker {
-    display: flex;
-    flex-direction: row;
-    margin-left: 5px;
-}
-
 pluto-filepicker .cm-editor {
     height: calc(1rem + 4px + 4px + 4px);
     display: inline-block;
@@ -120,8 +114,7 @@ pluto-filepicker .cm-scroller::-webkit-scrollbar {
     display: none; /* Safari and Chrome */
 }
 
-pluto-filepicker button,
-.desktop_picker_group button {
+pluto-filepicker button {
     margin: 0px;
     background: var(--footer-filepicker-focus-color);
     border-radius: 3px;
@@ -131,26 +124,6 @@ pluto-filepicker button,
     font-family: "Roboto Mono", monospace;
     font-weight: 600;
     font-size: 0.75rem;
-}
-
-.desktop_picker_group {
-    flex-grow: 1;
-    /* display: flex; */
-    padding: 5px;
-}
-
-.desktop_picker_group > button {
-    cursor: pointer;
-    padding: 8px;
-    width: 100%;
-}
-
-.desktop_picker_group > .option_splitter {
-    color: gray;
-    font-style: italic;
-    text-align: center;
-    margin: 15px 0;
-    font-size: 10pt;
 }
 
 #new pluto-filepicker button {

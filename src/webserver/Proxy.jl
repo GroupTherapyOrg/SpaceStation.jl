@@ -67,11 +67,9 @@ const _HUB_NATIVE_PATHS = Set{String}([
 const _HUB_NATIVE_PREFIXES = ("/api/v1/local/", "/api/v1/remote/")
 const _ASSET_EXTENSIONS = Set{String}([".ico", ".js", ".mjs", ".css", ".html", ".png", ".gif", ".svg", ".woff2", ".woff", ".ttf", ".eot", ".otf", ".json", ".map", ".wasm", ".txt", ".md"])
 
-function hub_serves_natively(path::AbstractString, query::AbstractDict)
+function hub_serves_natively(path::AbstractString)
     path ∈ _HUB_NATIVE_PATHS && return true
     any(p -> startswith(path, p), _HUB_NATIVE_PREFIXES) && return true
-    # the PDF export opens the notebook in the system browser: that URL must be a hub URL
-    path == "/api/v1/desktop_export" && get(query, "type", "") == "pdf" && return true
     splitext(path)[2] ∈ _ASSET_EXTENSIONS
 end
 
@@ -371,7 +369,7 @@ function handle_workspace_request(http::HTTP.Stream, session::ServerSession, app
         end
         return _write_response!(http, _json_response(200, """{"status": "shutting_down", "workspace": $(_json_string(s.path))}"""))
     end
-    if hub_serves_natively(path, query)
+    if hub_serves_natively(path)
         response = app(request) # the hub's own router + auth middleware, which sets the hub cookie
         return _write_response!(http, response)
     end

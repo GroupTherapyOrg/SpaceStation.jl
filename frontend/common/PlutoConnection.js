@@ -1,5 +1,4 @@
 import { Promises } from "../common/SetupCellEnvironment.js"
-import { is_backend_server_loaded, is_desktop } from "../components/DesktopInterface.js"
 import { pack, unpack } from "./MsgPack.js"
 import "./Polyfill.js"
 import { Stack } from "./Stack.js"
@@ -104,8 +103,8 @@ const create_ws_connection = (address, { on_message, on_socket_close }, timeout_
     return new Promise((resolve, reject) => {
         const socket = new WebSocket(address)
         // Receive binary frames as ArrayBuffer instead of Blob: reading a Blob goes through file-backed
-        // storage, which WKWebView (the desktop app's webview) can fail with "NotReadableError: The I/O
-        // read operation failed". ArrayBuffer delivery skips that entirely — and skips a copy everywhere.
+        // storage, which WebKit can fail with "NotReadableError: The I/O read operation failed".
+        // ArrayBuffer delivery skips that entirely — and skips a copy everywhere.
         socket.binaryType = "arraybuffer"
 
         let has_been_open = false
@@ -461,8 +460,7 @@ const alert_if_not_authenticated = async (/** @type {string | URL} */ ws_url, ex
             const auth_url = auth_check_url_from_ws(ws_url)
             const response = await fetch(auth_url)
             if (response.status === 403 || response.status === 401) {
-                if (!is_desktop() || (await is_backend_server_loaded()))
-                    alert("This window has lost authentication to the SpaceStation server. Please refresh the page to continue.")
+                alert("This window has lost authentication to the SpaceStation server. Please refresh the page to continue.")
             }
         }
     }

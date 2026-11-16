@@ -98,7 +98,7 @@ function http_router_for(session::ServerSession)
     HTTP.register!(router, "POST", "/open", leaf_only(session, serve_openfile))
 
 
-    # normally shutdown is done through Dynamic.jl, with the exception of shutdowns made from the desktop app
+    # normally shutdown is done through Dynamic.jl, with the exception of shutdowns made from the workspace page
     function serve_shutdown(request::HTTP.Request)
         notebook = notebook_from_uri(request)
         SessionActions.shutdown(session, notebook)
@@ -109,7 +109,7 @@ function http_router_for(session::ServerSession)
     HTTP.register!(router, "POST", "/shutdown", serve_shutdown)
 
 
-    # used in desktop app
+    # used by the workspace page
     # looks like `/move?id=<notebook-id>&newpath=<new-notebook-path>``
     function serve_move(request::HTTP.Request)
         uri = HTTP.URI(request.target)        
@@ -204,50 +204,6 @@ function http_router_for(session::ServerSession)
         end
     end
     HTTP.register!(router, "GET", "/notebookexport", serve_notebookexport)
-
-    # Desktop-only export actions (issue #60). The desktop shell is a WKWebView, which implements
-    # neither window.print() nor <a download> unless the embedding app does — so the export cards,
-    # fine in every real browser, silently did nothing in the app. This server runs on the same
-    # machine as that webview and can do what the webview cannot: write the export straight into
-    # ~/Downloads, and for PDF open the notebook in the system's default browser, where the print
-    # dialog (and its save-as-PDF) actually exists. Gated on the desktop env var, which the shell
-    # sets and local child workspace servers inherit — on an ssh-remote server it is absent, and
-    # this endpoint correctly refuses (writing to the REMOTE machine's Downloads would be wrong).
-    function serve_desktop_export(request::HTTP.Request)
-        haskey(ENV, "SPACESTATION_DESKTOP") ||
-            return error_response(400, "Desktop only", "This endpoint exists only in the desktop app.", "")
-        try
-            query = HTTP.queryparams(HTTP.URI(request.target))
-            type = get(query, "type", "file")
-            if type == "pdf"
-                # The Host header carries the port this request actually arrived on — no plumbing.
-                host = HTTP.header(request, "Host", "127.0.0.1")
-                # Under a hub the notebook is in a child (Proxy.jl): the URL the system browser opens
-                # must be the hub's, under the workspace prefix, with the hub's secret.
-                wid = get(request.context, :workspace_id, nothing)
-                notebook_id = wid === nothing ? string(notebook_from_uri(request).notebook_id) : HTTP.escapeuri(get(query, "id", ""))
-                prefix = wid === nothing ? "" : WORKSPACE_PREFIX * wid
-                url = "http://$(host)$(prefix)/edit?id=$(notebook_id)&secret=$(session.secret)&pluto_print=1"
-                # the shared opener: a hand-rolled `cmd /c start` here dropped everything after the first
-                # `&` on Windows — the secret included — so the browser landed on "Not yet authenticated"
-                # wait=false: answer the request once the opener is spawned, not once the browser exits
-                open_in_default_browser(url; wait=false) ||
-                    return error_response(500, "Export failed", "Could not open your default browser.", "")
-                return HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], """{"opened":true}""")
-            end
-            notebook = notebook_from_uri(request)
-            downloads = joinpath(homedir(), "Downloads")
-            isdir(downloads) || (downloads = homedir())
-            base = joinpath(downloads, without_pluto_file_extension(basename(notebook.path)))
-            path = type == "html" ? numbered_until_new(base; suffix=".html") : numbered_until_new(base; suffix=".jl")
-            write(path, type == "html" ? generate_html(notebook) : sprint(save_notebook, notebook))
-            HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"],
-                """{"saved":true,"filename":$(_json(basename(path)))}""")
-        catch e
-            return error_response(400, "Export failed", "Please <a href='https://github.com/GroupTherapyOrg/SpaceStation.jl/issues'>report this error</a>!", sprint(showerror, e, stacktrace(catch_backtrace())))
-        end
-    end
-    HTTP.register!(router, "POST", "/api/v1/desktop_export", serve_desktop_export)
     
     function serve_notebookupload(request::HTTP.Request)
         uri = HTTP.URI(request.target)

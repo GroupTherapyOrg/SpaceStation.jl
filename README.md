@@ -41,48 +41,6 @@ applies). Lazy/collab mode is the default; add `--autorun` for classic Pluto rea
 > Want to try everything below hands-on? There's a ready-made demo workspace with a guided
 > shot list: **[spacestation-demo](https://github.com/GroupTherapyOrg/spacestation-demo)**.
 
-### Or grab the desktop app
-
-SpaceStation is also a native desktop app — workspace tabs in the title bar, a Julia version
-picker on launch (every juliaup channel, one-click installs, updates), and **no Julia required**:
-a machine with nothing installed gets Julia set up by the app itself (juliaup is bundled).
-Download from the [latest release](https://github.com/GroupTherapyOrg/SpaceStation.jl/releases/latest):
-
-| Platform              | File                               |
-| --------------------- | ---------------------------------- |
-| macOS (Apple Silicon) | `SpaceStation-mac-arm64.dmg`       |
-| macOS (Intel)         | `SpaceStation-mac-x64.dmg`         |
-| Windows               | `SpaceStation-win-x64.msi`         |
-| Linux                 | `SpaceStation-linux-x64.AppImage`  |
-
-The builds aren't code-signed yet, so each OS asks once before it will run a new app.
-
-**macOS** — drag **SpaceStation** into **Applications** (don't run it from the disk image), then
-paste both lines into Terminal:
-
-```sh
-xattr -dr com.apple.quarantine "/Applications/SpaceStation.app"
-codesign --force --deep --sign - "/Applications/SpaceStation.app"
-```
-
-The first line clears the download quarantine; the second re-signs the app locally, which is what
-clears *"SpaceStation is damaged and can't be opened"* — macOS uses that wording for any app not
-signed with a paid Developer ID, and on Apple Silicon clearing quarantine alone is often not
-enough. Nothing is actually damaged. Both steps go away once releases are notarized.
-
-**Windows** — double-click the `.msi`; if SmartScreen appears, choose **More info → Run anyway**.
-
-**Linux** — mark the AppImage executable and run it:
-
-```sh
-chmod +x SpaceStation-linux-x64.AppImage
-./SpaceStation-linux-x64.AppImage
-```
-
-Installing the desktop app also registers the `spacestation` CLI above **and puts it on your
-PATH** (new terminals pick it up). The reverse is deliberately one-way: `Pkg.Apps.add` installs
-only the CLI, never the desktop app.
-
 ---
 
 # What SpaceStation adds to Pluto

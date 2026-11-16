@@ -153,7 +153,7 @@ so it runs where the server is closed:
 
 - `Base.close(::RunningPlutoServer)`: a library launch's `close(server)`, and the `finally` of
   `Base.wait(::RunningPlutoServer)`, which is how Ctrl+C and the end of a CLI launch get here;
-- `request_server_shutdown()`: the UI's and the desktop shell's `POST /api/v1/shutdown`.
+- `request_server_shutdown()`: the UI's `POST /api/v1/shutdown`.
 
 Those overlap: a shutdown asked over HTTP closes the listen socket, which ends `wait`, which closes
 the server again. A caller that arrives while the hook runs waits for it to finish, and one that
