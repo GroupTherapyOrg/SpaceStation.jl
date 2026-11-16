@@ -78,14 +78,52 @@ import SpaceStation as Pluto
                     @test user["LD_LIBRARY_PATH"] == "/shared/lib" && user["HOME"] == home         # what the user had, for what runs for them
                     @test !haskey(user, "SPACESTATION_HUB")                                        # and it does not say "hub"
                     @test filemode(seen["SPACESTATION_USER_ENV_FILE"]) & 0o077 == 0
+                    @test seen["SPACESTATION_RUNTIME_DIR"] == rt                                    # what the hub keeps from aging in /tmp
                 else
                     @test seen["HOME"] == home && endswith(seen["JULIA_DEPOT_PATH"], ":/shared/depot:") # the old way, from the shared install
                 end
+                # The launch leaves the hub's pid behind, so a connect can tell a hub that is still starting
+                # from one that died doing so, and say what it said. (The stand-in has exited: it is "gone".)
+                nd = strip(read(joinpath(home, ".spacestation", only(filter(startswith("nodedir-"), readdir(joinpath(home, ".spacestation"))))), String))
+                @test timedwait(() -> isfile(joinpath(nd, "hub.pid")) && filesize(joinpath(nd, "hub.pid")) > 0, 20) == :ok
+                ask(wrapper=nothing) = withenv("HOME" => home, "SPACESTATION_LAUNCH_WRAPPER" => wrapper) do
+                    Pluto._parse_launched_hub(read(`bash -c $(Pluto._LAUNCHED_HUB_SNIPPET)`, String))
+                end
+                @test timedwait(() -> first(ask()) == :gone, 20) == :ok
+                write(joinpath(nd, "server.log"), "\na notice\nERROR: LoadError: ArgumentError: Package LRUCache [8ac3fa9e] is required but does not seem to be installed:\n - Run `Pkg.instantiate()`\n\nStacktrace:\n")
+                @test ask() == (:gone, "ERROR: LoadError: ArgumentError: Package LRUCache [8ac3fa9e] is required but does not seem to be installed:")
+                write(joinpath(nd, "server.log"), "first\nlast words\n\n"); @test ask() == (:gone, "last words")   # no error line: the last thing it said
+                rm(joinpath(nd, "server.log")); @test ask() == (:gone, "")
+                @test ask("some-wrapper --") == (:unknown, "")                                     # the pid may be the wrapper's: no verdict
+                write(joinpath(nd, "hub.pid"), string(getpid())); @test ask() == (:alive, "")
+                rm(joinpath(nd, "hub.pid")); @test ask() == (:unknown, "")
             end
         end
         cmd = Pluto._via_local_shell(`/shared/julia --project=/p -e code`)
         @test cmd.exec[1] == "/bin/sh" && cmd.exec[end-3:end] == ["/shared/julia", "--project=/p", "-e", "code"]
         @test read(Pluto._via_local_shell(`echo "a b" c`), String) == "a b c\n"                     # the shell becomes the program, arguments intact
+        @test Pluto._parse_launched_hub("") == (:unknown, "")                                     # an SSH failure is not a verdict
+        @test Pluto._parse_launched_hub("motd\n__HUB_GONE__\n\n  ERROR: boom  \nmore\n") == (:gone, "ERROR: boom")
+        detail = Pluto._hub_gone_detail("node7", "ERROR: " * "x"^400)
+        @test startswith(detail, "the SpaceStation server on node7 stopped while starting: ERROR: xxx") && length(detail) < 320 && occursin("server.log", detail)
+        @test !occursin(": —", Pluto._hub_gone_detail("node7", ""))
+        # What lives under /tmp on the node is marked as READ, never as changed: a cleaner goes by the first,
+        # the compiled caches are checked against the second.
+        mktempdir() do dir
+            dir = realpath(dir); src = joinpath(dir, "pkg", "src.jl"); mkpath(dirname(src)); write(src, "x"); symlink("src.jl", joinpath(dir, "pkg", "link")); symlink("nowhere", joinpath(dir, "dangling"))
+            Base.run(`touch -a -t 200001010000 $src`); read_lately() = !isempty(read(`find $src -atime -1`, String))
+            before = stat(src).mtime
+            @test !read_lately()
+            @test success(Pluto.freshen_command([dir]))
+            @test read_lately() && stat(src).mtime == before
+            withenv("SPACESTATION_RUNTIME_DIR" => dir, "SPACESTATION_NODE_DIR" => joinpath(dir, "gone")) do
+                @test Pluto.node_dirs_to_keep_fresh() == [dir]
+                timer = Pluto.keep_node_files_fresh(; every=3600); @test timer isa Timer; close(timer)
+            end
+            withenv("SPACESTATION_RUNTIME_DIR" => nothing, "SPACESTATION_NODE_DIR" => nothing) do
+                @test Pluto.keep_node_files_fresh() === nothing                                    # a laptop: nothing of ours is in /tmp
+            end
+        end
         runtime = joinpath(pkgdir(Pluto), "src", "webserver", "node", "runtime.sh")
         @test isfile(runtime) && success(`bash -n $runtime`)
         @test startswith(read(`bash $runtime /no/such/julia /tmp`, String), "NORUNTIME")        # a refusal is an answer, never an error
