@@ -62,7 +62,7 @@ Release gotchas that still apply:
 julia --project=. -e 'import Pkg; Pkg.instantiate()'
 julia --project=. -e 'import Pluto; Pluto.run()'
 ```
-The server serves `frontend/` directly — edits to JS/CSS need only a browser reload. With `frontend-dist/` present (e.g. after a bundler run), the server serves that instead; delete or rename it to go back to dev mode.
+The server serves `frontend/` directly — edits to JS/CSS need only a browser reload. The exception is a workspace hub (`spacestation`, `hub=true`), which keeps frontend files in memory: start it with `SPACESTATION_DEV_ASSETS=1` while working on the shell (`frontend/land.js`, `frontend/land.css`) so a reload shows the edit. With `frontend-dist/` present (e.g. after a bundler run), the server serves that instead; delete or rename it to go back to dev mode.
 
 ### Backend tests (Julia)
 ```bash

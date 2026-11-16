@@ -51,7 +51,9 @@ const ASSET_CACHE_LOCK = ReentrantLock()
 # auto-update does that): the running process IS the old code, and old code with new scripts would be
 # worse. A restart picks up both.
 const ASSET_CACHE_ALL = Ref(false)
-_asset_cacheable_dir(path::AbstractString) = ASSET_CACHE_ALL[] || occursin("frontend-dist", path) || get(ENV, "SPACESTATION_HUB", "") == "1"
+# Working on the frontend against a hub: SPACESTATION_DEV_ASSETS=1 reads every file from disk each
+# time, so a browser reload shows the edit. (A hub otherwise keeps `frontend/` in memory too.)
+_asset_cacheable_dir(path::AbstractString) = get(ENV, "SPACESTATION_DEV_ASSETS", "") != "1" && (ASSET_CACHE_ALL[] || occursin("frontend-dist", path) || get(ENV, "SPACESTATION_HUB", "") == "1")
 
 "The bytes of a frontend file, or `nothing` when there is no such file."
 function asset_bytes(path::AbstractString)::Union{Nothing,Vector{UInt8}}

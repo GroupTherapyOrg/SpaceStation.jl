@@ -9,6 +9,21 @@
 #           $ spacestation --port 1234 …
 #           $ spacestation --no-browser …
 
+"""
+The command that runs the hub for `spacestation …`: this same Julia, marked as a hub before it imports
+anything.
+
+`addenv`, not `setenv`: the hub is where terminals, SSH tunnels and workspace servers come from, so it
+needs the environment the command was run in (PATH, HOME, SSH_AUTH_SOCK, LANG, JULIA_*, XDG_*) plus
+the one marker. With `setenv` it got the marker and nothing else. And its output is this command's
+output: `run` without `wait` sends a process's streams to devnull unless told otherwise, which hid
+the address that `--no-browser` exists to print.
+"""
+function _hub_process_command(args)
+    cmd = `$(Base.julia_cmd()) --startup-file=no $(SERVER_THREAD_FLAGS) --project=$(something(Base.active_project(), pkgdir(@__MODULE__))) -e "import SpaceStation; exit(SpaceStation.main(ARGS))" -- $(args)`
+    pipeline(addenv(cmd, "SPACESTATION_HUB" => "1"); stdin, stdout, stderr)
+end
+
 function main(args)
     args = filter(a -> a != "--", collect(String, args))
 
@@ -107,8 +122,7 @@ function main(args)
     # starts one that is and waits for it, forwarding its exit code. Ctrl-C reaches the child
     # through the terminal's process group.
     if !PkgCompat.is_hub_process()
-        cmd = `$(Base.julia_cmd()) --startup-file=no $(SERVER_THREAD_FLAGS) --project=$(something(Base.active_project(), pkgdir(@__MODULE__))) -e "import SpaceStation; exit(SpaceStation.main(ARGS))" -- $(args)`
-        proc = Base.run(setenv(cmd, "SPACESTATION_HUB" => "1"); wait=false)
+        proc = Base.run(_hub_process_command(args); wait=false)
         try
             wait(proc)
         catch e

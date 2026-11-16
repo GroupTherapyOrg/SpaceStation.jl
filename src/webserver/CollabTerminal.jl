@@ -348,7 +348,11 @@ function _get_or_create_terminal(session::ServerSession, tid::String; requested_
             lock(t.lock) do
                 for client in collect(t.clients)
                     try
-                        HTTP.WebSockets.send(client, Vector{UInt8}(codeunits("\r\n\e[2m[shell exited — toggle the terminal to start a new one]\e[0m\r\n")))
+                        # A text frame, like the rest of the attach protocol: the page closes this
+                        # terminal's tab, as any terminal does when its shell ends. Without it a page
+                        # cannot tell "the shell exited" from "the connection dropped", and said the
+                        # second ("still running; reload to reattach") right under the first.
+                        HTTP.WebSockets.send(client, """{"exited":true}""")
                         close(client)
                     catch end
                 end
@@ -448,7 +452,10 @@ function handle_terminal_websocket(ws, session::ServerSession, query::Dict{Strin
         # Spawn failed (e.g. Windows older than 10 1809 has no ConPTY). Say so plainly instead
         # of letting the socket close into the frontend's "reload to reattach" message.
         msg = "\r\n\e[31m[could not start a shell: $(sprint(showerror, e))]\e[0m\r\n"
-        try HTTP.WebSockets.send(ws, Vector{UInt8}(codeunits(msg))) catch end
+        try
+            HTTP.WebSockets.send(ws, Vector{UInt8}(codeunits(msg)))
+            HTTP.WebSockets.send(ws, """{"failed":true}""")   # nothing to re-attach to: the page does not retry
+        catch end
         return
     end
 

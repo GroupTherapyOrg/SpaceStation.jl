@@ -206,6 +206,38 @@
         --terminal-fg: hsl(0deg 0% 77%);
         --terminal-light-bg: hsl(0deg 0% 99%);
         --terminal-light-fg: hsl(213deg 14% 16%);
+
+        /* SpaceStation shell (land.css): islands floating on a deep canvas, each with a glass edge
+           (brighter along the top and left, where the light comes from). */
+        --land-canvas: #121216;
+        --land-bg: hsl(0deg 0% 12%);
+        --land-chrome-bg: #1b1c21;
+        --land-sidebar-bg: #191a1f;
+        --land-raised-bg: #24252b;
+        --land-fg: hsl(230deg 10% 88%);
+        --land-muted: hsl(230deg 7% 62%);
+        --land-faint: hsl(230deg 6% 44%);
+        --land-border: rgba(255, 255, 255, 0.075);
+        --land-border-strong: rgba(255, 255, 255, 0.2);
+        --land-hover: rgba(255, 255, 255, 0.055);
+        --land-active: rgba(255, 255, 255, 0.11);
+        --land-selected: linear-gradient(135deg, rgba(110, 120, 170, 0.34), rgba(70, 76, 110, 0.24));
+        --land-selected-ring: rgba(255, 255, 255, 0.09);
+        --land-accent: #8ea5f0;
+        --land-accent-hover: #a3b6f4;
+        --land-accent-fg: #10131c;
+        --land-julia-green: #6bbf59;
+        --land-julia-purple: #b98ad0;
+        --land-julia-red: #e3766d;
+        --land-danger: #f08a80;
+        --land-danger-bg: rgba(240, 138, 128, 0.14);
+        --land-ok: #6bbf59;
+        --land-warn: #e0b354;
+        --land-warn-bg: rgba(224, 179, 84, 0.14);
+        --land-glass: inset 0 1px 0 rgba(255, 255, 255, 0.1), inset 1px 0 0 rgba(255, 255, 255, 0.05), inset -1px 0 0 rgba(255, 255, 255, 0.02), inset 0 -1px 0 rgba(255, 255, 255, 0.02), 0 2px 8px rgba(0, 0, 0, 0.3);
+        --land-pill-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), inset 0 0 0 1px rgba(255, 255, 255, 0.06), 0 1px 3px rgba(0, 0, 0, 0.35);
+        --land-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), inset 0 0 0 1px rgba(255, 255, 255, 0.05), 0 14px 40px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(0, 0, 0, 0.4);
+        --land-backdrop: rgba(5, 5, 10, 0.55);
         --cm-color-code-differs-gutters: rgb(235 213 28 / 11%);
         --cm-color-line-numbers: #8d86875e;
         --cm-selection-background: hsl(215deg 64% 59% / 48%);

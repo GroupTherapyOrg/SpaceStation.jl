@@ -207,6 +207,41 @@
         --terminal-fg: hsl(0deg 0% 77%);
         --terminal-light-bg: hsl(0deg 0% 99%);
         --terminal-light-fg: hsl(213deg 14% 16%);
+
+        /* SpaceStation shell (land.css): islands floating on a canvas. The canvas is Pluto's cream
+           paper a shade deeper; an island is the paper itself; the editor's island is the notebook's
+           own white, so a notebook fills it without an edge. Julia's three colours mark what they
+           always have: green runs, purple is a notebook, red stops. */
+        --land-canvas: hsl(42deg 38% 90%);
+        --land-bg: #ffffff;
+        --land-chrome-bg: hsl(46deg 60% 96.5%);
+        --land-sidebar-bg: hsl(46deg 90% 98%);
+        --land-raised-bg: #ffffff;
+        --land-fg: #2b2822;
+        --land-muted: #736d61;
+        --land-faint: #a8a091;
+        --land-border: rgba(80, 60, 15, 0.11);
+        --land-border-strong: rgba(80, 60, 15, 0.24);
+        --land-hover: rgba(90, 70, 20, 0.065);
+        --land-active: rgba(90, 70, 20, 0.12);
+        --land-selected: linear-gradient(135deg, rgba(94, 122, 211, 0.16), rgba(94, 122, 211, 0.09));
+        --land-selected-ring: rgba(94, 122, 211, 0.28);
+        --land-accent: #4f6bcb;
+        --land-accent-hover: #4460bd;
+        --land-accent-fg: #ffffff;
+        --land-julia-green: #389826;
+        --land-julia-purple: #9558b2;
+        --land-julia-red: #cb3c33;
+        --land-danger: #c23b30;
+        --land-danger-bg: rgba(203, 60, 51, 0.1);
+        --land-ok: #389826;
+        --land-warn: #946400;
+        --land-warn-bg: rgba(214, 160, 30, 0.16);
+        /* an island's edge: light from the top left, a soft shadow under it */
+        --land-glass: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 0 0 1px rgba(80, 60, 15, 0.09), 0 1px 2px rgba(80, 60, 15, 0.07), 0 8px 22px -8px rgba(80, 60, 15, 0.2);
+        --land-pill-shadow: 0 0 0 1px rgba(80, 60, 15, 0.1), 0 1px 2px rgba(80, 60, 15, 0.1), 0 3px 8px -3px rgba(80, 60, 15, 0.16);
+        --land-shadow: 0 0 0 1px rgba(80, 60, 15, 0.1), 0 12px 36px -6px rgba(60, 45, 10, 0.28), 0 2px 6px rgba(60, 45, 10, 0.1);
+        --land-backdrop: rgba(60, 50, 30, 0.3);
         --cm-color-code-differs-gutters: rgba(214, 172, 35, 0.2);
         --cm-color-line-numbers: #8d86875e;
         --cm-selection-background: hsl(214deg 100% 73% / 48%);
