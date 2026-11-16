@@ -14,6 +14,13 @@ on:
       - '.github/workflows/WindowsTerminal.yml'
   workflow_dispatch:
 
+# A newer push to the same branch or pull request makes the run for the older one pointless, and
+# while it sits in the queue it holds the runners the newer one is waiting for. Runs on main are
+# left to finish: each of them is the record for a commit that is already there.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   conpty:
     runs-on: windows-latest

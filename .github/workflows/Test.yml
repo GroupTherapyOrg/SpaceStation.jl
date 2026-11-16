@@ -25,6 +25,13 @@ on:
         branches-ignore:
             - release
 
+# A newer push to the same branch or pull request makes the run for the older one pointless, and
+# while it sits in the queue it holds the runners the newer one is waiting for. Runs on main are
+# left to finish: each of them is the record for a commit that is already there.
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
     test:
@@ -46,6 +53,15 @@ jobs:
                 # By default, resolve HTTP.jl freely — with the HTTP compat entry in Project.toml that
                 # gives us the latest 1.x.
                 http-version: [""]
+                # macOS runners are the scarce ones: their jobs sat unassigned for hours and were then
+                # cancelled ("not acquired by Runner"), holding up every merge. One released Julia there,
+                # the newest; Ubuntu and Windows carry the spread of versions. Nightly is informational
+                # (see continue-on-error above), so one OS is enough for it.
+                exclude:
+                    - { os: macOS-latest, julia-version: "1.10" }
+                    - { os: macOS-latest, julia-version: "1.12" }
+                    - { os: macOS-latest, julia-version: "nightly" }
+                    - { os: windows-latest, julia-version: "nightly" }
                 # Also pin the lowest HTTP.jl that the compat entry allows, on the oldest Julia.
                 include:
                     - julia-version: "1.10"
