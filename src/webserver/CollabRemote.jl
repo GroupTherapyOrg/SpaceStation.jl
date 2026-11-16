@@ -687,6 +687,10 @@ function _hub_gone_detail(host::AbstractString, line::AbstractString)::String
     "the SpaceStation server on $(host) stopped while starting$(said) — full log: ~/.spacestation/server.log on $(host)"
 end
 
+"The first-time clone: skipped when a clone is already there, and made beside the target so that a failed clone leaves whatever was there."
+_clone_command(; dir::AbstractString=REMOTE_BOOTSTRAP_DIR, url::AbstractString=REMOTE_FORK_URL, branch::AbstractString=REMOTE_FORK_BRANCH) =
+    "if [ -d $(dir)/.git ]; then echo __HAVE_CLONE__; else mkdir -p ~/.spacestation && rm -rf $(dir).new && git clone --depth 1 --branch $(branch) $(url) $(dir).new && rm -rf $(dir) && mv $(dir).new $(dir); fi"
+
 "Scan `host`. Returns `(scanned, chosen)`: `scanned == false` means the scan itself failed and nothing can be concluded from it."
 function _find_remote_server(host::String, secret::AbstractString)
     out = try
@@ -699,17 +703,70 @@ function _find_remote_server(host::String, secret::AbstractString)
     (true, _choose_remote_server(cands, secret))
 end
 
+# What "busy" means for a server on the node, as shell functions shared by everything that would
+# replace code or stop a process there. A server is doing something for someone when it has a notebook
+# open, OR when a terminal it started has something running in it. The second half was missing: the
+# hub's notebook list knows nothing of terminals, so a hub with a training run or a coding agent in its
+# terminal and no notebook open looked idle, and an update of `main` shut it down, taking the shells and
+# everything in them along. A shell that sits at its prompt is not work; a shell with a child is.
+#   hub_has_running_terminal <pid>   0 when a shell that <pid> started has a child process
+#   server_busy <port> <secret> <pid>   0 when that server is busy, or is alive and cannot say
+#   node_busy                        0 when any server of this user on this node is
+const _NODE_BUSY_SH = raw"""
+hub_has_running_terminal() {
+    [ -n "$1" ] || return 1
+    ps -A -o pid= -o ppid= -o comm= 2>/dev/null | awk -v hub="$1" '
+        { pid[NR] = $1; ppid[NR] = $2; comm[NR] = $3 }
+        END {
+            for (i = 1; i <= NR; i++) if (ppid[i] == hub && comm[i] ~ /^-?([^ ]*\/)?(ba|z|da|k|tc|c|fi)?sh$/) shell[pid[i]] = 1
+            for (i = 1; i <= NR; i++) if (ppid[i] in shell) exit 0
+            exit 1
+        }'
+}
+server_busy() {
+    if curl -fsS -m 3 -o /dev/null "http://127.0.0.1:$1/ping" 2>/dev/null; then
+        _open=$(printf 'url = "http://127.0.0.1:%s/api/v1/notebooks?secret=%s"\n' "$1" "$2" | curl -fsS -m 5 -K - 2>/dev/null) || return 0
+        [ "$_open" = "[]" ] || return 0
+    else
+        # no answer: gone (its file is stale: not busy), or alive and too busy to answer (or there is no curl to ask with)
+        [ -n "$3" ] && kill -0 "$3" 2>/dev/null && ps -o args= -p "$3" 2>/dev/null | grep -q SpaceStation || return 1
+        return 0
+    fi
+    hub_has_running_terminal "$3"
+}
+node_busy() {
+    _me=$(hostname)
+    _nd=$(cat "$HOME/.spacestation/nodedir-$_me" 2>/dev/null)
+    for _f in "$HOME"/.local/state/pluto/servers/*.json ${_nd:+"$_nd"/state/pluto/servers/*.json}; do
+        [ -e "$_f" ] || continue
+        _node=$(sed -n 's/.*"node": *"\([^"]*\)".*/\1/p' "$_f")
+        [ -n "$_node" ] && [ "$_node" != "$_me" ] && continue
+        server_busy "$(sed -n 's/.*"port": *\([0-9]*\).*/\1/p' "$_f")" "$(sed -n 's/.*"secret": *"\([^"]*\)".*/\1/p' "$_f")" "$(sed -n 's/.*"pid": *\([0-9]*\).*/\1/p' "$_f")" && return 0
+    done
+    return 1
+}
+"""
+
 # Keep the remote install in lockstep with `main`: fast-forward the existing clone and report whether
 # anything actually changed. This is what makes "the remote always matches your local SpaceStation" —
 # the VS Code Remote-SSH feel. No clone yet, or no internet on the node (common for HPC compute
 # nodes), is a silent no-op — we keep whatever is already there.
+#
+# And so is a node where a server is busy (`_NODE_BUSY_SH`). The clone is not only where the next hub
+# is built from: a RUNNING hub starts its workspace servers from it, and notebook workers load
+# PlutoRunner from it. Replacing it under a hub that is kept running gave that hub children of another
+# version: with a new Manifest nothing instantiates, and after a version bump the hub does not recognise
+# the child it just started and the workspace times out. The update waits for a connect that finds the
+# node idle.
 function _maybe_update_remote_clone!(host::String)::Bool
-    snippet = """
+    snippet = _NODE_BUSY_SH * """
     d="\$HOME/.spacestation/Pluto.jl"
     [ -d "\$d/.git" ] || { echo __NOCLONE__; exit 0; }
     cd "\$d" || { echo __NOCLONE__; exit 0; }
     before=\$(git rev-parse HEAD 2>/dev/null)
     git fetch --depth 1 origin $(REMOTE_FORK_BRANCH) >/dev/null 2>&1 || { echo __OFFLINE__; exit 0; }
+    [ "\$before" = "\$(git rev-parse FETCH_HEAD 2>/dev/null)" ] && { echo __UPTODATE__; exit 0; }
+    node_busy && { echo __BUSY__; exit 0; }
     git reset --hard FETCH_HEAD >/dev/null 2>&1 || { echo __RESETFAIL__; exit 0; }
     after=\$(git rev-parse HEAD 2>/dev/null)
     [ "\$before" = "\$after" ] && echo __UPTODATE__ || echo __UPDATED__
@@ -843,12 +900,15 @@ end
 # is behind, the remembered entry is dropped, and the next connect runs discovery, which updates and
 # replaces together as it always has.
 function _remote_clone_is_behind(host::String)::Bool
-    snippet = """
+    # (a busy node is not updated, so there is nothing a full discovery would do there: it stays on the quick path)
+    snippet = _NODE_BUSY_SH * """
     d="\$HOME/.spacestation/Pluto.jl"
     cd "\$d" 2>/dev/null || exit 0
     here=\$(git rev-parse HEAD 2>/dev/null) || exit 0
     there=\$(git ls-remote origin refs/heads/$(REMOTE_FORK_BRANCH) 2>/dev/null | cut -f1)
-    [ -n "\$there" ] && [ "\$here" != "\$there" ] && echo __BEHIND__
+    [ -n "\$there" ] && [ "\$here" != "\$there" ] || exit 0
+    node_busy && exit 0
+    echo __BEHIND__
     """
     _, out = _ssh_try(host, snippet)
     occursin("__BEHIND__", out)
@@ -996,7 +1056,9 @@ function _remote_connect_task!(r::RemoteSession)
             # the next time it is idle. A server too busy to answer is, by the same rule, left alone.
             # kill hits a real pid because a node-matched server is a process on this very node. The secret
             # travels to curl through a config on stdin, never through argv (visible in `ps` on a shared node).
-            _ssh_try(r.host, raw"""
+            # (The update above does not happen at all while a server here is busy, so this finds idle ones.
+            # It keeps its own check, with the same meaning of busy: a server can become busy in between.)
+            _ssh_try(r.host, _NODE_BUSY_SH * raw"""
             me=$(hostname)
             rm -f "$HOME/.spacestation/.install_ok"
             command -v curl >/dev/null 2>&1 || exit 0
@@ -1011,6 +1073,7 @@ function _remote_connect_task!(r::RemoteSession)
                 curl -fsS -m 3 -o /dev/null "http://127.0.0.1:$p/ping" 2>/dev/null || continue
                 open=$(printf 'url = "http://127.0.0.1:%s/api/v1/notebooks?secret=%s"\n' "$p" "$s" | curl -fsS -m 5 -K - 2>/dev/null) || continue
                 [ "$open" = "[]" ] || continue
+                hub_has_running_terminal "$pid" && continue
                 rm -f "$f"
                 # Its own shutdown first (it removes its files and stops cleanly), then SIGTERM, then
                 # SIGKILL. A Julia 1.12 process can deadlock in its exit-time finalizers after SIGTERM
@@ -1044,7 +1107,15 @@ function _remote_connect_task!(r::RemoteSession)
             # idempotent bootstrap with a COMPLETION MARKER (the VS Code Remote-SSH pattern):
             # the install only counts once instantiate finished; a clone without the marker
             # resumes at instantiate, a missing clone starts over.
-            ok, out = _ssh_try(r.host, "test -f ~/.spacestation/.install_ok && echo done; test -d $(REMOTE_BOOTSTRAP_DIR)/.git && echo cloned")
+            ok, out = _ssh_try(r.host, "test -f ~/.spacestation/.install_ok && echo done; test -d $(REMOTE_BOOTSTRAP_DIR)/.git && echo cloned; echo __CHECKED__")
+            # No answer is not "nothing is there". When this one call stalled, both words were missing,
+            # the code below concluded "not cloned" and ran `rm -rf` on a clone that servers were running
+            # from, then failed to clone again on a node with no internet.
+            if !occursin("__CHECKED__", out)
+                r.state = "error"
+                r.detail = "could not check the SpaceStation installation on $(r.host) (the SSH hop stalled) — retrying"
+                return
+            end
             install_done = occursin("done", out)
             cloned = occursin("cloned", out)
             # The marker only says that an earlier instantiate completed. On HPC systems DEPOT_PATH is
@@ -1068,7 +1139,9 @@ function _remote_connect_task!(r::RemoteSession)
                 r.state = "installing"
                 if !cloned
                     r.detail = "first-time setup on $(r.host): cloning SpaceStation (a minute or two)"
-                    ok, out = _ssh_try(r.host, "rm -rf $(REMOTE_BOOTSTRAP_DIR) && mkdir -p ~/.spacestation && git clone --depth 1 --branch $(REMOTE_FORK_BRANCH) $(REMOTE_FORK_URL) $(REMOTE_BOOTSTRAP_DIR)")
+                    # ...and a clone that IS there is never removed to make room for one that may not arrive: the
+                    # new one is fetched beside it and only takes its place once it is complete.
+                    ok, out = _ssh_try(r.host, _clone_command())
                     if !ok
                         hint = occursin(r"resolve host|Could not resolve|unable to access|Connection timed out|Network is unreachable"i, out) ?
                             " — this node looks like it has NO INTERNET ACCESS (common for HPC compute/GPU nodes). Try your LOGIN node instead, or clone SpaceStation to $(REMOTE_BOOTSTRAP_DIR) there manually." : ""

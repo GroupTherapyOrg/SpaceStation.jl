@@ -611,3 +611,86 @@ drop_session!(host) = lock(() -> delete!(Pluto.REMOTE_SESSIONS, host), Pluto.REM
     end
     Pluto.TUNNEL_WATCHDOG_PAUSED[] = false
 end
+
+# Connecting to a node may update the clone there and restart an idle server. Neither may ever cost
+# someone their work, and a failed SSH call may never be read as "there is nothing on the node".
+@testset "An update never costs someone their work" begin
+    if Sys.isunix() && Sys.which("bash") !== nothing
+        sh(code; env...) = (cmd = setenv(`bash -c $(Pluto._NODE_BUSY_SH * code)`, merge(Dict(ENV), Dict(String(k) => String(v) for (k, v) in env))); success(pipeline(cmd; stdout=devnull, stderr=devnull)))
+        started = Base.Process[]
+        free_port() = (srv = Sockets.listen(Sockets.localhost, 0); port = Int(Sockets.getsockname(srv)[2]); close(srv); port)
+        spawn(cmd) = (p = Base.run(pipeline(cmd; stdout=devnull, stderr=devnull); wait=false); push!(started, p); p)
+        mktempdir() do dir
+            dir = realpath(dir)
+            try
+                # A terminal is a shell the server started. Something running IN it is work; the shell alone is not.
+                fifo = joinpath(dir, "fifo"); Base.run(`mkfifo $fifo`)
+                working = spawn(`bash -c 'bash -c "sleep 20; true" & wait'`)          # server → shell → a job
+                waiting = spawn(`bash -c "bash -c 'read x < $fifo; true' & wait"`)      # server → shell at its "prompt"
+                helper = spawn(`bash -c 'sleep 20 & wait'`)                           # server → a child that is no shell
+                @test timedwait(() -> sh("hub_has_running_terminal $(getpid(working))"), 10) == :ok
+                sleep(0.5)
+                @test !sh("hub_has_running_terminal $(getpid(waiting))")
+                @test !sh("hub_has_running_terminal $(getpid(helper))")
+                @test !sh("hub_has_running_terminal ''")
+
+                # What is on the node is read from the connection files, as the scan does.
+                home = joinpath(dir, "home"); servers = joinpath(home, ".local", "state", "pluto", "servers"); mkpath(servers)
+                me = strip(read(`hostname`, String))
+                file(name, port, pid; node=me) = write(joinpath(servers, name), """{"port": $port, "secret": "s3cret", "pid": $pid, "node": "$node"}""")
+                busy() = sh("node_busy"; HOME=home)
+                @test !busy()                                                          # nothing there
+                closed = free_port()
+                gone = spawn(`true`); gone_pid = getpid(gone); wait(gone)
+                file("gone.json", closed, gone_pid)
+                @test !busy()                                                          # a stale file is not a server
+                alive = spawn(`sh -c 'sleep 20; : SpaceStation'`)
+                file("silent.json", closed, getpid(alive); node="another-node")
+                @test !busy()                                                          # another node's server (shared home)
+                file("silent.json", closed, getpid(alive))
+                @test busy()                                                           # alive and too busy to answer: left alone
+                rm(joinpath(servers, "silent.json"))
+
+                if Sys.which("curl") !== nothing
+                    port = free_port(); open_notebooks = Ref("[]")
+                    server = HTTP.serve!("127.0.0.1", port; verbose=-1) do request
+                        HTTP.Response(200, occursin("/api/v1/notebooks", request.target) ? open_notebooks[] : "OK")
+                    end
+                    try
+                        file("hub.json", port, getpid(helper))
+                        @test !busy()                                                  # answers, nothing open, no terminal at work
+                        open_notebooks[] = """[{"notebook_id": "x"}]"""
+                        @test busy()                                                   # a notebook is open
+                        open_notebooks[] = "[]"
+                        file("hub.json", port, getpid(working))
+                        @test busy()                                                   # nothing open, but a job in its terminal
+                        file("hub.json", port, getpid(waiting))
+                        @test !busy()                                                  # only an idle shell
+                    finally
+                        close(server)
+                    end
+                end
+
+                # The first-time clone never removes what is there to make room for what may not arrive.
+                if Sys.which("git") !== nothing
+                    git(args...; at=dir) = Base.run(pipeline(setenv(`git -C $at -c user.name=t -c user.email=t@example.com -c init.defaultBranch=main $args`); stdout=devnull, stderr=devnull))
+                    origin = joinpath(dir, "origin"); mkpath(origin); git("init"; at=origin); write(joinpath(origin, "Project.toml"), "name = \"X\"\n")
+                    git("add", "."; at=origin); git("commit", "-m", "one"; at=origin); git("branch", "-M", "main"; at=origin)
+                    target = joinpath(dir, "clone")
+                    clone(url) = read(pipeline(setenv(`bash -c $(Pluto._clone_command(; dir=target, url, branch="main"))`, merge(Dict(ENV), Dict("HOME" => home))); stderr=devnull), String)
+                    mkpath(target); write(joinpath(target, "kept"), "x")                # something is there, and it is not a clone
+                    @test !success(pipeline(setenv(`bash -c $(Pluto._clone_command(; dir=target, url=joinpath(dir, "no-such-repo"), branch="main"))`, merge(Dict(ENV), Dict("HOME" => home))); stdout=devnull, stderr=devnull))
+                    @test isfile(joinpath(target, "kept"))                             # the clone failed: nothing was removed
+                    clone("file://" * origin)
+                    @test isfile(joinpath(target, "Project.toml")) && isdir(joinpath(target, ".git")) && !ispath(target * ".new")
+                    write(joinpath(target, "local-work"), "x")
+                    @test occursin("__HAVE_CLONE__", clone(joinpath(dir, "no-such-repo")))   # already cloned: not touched, whatever the network says
+                    @test isfile(joinpath(target, "local-work"))
+                end
+                open(io -> println(io), fifo, "w")                                     # let the waiting shell go
+            finally
+                foreach(p -> (try; kill(p); catch; end), started)
+            end
+        end
+    end
+end
