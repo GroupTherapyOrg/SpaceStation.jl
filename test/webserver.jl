@@ -373,6 +373,22 @@ end # testset
 
 # Closing a terminal asks first when that would stop something: for that the server can say what a
 # terminal's shell is running. At its prompt: nothing. With a program started from it: its name.
+@testset "A folder's names are listed by letter, not by case" begin
+    mktempdir() do dir
+        for name in ["README.md", "fatou.jl", "Project.toml", "comparator.md", "AGENTS.md", ".gitignore"]
+            write(joinpath(dir, name), "")
+        end
+        for name in ["results", "Papers", "cluster"]
+            mkdir(joinpath(dir, name))
+        end
+        entries, _, truncated = Pluto._list_dir_shallow(dir, Ref(100))
+        @test !truncated
+        # folders first, then files; within each, capitals and small letters together
+        @test [Dict(e)["name"] for e in entries] == ["cluster", "Papers", "results", ".gitignore", "AGENTS.md", "comparator.md", "fatou.jl", "Project.toml", "README.md"]
+        @test Pluto._in_name_order(["b", "B", "a", "A"]) == ["A", "a", "B", "b"] # the same every time
+    end
+end
+
 Sys.isunix() && @testset "What a terminal is running" begin
     port = 13000 + rand(1:999)
     options = Pluto.Configuration.from_flat_kwargs(; port, launch_browser=false, require_secret_for_access=false, require_secret_for_open_links=false, workspace_use_distributed=false, workspace=mktempdir())
