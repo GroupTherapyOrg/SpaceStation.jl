@@ -1649,6 +1649,11 @@ const Land = () => {
 
     const active_notebook_tab = active != null && active !== "__terminal__" && tabs.find((t) => t.id === active && t.kind !== "file")
 
+    useEffect(() => {
+        if (active == null && tabs.length > 0) set_active(tabs[tabs.length - 1].id)
+        else if (active === "__terminal__" && !(terminal_open && terminal_dock === "tab")) set_active(tabs.length > 0 ? tabs[tabs.length - 1].id : null)
+    }, [active, tabs, terminal_open, terminal_dock])
+
     const auto_tabbed = useRef(false)
     // set once the saved tabs of this workspace are on screen: only then is what is on screen worth saving
     const tabs_restored_for = useRef(/** @type {String?} */ (null))
@@ -2543,7 +2548,7 @@ const Land = () => {
                                 <h2 class="section-label">Running <span class="count">${running.length}</span></h2>
                                 <ul>
                                     ${running.map(
-                                        (nb) => html`<li class=${tree.current_path === nb.path ? "current" : ""} key=${nb.notebook_id}>
+                                        (nb) => html`<li key=${nb.notebook_id}>
                                             <div class="entry-row">
                                                 <button class="entry" title=${nb.path} onClick=${() => add_tab(nb.notebook_id, nb.path)}>
                                                     <span class="no-chevron"></span><span class="dot ok"></span><span class="entry-name">${basename(nb.path)}</span>
@@ -2574,7 +2579,7 @@ const Land = () => {
                       onDblClick=${() => set_sidebar_width(SIDEBAR_WIDTH)}
                   ></div>`}
             <main>
-                <div class="main-split ${terminal_dock}" ref=${split_ref}>
+                <div class="main-split dock-${terminal_dock}" ref=${split_ref}>
                     <div class="editor-card island">
                         <nav id="tabs">
                             ${sidebar_hidden
@@ -2616,7 +2621,9 @@ const Land = () => {
                                       </div>`
                                     : null}
                             </div>
-                            <div class="tab-actions">
+                            ${tab_mode
+                                ? null
+                                : html`<div class="tab-actions">
                                 <button
                                     class="terminal-toggle ${terminal_open ? "active" : ""}"
                                     title="Show or hide the terminal (Ctrl+\`)"
@@ -2625,7 +2632,7 @@ const Land = () => {
                                 >
                                     <span class="ico i-terminal"></span>Terminal
                                 </button>
-                            </div>
+                            </div>`}
                         </nav>
                         ${files_status != null && !offline
                             ? html`<div class="workspace-status busy" role="status" aria-live="polite" title=${files_status.detail}>
@@ -2673,8 +2680,8 @@ const Land = () => {
                             ${active_tab == null && active !== "__terminal__"
                                 ? html`<div class="empty-state">
                                       <img src=${logo_url} alt="" />
-                                      <p class="lede">${tabs.length === 0 ? "Nothing open yet" : "Pick a tab"}</p>
-                                      <p>${tabs.length === 0 ? "Open a notebook or a file from the sidebar, or start a new one." : "Everything you had open is still in the strip above."}</p>
+                                      <p class="lede">Nothing open yet</p>
+                                      <p>Open a notebook or a file from the sidebar, or start a new one.</p>
                                       ${workspace == null
                                           ? null
                                           : html`<div class="empty-actions">

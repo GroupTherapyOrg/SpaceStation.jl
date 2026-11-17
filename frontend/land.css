@@ -348,7 +348,7 @@ button {
     gap: 6px;
     margin: 0;
     font-size: 10.5px;
-    font-weight: 650;
+    font-weight: 600;
     letter-spacing: 0.09em;
     text-transform: uppercase;
     color: var(--land-muted);
@@ -474,7 +474,7 @@ body.resizing-v .terminal-host {
 .side-where .workspace-name {
     max-width: 100%;
     font-size: 13px;
-    font-weight: 650;
+    font-weight: 600;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -664,7 +664,7 @@ body.resizing-v .terminal-host {
     height: 22px;
 }
 #land > aside h2 .count {
-    font-weight: 500;
+    font-weight: 600;
     color: var(--land-faint);
 }
 
@@ -822,11 +822,11 @@ body.resizing-v .terminal-host {
     min-height: 0;
     min-width: 0;
 }
-.main-split.bottom,
-.main-split.tab {
+.main-split.dock-bottom,
+.main-split.dock-tab {
     flex-direction: column;
 }
-.main-split.right {
+.main-split.dock-right {
     flex-direction: row;
 }
 
@@ -845,7 +845,7 @@ body.resizing-v .terminal-host {
     flex-shrink: 0;
     height: var(--land-strip);
     box-sizing: border-box;
-    background-color: var(--land-chrome-bg);
+    background-color: var(--land-sidebar-bg);
     border-bottom: 1px solid var(--land-border);
 }
 
@@ -856,6 +856,12 @@ body.resizing-v .terminal-host {
     flex-shrink: 0;
     gap: 2px;
     padding: 0 8px;
+}
+#tabs .tab-actions {
+    align-self: stretch;
+    margin: 8px 0;
+    padding: 0 8px;
+    border-left: 1px solid var(--land-border);
 }
 
 /* the tabs scroll in their own strip; the actions stay pinned at the far right */
@@ -883,8 +889,8 @@ body.resizing-v .terminal-host {
     align-items: center;
     flex-shrink: 0;
     max-width: 220px;
-    height: 30px;
-    border-radius: 10px;
+    height: 28px;
+    border-radius: var(--land-radius);
     color: var(--land-muted);
     transition: background-color 0.12s ease-out, color 0.12s ease-out, box-shadow 0.12s ease-out;
 }
@@ -907,7 +913,7 @@ body.resizing-v .terminal-host {
     padding: 0 2px 0 11px;
     border: none;
     background: none;
-    font-weight: 550;
+    font-weight: 600;
 }
 .tab .tab-name {
     min-width: 0;
@@ -965,13 +971,13 @@ body.resizing-v .terminal-host {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    height: 30px;
+    height: 28px;
     padding: 0 11px;
     border: none;
-    border-radius: 10px;
+    border-radius: var(--land-radius);
     background: none;
     color: var(--land-muted);
-    font-weight: 550;
+    font-weight: 600;
     transition: background-color 0.12s ease-out, color 0.12s ease-out, box-shadow 0.12s ease-out;
 }
 .terminal-toggle:hover {
@@ -979,9 +985,8 @@ body.resizing-v .terminal-host {
     color: var(--land-fg);
 }
 .terminal-toggle.active {
-    background-color: var(--land-raised-bg);
+    background-color: var(--land-accent-tint);
     color: var(--land-fg);
-    box-shadow: var(--land-raised-shadow);
 }
 
 #frames {
@@ -1193,7 +1198,7 @@ body.resizing-v .terminal-host {
     display: flex;
     align-items: center;
     flex-shrink: 0;
-    height: 40px;
+    height: var(--land-strip);
     padding: 0 8px;
     gap: 4px;
 }
@@ -1211,10 +1216,7 @@ body.resizing-v .terminal-host {
     display: none;
 }
 .terminal-tabs .tab {
-    max-width: 180px;
-    height: 26px;
-    border-radius: 8px;
-    font-size: 12px;
+    max-width: 200px;
     color: var(--term-muted);
 }
 .terminal-tabs .tab:hover {
@@ -1227,12 +1229,9 @@ body.resizing-v .terminal-host {
     box-shadow: inset 0 0 0 1px var(--term-ring);
 }
 .terminal-tabs .tab .title {
-    padding-left: 9px;
+    padding-left: 11px;
 }
 .terminal-tabs .tab .close {
-    width: 18px;
-    height: 18px;
-    margin: 0 4px 0 1px;
     color: inherit;
 }
 .terminal-tabs .tab .close:hover {
@@ -1508,11 +1507,25 @@ dialog.land-dialog .buttons .text-button {
    is a raised thing on it, as the open tab is in the workspace. Under the pointer or the keyboard a
    tile grows a little and takes the ring. */
 .tray {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    --tile: calc((min(820px, 100vw - 32px) - 2 * var(--land-pad) - 3 * var(--land-gap)) / 4);
+    display: flex;
+    flex-wrap: wrap;
     gap: var(--land-gap);
-    padding: var(--land-gap);
+    /* the tray is as wide as what is on it: one tile, a tray of one; four fill the column */
+    width: fit-content;
+    max-width: 100%;
+    box-sizing: border-box;
+    padding: var(--land-pad);
     overflow: visible;
+}
+.tray > .ws-card {
+    flex: 0 0 var(--tile);
+    width: var(--tile);
+}
+@media (max-width: 700px) {
+    .tray {
+        --tile: calc((100vw - 32px - 2 * var(--land-pad) - var(--land-gap)) / 2);
+    }
 }
 .ws-card {
     position: relative;
@@ -1572,7 +1585,7 @@ dialog.land-dialog .buttons .text-button {
 .ws-card .ws-name {
     max-width: 100%;
     font-size: 14px;
-    font-weight: 650;
+    font-weight: 600;
 }
 .ws-card .ws-path {
     flex: none;
@@ -1659,7 +1672,7 @@ dialog.land-dialog .buttons .text-button {
 .ws-name {
     flex-shrink: 0;
     max-width: 60%;
-    font-weight: 550;
+    font-weight: 600;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1831,7 +1844,7 @@ dialog.land-dialog .buttons .text-button {
     max-width: 100%;
 }
 .opener-actions .open-this-folder strong {
-    font-weight: 650;
+    font-weight: 600;
     overflow: hidden;
     text-overflow: ellipsis;
 }
@@ -1887,10 +1900,10 @@ dialog.land-dialog .buttons .text-button {
 #land > aside {
     max-width: calc(100vw - 320px);
 }
-.main-split.bottom > #terminal-panel {
+.main-split.dock-bottom > #terminal-panel {
     max-height: calc(100% - 120px);
 }
-.main-split.right > #terminal-panel {
+.main-split.dock-right > #terminal-panel {
     max-width: calc(100% - 280px);
 }
 

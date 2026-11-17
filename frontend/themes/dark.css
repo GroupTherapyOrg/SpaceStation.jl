@@ -202,7 +202,7 @@
         /* The integrated terminal has its OWN light/dark switch (the ☀/☾ button on the terminal tab
            strip), independent of the page theme — a light UI with a dark terminal is a common
            preference. Both palettes are therefore identical in light.css and dark.css. */
-        --terminal-bg: hsl(222deg 16% 19%);
+        --terminal-bg: #1a1b21;
         --terminal-fg: hsl(0deg 0% 77%);
         --terminal-light-bg: hsl(0deg 0% 99%);
         --terminal-light-fg: hsl(213deg 14% 16%);
@@ -210,12 +210,11 @@
         /* SpaceStation shell (land.css). The same four levels as the light theme: a deep canvas with
            a faint wash of Julia's colours, islands with a glass edge (brighter along the top and
            left, where the light comes from), raised things on them, and what floats above. */
-        --land-canvas: #111115;
+        --land-canvas: #0f0f13;
         --land-canvas-glow: radial-gradient(1100px 620px at 8% -12%, rgba(149, 88, 178, 0.2), transparent 62%),
             radial-gradient(1000px 560px at 102% -6%, rgba(94, 122, 211, 0.19), transparent 58%),
             radial-gradient(900px 520px at 55% 112%, rgba(203, 60, 51, 0.07), transparent 60%);
         --land-bg: hsl(0deg 0% 12%);
-        --land-chrome-bg: #1c1d23;
         --land-sidebar-bg: #1a1b21;
         --land-raised-bg: #282a32;
         --land-fg: hsl(230deg 12% 90%);
@@ -237,8 +236,8 @@
         --land-ok: #6bbf59;
         --land-warn: #e0b354;
         --land-warn-bg: rgba(224, 179, 84, 0.14);
-        --land-glass-on-light: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 0 0 1px rgba(0, 0, 0, 0.5), 0 10px 26px -10px rgba(0, 0, 0, 0.6);
-        --land-glass-on-dark: inset 0 1px 0 rgba(255, 255, 255, 0.11), inset 1px 0 0 rgba(255, 255, 255, 0.055), inset -1px 0 0 rgba(255, 255, 255, 0.02), inset 0 -1px 0 rgba(255, 255, 255, 0.02), 0 10px 26px -10px rgba(0, 0, 0, 0.6);
+        --land-glass-on-light: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 0 0 1px rgba(0, 0, 0, 0.5), 0 3px 8px -3px rgba(0, 0, 0, 0.5);
+        --land-glass-on-dark: inset 0 0 0 1px rgba(255, 255, 255, 0.075), inset 0 1px 0 rgba(255, 255, 255, 0.07), inset 1px 0 0 rgba(255, 255, 255, 0.03), 0 3px 8px -3px rgba(0, 0, 0, 0.5);
         --land-glass: var(--land-glass-on-dark);
         --land-raised-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), inset 0 0 0 1px rgba(255, 255, 255, 0.06), 0 2px 6px rgba(0, 0, 0, 0.35);
         --land-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), inset 0 0 0 1px rgba(255, 255, 255, 0.05), 0 16px 44px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(0, 0, 0, 0.4);
