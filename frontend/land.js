@@ -84,6 +84,7 @@ const basename = (p) => (p.split("/").pop() ?? "").split("\\").pop() ?? ""
 // (Chrome's "prevent this page from creating additional dialogs", frames without allow-modals, and
 // some webviews have no prompt() at all) — they then return at once and every button
 // that asks first appears dead, with no error. A native <dialog>.showModal() is always shown.
+let dialog_count = 0
 const open_dialog = (build) =>
     new Promise((resolve) => {
         const dialog = document.createElement("dialog")
@@ -96,6 +97,13 @@ const open_dialog = (build) =>
             resolve(result)
         }
         build(dialog, done)
+        // its heading is its name, and its first paragraph says what is being asked: a screen reader
+        // otherwise announces "dialog" and then the first button
+        const heading = dialog.querySelector("h1, h2, h3")
+        const says = dialog.querySelector("p")
+        const n = (dialog_count += 1)
+        if (heading != null) dialog.setAttribute("aria-labelledby", (heading.id ||= `land-dialog-${n}-title`))
+        if (says != null) dialog.setAttribute("aria-describedby", (says.id ||= `land-dialog-${n}-text`))
         document.body.append(dialog)
         dialog.oncancel = (e) => {
             e.preventDefault()
@@ -566,7 +574,11 @@ const FileEntry = ({ entry, listings, expanded, tree, depth }) => {
                 onClick=${() => (is_notebook ? tree.on_open_notebook(entry.path) : tree.on_open_file(entry.path))}
             >
                 <span class="no-chevron"></span><${Ico} name=${is_notebook ? "i-notebook" : kind} /><span class="entry-name">${entry.name}</span>
-                ${is_notebook && tree.running_paths.has(entry.path) ? html`<span class="dot ok running-mark" title="Running"></span>` : null}
+                ${is_notebook && tree.opening_paths.has(entry.path)
+                    ? html`<span class="spinner running-mark" role="img" aria-label="opening"></span>`
+                    : is_notebook && tree.running_paths.has(entry.path)
+                      ? html`<span class="dot ok running-mark" role="img" aria-label="running" title="Running"></span>`
+                      : null}
             </button>
         </div>
     </li>`
@@ -1099,7 +1111,9 @@ const terminal_theme_for = (scheme) => {
 const TerminalView = ({ tid, cwd, root, visible, scheme, notebook_env, on_exit }) => {
     const node_ref = useRef(null)
     // "lost": the connection dropped and is being re-made; "failed": it could not be.
-    const [link, set_link] = useState(/** @type {"ok" | "lost" | "failed"} */ ("ok"))
+    // "unloaded": the terminal's own code could not be fetched from the server.
+    const [link, set_link] = useState(/** @type {"ok" | "lost" | "failed" | "unloaded"} */ ("ok"))
+    const [load_try, set_load_try] = useState(0)
     const reconnect_ref = useRef(/** @type {(() => void)?} */ (null))
     const on_exit_ref = useRef(on_exit)
     on_exit_ref.current = on_exit
@@ -1202,15 +1216,25 @@ const TerminalView = ({ tid, cwd, root, visible, scheme, notebook_env, on_exit }
         if (node_ref.current == null) return
         started.current = true
         ;(async () => {
-            const [{ Terminal }, { FitAddon }, config] = await Promise.all([
-                // 6.0.0, not 5.5.0: 5.5 predates two upstream fixes — "Fixed CapsLock triggering input
-                // twice in MacOS" (#5282) and "Fix duplicate input for some IMEs" (#5024). In WebKit,
-                // xterm 5.5's input layer garbles caps/fast typing into TUIs like Claude Code; Chrome
-                // never showed it.
-                import("https://esm.sh/@xterm/xterm@6.0.0?target=es2020"),
-                import("https://esm.sh/@xterm/addon-fit@0.11.0?target=es2020"),
-                get_json("./api/v1/config").catch(() => null),
-            ])
+            let Terminal, FitAddon, config
+            try {
+                ;[{ Terminal }, { FitAddon }, config] = await Promise.all([
+                    // 6.0.0, not 5.5.0: 5.5 predates two upstream fixes — "Fixed CapsLock triggering input
+                    // twice in MacOS" (#5282) and "Fix duplicate input for some IMEs" (#5024). In WebKit,
+                    // xterm 5.5's input layer garbles caps/fast typing into TUIs like Claude Code; Chrome
+                    // never showed it. Served by this server (imports/vendor): it used to come from a
+                    // CDN, and without a network a terminal was an empty panel that said nothing.
+                    import("./imports/vendor/xterm.js"),
+                    import("./imports/vendor/xterm-addon-fit.js"),
+                    get_json("./api/v1/config").catch(() => null),
+                ])
+            } catch (e) {
+                // say so, and let it be tried again: a panel that stays empty looks like a hang
+                started.current = false
+                set_link("unloaded")
+                return
+            }
+            set_link("ok")
             const term = new Terminal({
                 fontSize: 13,
                 fontFamily: "JuliaMono, SFMono-Regular, Menlo, Consolas, monospace",
@@ -1469,7 +1493,7 @@ const TerminalView = ({ tid, cwd, root, visible, scheme, notebook_env, on_exit }
             ro.observe(node_ref.current)
             ro_ref.current = ro
         })()
-    }, [visible, refit])
+    }, [visible, refit, load_try])
 
     // Tear everything down on unmount — closing the tab, switching dock (which remounts under a
     // different parent), or closing the panel. Runs exactly once (empty deps), so a plain tab
@@ -1513,8 +1537,11 @@ const TerminalView = ({ tid, cwd, root, visible, scheme, notebook_env, on_exit }
             : html`<div class="terminal-note" role="status">
                   ${link === "lost"
                       ? html`<span class="spinner"></span><span>Connection lost. The shell is still running; reconnecting…</span>`
-                      : html`<span>Could not reconnect. The shell may still be running.</span
-                            ><button class="text-button" onClick=${() => reconnect_ref.current?.()}>Try again</button>`}
+                      : link === "unloaded"
+                        ? html`<span>The terminal could not be loaded from the server.</span
+                              ><button class="text-button" onClick=${() => set_load_try((n) => n + 1)}>Try again</button>`
+                        : html`<span>Could not reconnect. The shell may still be running.</span
+                              ><button class="text-button" onClick=${() => reconnect_ref.current?.()}>Try again</button>`}
               </div>`}`
 }
 
@@ -2342,14 +2369,24 @@ const Land = () => {
         drag_resize(e, "x", (ev) => clamp(ev.clientX - left, 180, Math.min(560, window.innerWidth - 360)), set_sidebar_width)
     }, [])
 
+    // Notebooks that have been asked for and are not open yet. Opening one can take seconds (a cold
+    // server, a disk on the network): its row shows it, and a second click does not ask twice.
+    const [opening_paths, set_opening_paths] = useState(/** @type {Set<String>} */ (new Set()))
+    const opening_ref = useRef(/** @type {Set<String>} */ (new Set()))
     const open_notebook = useCallback(
         async (path) => {
+            if (opening_ref.current.has(path)) return
+            opening_ref.current.add(path)
+            set_opening_paths(new Set(opening_ref.current))
             try {
                 const id = await get_text(`./open?path=${encodeURIComponent(path)}`, { method: "POST" })
                 add_tab(id, path)
                 refresh()
             } catch (e) {
                 set_error(String(e))
+            } finally {
+                opening_ref.current.delete(path)
+                set_opening_paths(new Set(opening_ref.current))
             }
         },
         [add_tab, refresh]
@@ -2374,6 +2411,102 @@ const Land = () => {
             return remaining
         })
     }, [set_tab_dirty])
+
+    /** Close several tabs, one after another: each unsaved file still asks for itself. */
+    const close_tabs = useCallback(
+        async (ids) => {
+            for (const id of ids) await close_tab(id)
+        },
+        [close_tab]
+    )
+
+    // Tabs are in the order they are dragged into. Not the browser's drag and drop: Firefox does
+    // not start one from a button, and a tab is one.
+    const [moving_tab, set_moving_tab] = useState(/** @type {String?} */ (null))
+    const start_tab_move = useCallback((e, id) => {
+        if (e.button !== 0 || e.target.closest(".close") != null) return
+        const strip = e.currentTarget.parentElement
+        const from_x = e.clientX
+        let moving = false
+        const on_move = (ev) => {
+            if (!moving) {
+                if (Math.abs(ev.clientX - from_x) < 6) return // a click with an unsteady hand
+                moving = true
+                set_moving_tab(id)
+                document.body.classList.add("moving-tab")
+            }
+            const places = [...strip.querySelectorAll(".tab[data-tab]")]
+            const at = places.findIndex((el) => el.dataset.tab === id)
+            if (at < 0) return
+            // it takes the place of the neighbour whose middle the pointer has passed
+            let to = at
+            for (let i = 0; i < places.length; i++) {
+                const r = places[i].getBoundingClientRect()
+                const middle = r.left + r.width / 2
+                if (i < at && ev.clientX < middle) {
+                    to = i
+                    break
+                }
+                if (i > at && ev.clientX > middle) to = i
+            }
+            if (to !== at)
+                set_tabs((tabs) => {
+                    const from = tabs.findIndex((t) => t.id === id)
+                    if (from < 0 || to >= tabs.length) return tabs
+                    const next = [...tabs]
+                    next.splice(to, 0, ...next.splice(from, 1))
+                    return next
+                })
+            const edges = strip.getBoundingClientRect()
+            if (ev.clientX < edges.left + 28) strip.scrollLeft -= 14
+            else if (ev.clientX > edges.right - 28) strip.scrollLeft += 14
+        }
+        const on_up = () => {
+            window.removeEventListener("pointermove", on_move)
+            window.removeEventListener("pointerup", on_up)
+            window.removeEventListener("pointercancel", on_up)
+            if (!moving) return
+            set_moving_tab(null)
+            document.body.classList.remove("moving-tab")
+            // letting go is not a click on whatever is under the pointer
+            const swallow = (ce) => {
+                ce.stopPropagation()
+                ce.preventDefault()
+            }
+            window.addEventListener("click", swallow, { capture: true, once: true })
+            setTimeout(() => window.removeEventListener("click", swallow, true), 0)
+        }
+        window.addEventListener("pointermove", on_move)
+        window.addEventListener("pointerup", on_up)
+        window.addEventListener("pointercancel", on_up)
+    }, [])
+
+    // A strip with more tabs than fit fades out at the side that has more. The strip has no
+    // scrollbar (it would take a third of its height), so nothing else says there are more.
+    const tab_strip_ref = useRef(/** @type {HTMLElement?} */ (null))
+    const terminal_strip_ref = useRef(/** @type {HTMLElement?} */ (null))
+    useEffect(() => {
+        const undo = [tab_strip_ref.current, terminal_strip_ref.current].map((strip) => {
+            if (strip == null) return () => {}
+            const mark = () => {
+                strip.classList.toggle("more-before", strip.scrollLeft > 2)
+                strip.classList.toggle("more-after", strip.scrollLeft + strip.clientWidth < strip.scrollWidth - 2)
+            }
+            mark()
+            strip.addEventListener("scroll", mark, { passive: true })
+            // a strip that gets narrower keeps the open tab in sight
+            const ro = new ResizeObserver(() => {
+                strip.querySelector(".tab.active")?.scrollIntoView({ block: "nearest", inline: "nearest" })
+                mark()
+            })
+            ro.observe(strip)
+            return () => {
+                strip.removeEventListener("scroll", mark)
+                ro.disconnect()
+            }
+        })
+        return () => undo.forEach((f) => f())
+    })
 
     // What is in front has the keyboard, and its tab is in view. Without this a click on a file left
     // the keys on the tree, and a chord that switched tabs from inside a notebook left them inside
@@ -2555,6 +2688,26 @@ const Land = () => {
         [close_tab, refresh, running]
     )
 
+    const tab_menu = (e, t) => {
+        e.preventDefault()
+        const at = tabs.findIndex((x) => x.id === t.id)
+        const is_running = t.kind !== "file" && running.some((nb) => nb.notebook_id === t.id)
+        open_menu(e.clientX, e.clientY, [
+            { label: "Close", icon: "i-close", run: () => close_tab(t.id) },
+            { label: "Close the others", run: () => close_tabs(tabs.filter((x) => x.id !== t.id).map((x) => x.id)), disabled: tabs.length < 2 },
+            { label: "Close the ones to the right", run: () => close_tabs(tabs.slice(at + 1).map((x) => x.id)), disabled: at < 0 || at === tabs.length - 1 },
+            "-",
+            { label: "Copy path", icon: "i-copy", run: () => copy_text(t.path) },
+            ...(t.kind === "file"
+                ? []
+                : [
+                      { label: "Open a terminal in its environment", icon: "i-terminal", run: () => new_terminal({ label: `env: ${basename(t.path)}`, notebook_env: t.id }) },
+                      "-",
+                      { label: "Shut down the notebook", icon: "i-power", danger: true, disabled: !is_running, run: () => shutdown_notebook(t.id) },
+                  ]),
+        ])
+    }
+
     // The terminal area can live in three places (its "dock"): bottom, right, or embedded as an
     // editor tab. `__terminal__` is the synthetic editor-tab id used in "tab" mode.
     const tab_mode = terminal_open && terminal_dock === "tab"
@@ -2619,16 +2772,39 @@ const Land = () => {
         },
         [close_terminal, terminals.length]
     )
+    /** A terminal's name is the user's to give: "Terminal 3" says nothing about what runs in it. It is
+     *  this browser's name for it (kept with its tab), like the order of the tabs. */
+    const rename_terminal = async (t) => {
+        const name = await ask_text({ title: "Rename the terminal", value: t.label, action: "Rename", check: (v) => (v.trim() === "" ? "Give it a name." : null) })
+        if (name == null) return
+        set_terminals((ts) => ts.map((x) => (x.tid === t.tid ? { ...x, label: name.trim().slice(0, 60) } : x)))
+    }
     const render_terminals = (shown) => html`
         <div class="terminal-tabs">
-            <div class="terminal-tab-scroller" role="tablist">
+            <div class="terminal-tab-scroller" role="tablist" aria-label="Terminals" ref=${terminal_strip_ref}>
                 ${shown_terminals.map(
                     (t) => html`<div
                         class="tab terminal-tab ${t.tid === active_terminal ? "active" : ""}"
                         key=${t.tid}
+                        role="presentation"
                         onAuxClick=${(e) => e.button === 1 && ask_close_terminal(t)}
+                        onContextMenu=${(e) => {
+                            e.preventDefault()
+                            open_menu(e.clientX, e.clientY, [
+                                { label: "Rename…", run: () => rename_terminal(t) },
+                                "-",
+                                { label: "Close", icon: "i-close", run: () => ask_close_terminal(t) },
+                            ])
+                        }}
                     >
-                        <button class="title" role="tab" aria-selected=${t.tid === active_terminal} title=${t.label} onClick=${() => set_active_terminal(t.tid)}>
+                        <button
+                            class="title"
+                            role="tab"
+                            aria-selected=${t.tid === active_terminal}
+                            title=${t.cwd ? `${t.label} — ${t.cwd}` : t.label}
+                            onClick=${() => set_active_terminal(t.tid)}
+                            onDblClick=${() => rename_terminal(t)}
+                        >
                             <svg class="ico" aria-hidden="true"><use href="#i-terminal" /></svg><span class="tab-name">${t.label}</span>
                         </button>
                         <button class="close" title="Close this terminal and end its shell" aria-label=${`Close ${t.label}`} onClick=${() => ask_close_terminal(t)}>
@@ -2831,6 +3007,7 @@ const Land = () => {
         on_menu: entry_menu,
         current_path: active_tab?.path ?? null,
         running_paths: new Set(running.map((nb) => nb.path)),
+        opening_paths,
     }
     // Arrows in the tree, as in any file list: up and down between rows, right opens a folder (or steps
     // into it), left closes it (or goes to its folder); Home and End; F2 renames; the menu key opens the menu.
@@ -2988,6 +3165,8 @@ const Land = () => {
                             <div
                                 class="tab-scroller"
                                 role="tablist"
+                                aria-label="Open notebooks and files"
+                                ref=${tab_strip_ref}
                                 onWheel=${(e) => {
                                     // a wheel that only goes up and down still moves along the strip
                                     if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) e.currentTarget.scrollLeft += e.deltaY
@@ -2995,12 +3174,23 @@ const Land = () => {
                             >
                                 ${tabs.map(
                                     (t) => html`<div
-                                        class="tab ${t.kind === "file" ? "file" : "notebook"} ${t.id === active ? "active" : ""} ${t.kind === "file" && dirty_tabs.has(t.path) ? "dirty" : ""}"
+                                        class="tab ${t.kind === "file" ? "file" : "notebook"} ${t.id === active ? "active" : ""} ${t.kind === "file" && dirty_tabs.has(t.path) ? "dirty" : ""} ${t.id === moving_tab ? "moving" : ""}"
                                         key=${t.id}
+                                        role="presentation"
+                                        data-tab=${t.id}
+                                        onPointerDown=${(e) => start_tab_move(e, t.id)}
                                         onMouseDown=${(e) => e.button === 1 && e.preventDefault()}
                                         onAuxClick=${(e) => e.button === 1 && close_tab(t.id)}
+                                        onContextMenu=${(e) => tab_menu(e, t)}
                                     >
-                                        <button class="title" role="tab" aria-selected=${t.id === active} title=${t.path} onClick=${() => set_active(t.id)}>
+                                        <button
+                                            class="title"
+                                            role="tab"
+                                            aria-selected=${t.id === active}
+                                            aria-label=${t.kind === "file" && dirty_tabs.has(t.path) ? `${basename(t.path)}, unsaved changes` : undefined}
+                                            title=${t.path}
+                                            onClick=${() => set_active(t.id)}
+                                        >
                                             <${Ico} name=${t.kind === "file" ? file_icon(basename(t.path)) : "i-notebook"} /><span class="tab-name">${basename(t.path)}</span>
                                         </button>
                                         <button

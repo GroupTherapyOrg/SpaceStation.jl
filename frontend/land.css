@@ -675,6 +675,11 @@ body.resizing-v .terminal-host {
 .entry .running-mark {
     margin-left: auto;
 }
+.entry .spinner.running-mark {
+    width: 9px;
+    height: 9px;
+    border-width: 1.5px;
+}
 #land section.running .entry .dot {
     margin: 0 4px;
 }
@@ -808,6 +813,41 @@ body.resizing-v .terminal-host {
 }
 .tab-scroller::-webkit-scrollbar {
     display: none;
+}
+/* more tabs than fit: the strip fades out at the side that has more */
+.tab-scroller,
+.terminal-tab-scroller {
+    --fade-before: 0px;
+    --fade-after: 0px;
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 var(--fade-before), #000 calc(100% - var(--fade-after)), transparent);
+    mask-image: linear-gradient(to right, transparent, #000 var(--fade-before), #000 calc(100% - var(--fade-after)), transparent);
+}
+.tab-scroller.more-before,
+.terminal-tab-scroller.more-before {
+    --fade-before: 28px;
+}
+.tab-scroller.more-after,
+.terminal-tab-scroller.more-after {
+    --fade-after: 28px;
+}
+/* a tab being dragged to another place in the strip */
+.tab {
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: pan-x;
+}
+.tab.moving {
+    z-index: 1;
+    background: var(--land-raised-sheen), var(--land-raised-bg);
+    color: var(--land-fg);
+    box-shadow: var(--land-ring), var(--land-shadow);
+}
+body.moving-tab,
+body.moving-tab * {
+    cursor: grabbing !important;
+}
+body.moving-tab #frames iframe {
+    pointer-events: none;
 }
 
 .tab {
