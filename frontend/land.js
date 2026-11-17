@@ -426,10 +426,11 @@ const FileEntry = ({ entry, listings, expanded, tree, depth }) => {
         </li>`
     }
     const is_notebook = entry.type === "notebook"
-    return html`<li class="${is_notebook ? "notebook" : "file"} ${tree.current_path === entry.path ? "current" : ""}">
+    const kind = is_notebook ? null : file_icon(entry.name)
+    return html`<li class="${is_notebook ? "notebook" : "file"} ${kind?.kind === "k-quiet" ? "quiet" : ""} ${tree.current_path === entry.path ? "current" : ""}">
         <div class="entry-row" onContextMenu=${(e) => tree.on_menu(e, entry)}>
             <button class="entry" style=${row_style} title=${entry.path} onClick=${() => (is_notebook ? tree.on_open_notebook(entry.path) : tree.on_open_file(entry.path))}>
-                <span class="no-chevron"></span><${Ico} name=${is_notebook ? "i-notebook" : file_icon(entry.name)} /><span class="entry-name">${entry.name}</span>
+                <span class="no-chevron"></span><${Ico} name=${is_notebook ? "i-notebook" : kind} /><span class="entry-name">${entry.name}</span>
                 ${is_notebook && tree.running_paths.has(entry.path) ? html`<span class="dot ok running-mark" title="Running"></span>` : null}
             </button>
             <button class="row-action danger" title="Delete ${entry.name}" aria-label="Delete ${entry.name}" onClick=${() => tree.on_delete(entry)}>
@@ -444,16 +445,11 @@ const FileEntry = ({ entry, listings, expanded, tree, depth }) => {
  *  Picking a folder spawns a child server in a new tab (see connect_local); this view never leaves.
  *  `on_cancel` (optional) shows a back button when opened on top of an existing workspace. */
 const WorkspaceOpener = ({ on_cancel, tunneled }) => {
-    // Stamp the launcher's appearance choice on workspace links, so a workspace opens in it.
-    const scheme_url = (url) => {
-        const s = get_color_scheme()
-        return s === "system" ? url : `${url}${url.includes("?") ? "&" : "?"}scheme=${s}`
-    }
     // A workspace's URL is the hub's own page for it (`/w/<id>/`, relative to the hub — see
     // src/webserver/Proxy.jl), so resolve it against this page before handing it to a tab. It
     // carries the homebase fragment: the workspace's way back here.
     const abs_url = (url) => new URL(url, window.location.href).href
-    const open_href = (url) => with_homebase(scheme_url(abs_url(url)))
+    const open_href = (url) => with_homebase(abs_url(url))
     const [listing, set_listing] = useState(
         /** @type {{path: String, parent: String, entries: Array<{name: String, path: String}>, crumbs: Array<{name: String, path: String}>}?} */ (null)
     )
@@ -747,7 +743,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                                   <span class="ws-name">${name}</span>
                                   <span class="ws-path" title=${path}>${short_path(path)}</span>
                                   ${st.state === "ready"
-                                      ? html`<span class="ws-state"><span class="dot ok"></span>Running</span>`
+                                      ? null
                                       : st.state === "error"
                                         ? html`<span class="ws-state"><span class="dot bad"></span>Did not start</span>`
                                         : html`<span class="ws-state"><span class="spinner"></span>${state_label(st)} · ${time}</span>`}`
@@ -755,9 +751,12 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                                   ${st.state === "ready" && st.url != null ? open_link(st.url, name, body, "ws-card-open") : html`<div class="ws-card-open inert">${body}</div>`}
                                   ${st.state !== "ready" && st.detail ? html`<p class="ws-card-detail">${st.detail}</p>` : null}
                                   ${st.state === "ready"
-                                      ? html`<button class="icon-button danger ws-card-corner" title="Shut down this workspace" aria-label=${`Shut down ${name}`} onClick=${() => shutdown_local(path)}>
-                                            <svg class="ico" aria-hidden="true"><use href="#i-power" /></svg>
-                                        </button>`
+                                      ? html`<div class="ws-card-foot">
+                                            <span class="ws-state"><span class="dot ok"></span>Running</span>
+                                            <button class="text-button stop" title="Stop this workspace's server and its notebooks. Files stay as they are." onClick=${() => shutdown_local(path)}>
+                                                Shut down
+                                            </button>
+                                        </div>`
                                       : st.state === "error"
                                         ? html`<div class="ws-card-actions">
                                                   <button class="text-button" onClick=${() => open_workspace(path)}>Try again</button>
@@ -769,18 +768,15 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                           ${connected_hosts.map(({ host, st }) => {
                               const body = html`<span class="ws-card-icon"><svg class="ico" aria-hidden="true"><use href="#i-server" /></svg></span>
                                   <span class="ws-name">${host}</span>
-                                  <span class="ws-path">over SSH</span>
-                                  <span class="ws-state"><span class="dot ok"></span>Connected</span>`
+                                  <span class="ws-path">over SSH</span>`
                               return html`<div class="ws-card" key=${`remote:${host}`}>
                                   ${open_link(st.url, host, body, "ws-card-open")}
-                                  <button
-                                      class="icon-button ws-card-corner"
-                                      title=${`Disconnect: close the tunnel to ${host}. Its server and whatever runs on it keep going.`}
-                                      aria-label=${`Disconnect from ${host}`}
-                                      onClick=${() => cancel_remote(host)}
-                                  >
-                                      <svg class="ico" aria-hidden="true"><use href="#i-close" /></svg>
-                                  </button>
+                                  <div class="ws-card-foot">
+                                      <span class="ws-state"><span class="dot ok"></span>Connected</span>
+                                      <button class="text-button stop" title=${`Close the tunnel to ${host}. Its server and whatever runs on it keep going.`} onClick=${() => cancel_remote(host)}>
+                                          Disconnect
+                                      </button>
+                                  </div>
                               </div>`
                           })}
                       </div>
@@ -938,7 +934,7 @@ const terminal_theme_for = (scheme) => {
     const v = (name, fallback) => styles.getPropertyValue(name).trim() || fallback
     return scheme === "light"
         ? {
-              background: v("--terminal-light-bg", "#fbfbfb"),
+              background: "#00000000",
               foreground: v("--terminal-light-fg", "#24292f"),
               cursor: "#24292f",
               cursorAccent: "#fbfbfb",
@@ -961,7 +957,7 @@ const terminal_theme_for = (scheme) => {
               brightWhite: "#8c959f",
           }
         : {
-              background: v("--terminal-bg", "#1f1f1f"),
+              background: "#00000000",
               foreground: v("--terminal-fg", "#dddddd"),
           }
 }
@@ -1085,6 +1081,7 @@ const TerminalView = ({ tid, cwd, visible, scheme, notebook_env, on_exit }) => {
                 fontSize: 13,
                 fontFamily: "JuliaMono, SFMono-Regular, Menlo, Consolas, monospace",
                 cursorBlink: true,
+                allowTransparency: true, // the island behind is the background (see terminal_theme_for)
                 scrollback: 5000,
                 // The SERVER's pty backend decides this, not the browser's OS: on a Windows server the
                 // pty is ConPTY, and xterm needs its ConPTY heuristics (reliable wrapped-line detection

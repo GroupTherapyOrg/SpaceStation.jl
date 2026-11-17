@@ -19,6 +19,13 @@ if (seed === "light" || seed === "dark" || seed === "system") {
     try {
         localStorage.setItem(KEY, seed)
     } catch (e) {}
+    // A seed is applied once and then taken out of the address. Left there, every reload wrote it
+    // back over whatever had been chosen since: pick light, refresh, and the page was dark again.
+    try {
+        const url = new URL(window.location.href)
+        url.searchParams.delete("scheme")
+        window.history.replaceState(window.history.state, "", url)
+    } catch (e) {}
 }
 
 export const get_color_scheme = () => {

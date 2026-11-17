@@ -219,6 +219,9 @@
             radial-gradient(900px 520px at 55% 112%, rgba(203, 60, 51, 0.1), transparent 60%);
         --land-bg: #ffffff;
         --land-sidebar-bg: hsl(46deg 90% 98%);
+        /* an island is glass: the canvas shows through it a little, and is blurred behind it */
+        --land-island-bg: linear-gradient(180deg, rgba(255, 254, 249, 0.9), rgba(255, 251, 240, 0.76));
+        --land-raised-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0), rgba(120, 95, 30, 0.035));
         --land-raised-bg: #ffffff;
         --land-fg: #2b2822;
         --land-muted: #6a6457;
@@ -241,10 +244,10 @@
         --land-warn-bg: rgba(214, 160, 30, 0.16);
         /* an island's edge is chosen by the island's own tone, not the page's: a dark terminal on a
            light page gets the dark edge */
-        --land-glass-on-light: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 0 0 1px rgba(80, 60, 15, 0.1), 0 1px 2px rgba(80, 60, 15, 0.08), 0 3px 8px -3px rgba(80, 60, 15, 0.14);
-        --land-glass-on-dark: inset 0 0 0 1px rgba(255, 255, 255, 0.07), inset 0 1px 0 rgba(255, 255, 255, 0.07), 0 0 0 1px rgba(20, 15, 5, 0.3), 0 3px 8px -3px rgba(40, 30, 10, 0.3);
+        --land-glass-on-light: inset 0 1px 0 #ffffff, inset 0 0 0 1px rgba(255, 255, 255, 0.6), 0 0 0 1px rgba(80, 60, 15, 0.1), 0 2px 4px rgba(80, 60, 15, 0.08), 0 14px 30px -12px rgba(80, 60, 15, 0.34);
+        --land-glass-on-dark: inset 0 1px 0 rgba(255, 255, 255, 0.16), inset 0 0 0 1px rgba(255, 255, 255, 0.07), 0 0 0 1px rgba(20, 15, 5, 0.35), 0 2px 4px rgba(40, 30, 10, 0.16), 0 14px 30px -12px rgba(40, 30, 10, 0.5);
         --land-glass: var(--land-glass-on-light);
-        --land-raised-shadow: 0 0 0 1px rgba(80, 60, 15, 0.1), 0 1px 2px rgba(80, 60, 15, 0.1), 0 4px 10px -4px rgba(80, 60, 15, 0.16);
+        --land-raised-shadow: inset 0 1px 0 #ffffff, 0 0 0 1px rgba(80, 60, 15, 0.1), 0 2px 3px rgba(80, 60, 15, 0.1), 0 8px 16px -7px rgba(80, 60, 15, 0.26);
         --land-shadow: 0 0 0 1px rgba(80, 60, 15, 0.1), 0 14px 40px -6px rgba(60, 45, 10, 0.3), 0 2px 6px rgba(60, 45, 10, 0.1);
         --land-backdrop: rgba(60, 50, 30, 0.3);
         --cm-color-code-differs-gutters: rgba(214, 172, 35, 0.2);

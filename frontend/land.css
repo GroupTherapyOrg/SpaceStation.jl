@@ -22,7 +22,7 @@
     --julia-mono-font-stack: JuliaMono, ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
     --land-ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
     /* spacing: multiples of 4 */
-    --land-gap: 8px; /* between islands, and between them and the window */
+    --land-gap: 10px; /* between islands, and between them and the window: room for their shadows */
     --land-pad: 12px; /* an island's inner edge: where its labels and icons start */
     --land-row: 28px; /* a row in the tree, a list, a menu */
     --land-strip: 44px; /* the tab strip */
@@ -238,7 +238,9 @@ svg.ico.k-folder {
 /* An island: one surface, one radius, a glass edge. Its children are clipped to its corners, so
    whatever fills it (a notebook, a terminal) is the island's own shape. */
 .island {
-    background-color: var(--land-sidebar-bg);
+    background: var(--land-island-bg);
+    -webkit-backdrop-filter: blur(22px) saturate(1.5);
+    backdrop-filter: blur(22px) saturate(1.5);
     border-radius: var(--land-island-radius);
     box-shadow: var(--land-glass);
     overflow: hidden;
@@ -344,8 +346,10 @@ body.resizing-v .terminal-host {
     column-gap: 10px;
     align-items: center;
     flex-shrink: 0;
-    padding: 14px 8px 12px var(--land-pad);
+    margin-bottom: 6px;
+    padding: 14px 8px 13px var(--land-pad);
     box-sizing: border-box;
+    border-bottom: 1px solid var(--land-border);
 }
 .side-head .head-buttons {
     display: flex;
@@ -641,6 +645,10 @@ body.resizing-v .terminal-host {
 #land li.file > .entry-row .entry-name {
     color: var(--land-muted);
 }
+/* files nobody opens by hand (caches, locks, logs) step back */
+#land li.file.quiet > .entry-row .entry-name {
+    color: var(--land-faint);
+}
 #land li.file > .entry-row:hover .entry-name,
 #land li.file.current > .entry-row .entry-name {
     color: var(--land-fg);
@@ -735,7 +743,7 @@ body.resizing-v .terminal-host {
     flex-direction: column;
     min-width: 0;
     min-height: 0;
-    background-color: var(--land-bg);
+    background: var(--land-bg);
 }
 
 #tabs {
@@ -799,7 +807,7 @@ body.resizing-v .terminal-host {
 }
 /* the open tab is raised, with the ring: Pluto's pill */
 .tab.active {
-    background-color: var(--land-raised-bg);
+    background: var(--land-raised-sheen), var(--land-raised-bg);
     color: var(--land-fg);
     box-shadow: var(--land-raised-shadow), var(--land-ring);
 }
@@ -1053,6 +1061,7 @@ body.resizing-v .terminal-host {
 
 .terminal-surface {
     --term-bg: var(--terminal-bg);
+    background-image: none;
     --term-fg: var(--terminal-fg);
     --term-muted: rgba(255, 255, 255, 0.5);
     --term-hover: rgba(255, 255, 255, 0.07);
@@ -1430,7 +1439,7 @@ dialog.land-dialog .buttons .text-button {
     flex-direction: column;
     min-width: 0;
     border-radius: var(--land-tile-radius);
-    background-color: var(--land-raised-bg);
+    background: var(--land-raised-sheen), var(--land-raised-bg);
     box-shadow: var(--land-raised-shadow);
     transition: transform 0.2s var(--land-ease), box-shadow 0.16s ease-out;
 }
@@ -1493,6 +1502,27 @@ dialog.land-dialog .buttons .text-button {
 }
 .ws-card .ws-state {
     margin-top: 9px;
+}
+.ws-card-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: 26px;
+    padding: 0 10px 11px 14px;
+    margin-top: -4px;
+}
+.ws-card-foot .ws-state {
+    margin-top: 0;
+}
+.ws-card-foot .text-button {
+    height: 24px;
+    padding: 0 10px;
+    font-size: 12px;
+}
+.text-button.stop:hover {
+    background-color: var(--land-danger-bg);
+    color: var(--land-danger);
 }
 .ws-card-corner {
     position: absolute;

@@ -216,6 +216,8 @@
             radial-gradient(900px 520px at 55% 112%, rgba(203, 60, 51, 0.07), transparent 60%);
         --land-bg: hsl(0deg 0% 12%);
         --land-sidebar-bg: #1a1b21;
+        --land-island-bg: linear-gradient(180deg, rgba(46, 47, 58, 0.74), rgba(27, 28, 35, 0.78));
+        --land-raised-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0));
         --land-raised-bg: #282a32;
         --land-fg: hsl(230deg 12% 90%);
         --land-muted: hsl(230deg 8% 68%);
@@ -236,10 +238,10 @@
         --land-ok: #6bbf59;
         --land-warn: #e0b354;
         --land-warn-bg: rgba(224, 179, 84, 0.14);
-        --land-glass-on-light: inset 0 1px 0 rgba(255, 255, 255, 0.95), 0 0 0 1px rgba(0, 0, 0, 0.5), 0 3px 8px -3px rgba(0, 0, 0, 0.5);
-        --land-glass-on-dark: inset 0 0 0 1px rgba(255, 255, 255, 0.075), inset 0 1px 0 rgba(255, 255, 255, 0.07), inset 1px 0 0 rgba(255, 255, 255, 0.03), 0 3px 8px -3px rgba(0, 0, 0, 0.5);
+        --land-glass-on-light: inset 0 1px 0 #ffffff, 0 0 0 1px rgba(0, 0, 0, 0.5), 0 2px 4px rgba(0, 0, 0, 0.3), 0 14px 30px -12px rgba(0, 0, 0, 0.7);
+        --land-glass-on-dark: inset 0 1px 0 rgba(255, 255, 255, 0.17), inset 0 0 0 1px rgba(255, 255, 255, 0.075), 0 0 0 1px rgba(0, 0, 0, 0.55), 0 2px 4px rgba(0, 0, 0, 0.3), 0 16px 32px -12px rgba(0, 0, 0, 0.75);
         --land-glass: var(--land-glass-on-dark);
-        --land-raised-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), inset 0 0 0 1px rgba(255, 255, 255, 0.06), 0 2px 6px rgba(0, 0, 0, 0.35);
+        --land-raised-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), inset 0 0 0 1px rgba(255, 255, 255, 0.07), 0 2px 4px rgba(0, 0, 0, 0.4), 0 10px 18px -8px rgba(0, 0, 0, 0.65);
         --land-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), inset 0 0 0 1px rgba(255, 255, 255, 0.05), 0 16px 44px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(0, 0, 0, 0.4);
         --land-backdrop: rgba(5, 5, 10, 0.55);
         --cm-color-code-differs-gutters: rgb(235 213 28 / 11%);
