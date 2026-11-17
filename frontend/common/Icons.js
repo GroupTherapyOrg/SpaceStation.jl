@@ -20,6 +20,9 @@ export const mount_icons = () => {
 
 // A file's kind decides its icon and one of four hues: what you run (k-code), what you read (k-doc),
 // what configures (k-config), what you load (k-data); the rest stays quiet.
+/** @typedef {[string, string]} IconAndKind an icon's id and its kind class */
+
+/** @type {Record<string, IconAndKind>} */
 const BY_NAME = {
     "manifest.toml": ["i-lock", "k-quiet"],
     "dockerfile": ["i-docker", "k-config"],
@@ -32,6 +35,7 @@ const BY_NAME = {
     ".gitmodules": ["i-git", "k-quiet"],
     ".env": ["i-env", "k-config"],
 }
+/** @type {Array<[string, IconAndKind]>} */
 const BY_ENDING = [
     // a notebook's cached outputs, written beside it: the notebook's mark with the colour taken out
     [".pluto-cache.toml", ["i-cache", "k-quiet"]],
@@ -40,7 +44,9 @@ const BY_ENDING = [
     [".tar.bz2", ["i-archive", "k-quiet"]],
     [".tar.xz", ["i-archive", "k-quiet"]],
 ]
+/** @type {(icon: string, kind: string, extensions: string) => Array<[string, IconAndKind]>} */
 const kinds = (icon, kind, extensions) => extensions.split(" ").map((e) => [e, [icon, kind]])
+/** @type {Record<string, IconAndKind>} */
 const BY_EXTENSION = Object.fromEntries([
     ...kinds("i-julia", "k-julia", "jl"),
     ...kinds("i-python", "k-code", "py pyw"),
@@ -77,8 +83,10 @@ const BY_EXTENSION = Object.fromEntries([
 ])
 
 /** The icon and kind of a file, from its name: `{ icon: "i-python", kind: "k-code" }`. */
-export const file_icon = (name) => {
+export const file_icon = (/** @type {string} */ name) => {
     const lower = String(name).toLowerCase()
-    const hit = BY_NAME[lower] ?? BY_ENDING.find(([ending]) => lower.endsWith(ending))?.[1] ?? BY_EXTENSION[lower.includes(".") ? lower.split(".").pop() : ""] ?? ["i-file", "k-plain"]
+    const extension = lower.includes(".") ? (lower.split(".").pop() ?? "") : ""
+    /** @type {IconAndKind} */
+    const hit = BY_NAME[lower] ?? BY_ENDING.find(([ending]) => lower.endsWith(ending))?.[1] ?? BY_EXTENSION[extension] ?? ["i-file", "k-plain"]
     return { icon: hit[0], kind: hit[1] }
 }
