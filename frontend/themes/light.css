@@ -214,9 +214,9 @@
            the open tab, a button: white, with a ring); and what floats above (menus, dialogs).
            Julia's three colours keep their meaning: green runs, purple is a notebook, red stops. */
         --land-canvas: hsl(42deg 38% 90%);
-        --land-canvas-glow: radial-gradient(1100px 620px at 8% -12%, rgba(149, 88, 178, 0.13), transparent 62%),
-            radial-gradient(1000px 560px at 102% -6%, rgba(94, 122, 211, 0.14), transparent 58%),
-            radial-gradient(900px 520px at 55% 112%, rgba(56, 152, 38, 0.07), transparent 60%);
+        --land-canvas-glow: radial-gradient(1100px 620px at 8% -12%, rgba(149, 88, 178, 0.24), transparent 62%),
+            radial-gradient(1000px 560px at 102% -6%, rgba(94, 122, 211, 0.26), transparent 58%),
+            radial-gradient(900px 520px at 55% 112%, rgba(203, 60, 51, 0.1), transparent 60%);
         --land-bg: #ffffff;
         --land-sidebar-bg: hsl(46deg 90% 98%);
         --land-raised-bg: #ffffff;

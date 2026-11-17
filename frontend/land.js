@@ -16,6 +16,7 @@
 import { html, render, useState, useEffect, useCallback, useRef } from "./imports/Preact.js"
 import { pluto_file_extensions, has_pluto_file_extension } from "./common/PlutoFileExtensions.js"
 import { cycle_color_scheme, get_color_scheme, prefers_dark } from "./common/ColorScheme.js"
+import { mount_icons, file_icon } from "./common/Icons.js"
 
 const get_text = async (url, opts) => {
     const r = await fetch(url, opts)
@@ -190,8 +191,7 @@ const open_menu = (x, y, items) => {
         b.className = `land-menu-item ${item.danger ? "danger" : ""}`
         b.setAttribute("role", "menuitem")
         b.disabled = item.disabled === true
-        const icon = document.createElement("span")
-        icon.className = `ico ${item.icon ?? "none"}`
+        const icon = icon_element(item.icon)
         const label = document.createElement("span")
         label.textContent = item.label
         b.append(icon, label)
@@ -241,7 +241,7 @@ const AppSchemeToggle = ({ classname }) => {
             set_scheme(cycle_color_scheme())
         }}
     >
-        <span class="ico ${scheme === "system" ? "i-auto" : scheme === "light" ? "i-sun" : "i-moon"}"></span>${scheme === "system" ? "Auto" : scheme === "light" ? "Light" : "Dark"}
+        <${Ico} name=${scheme === "system" ? "i-auto" : scheme === "light" ? "i-sun" : "i-moon"} />${scheme === "system" ? "Auto" : scheme === "light" ? "Light" : "Dark"}
     </button>`
 }
 
@@ -349,11 +349,23 @@ const greeting = () => {
     return h < 5 ? "Good night" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening"
 }
 
-const CODE_EXTENSIONS = new Set(["jl", "py", "js", "mjs", "ts", "tsx", "jsx", "c", "h", "cpp", "hpp", "rs", "go", "r", "sh", "bash", "zsh", "html", "css", "json", "toml", "yaml", "yml", "xml", "sql", "tex", "m"])
-const TEXT_EXTENSIONS = new Set(["md", "txt", "csv", "tsv", "log", "rst", "org", "bib"])
-const file_icon = (name) => {
-    const ext = name.includes(".") ? name.split(".").pop().toLowerCase() : ""
-    return CODE_EXTENSIONS.has(ext) ? "i-code" : TEXT_EXTENSIONS.has(ext) ? "i-file-text" : "i-file"
+/** An icon from the sprite. `name` is "i-terminal", or what `file_icon` returns. */
+const Ico = ({ name }) => {
+    const icon = typeof name === "string" ? name : name.icon
+    const kind = typeof name === "string" ? (name.startsWith("i-folder") ? "k-folder" : "") : name.kind
+    return html`<svg class="ico ${kind}" aria-hidden="true"><use href=${"#" + icon} /></svg>`
+}
+/** The same, for the menus and dialogs that are built without a template. */
+const icon_element = (name) => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg")
+    svg.setAttribute("class", "ico")
+    svg.setAttribute("aria-hidden", "true")
+    if (name != null) {
+        const use = document.createElementNS("http://www.w3.org/2000/svg", "use")
+        use.setAttribute("href", "#" + name)
+        svg.append(use)
+    }
+    return svg
 }
 
 /** One row of the sidebar tree.
@@ -374,11 +386,10 @@ const FileEntry = ({ entry, listings, expanded, tree, depth }) => {
         return html`<li class="dir ${open ? "open" : ""}">
             <div class="entry-row" onContextMenu=${(e) => tree.on_menu(e, entry)}>
                 <button class="entry" style=${row_style} aria-expanded=${open} onClick=${() => tree.on_toggle(entry.path)}>
-                    <span class="ico i-chevron"></span><span class="ico ${open ? "i-folder-open" : "i-folder"}"></span
-                    ><span class="entry-name">${entry.name}</span>
+                    <svg class="ico chevron" aria-hidden="true"><use href="#i-chevron" /></svg><${Ico} name=${open ? "i-folder-open" : "i-folder"} /><span class="entry-name">${entry.name}</span>
                 </button>
                 <button class="row-action" title="New notebook or file in ${entry.name}" aria-label="New notebook or file in ${entry.name}" onClick=${() => tree.on_create_in(entry.path)}>
-                    <span class="ico i-add"></span>
+                    <svg class="ico" aria-hidden="true"><use href="#i-add" /></svg>
                 </button>
             </div>
             ${open
@@ -418,12 +429,11 @@ const FileEntry = ({ entry, listings, expanded, tree, depth }) => {
     return html`<li class="${is_notebook ? "notebook" : "file"} ${tree.current_path === entry.path ? "current" : ""}">
         <div class="entry-row" onContextMenu=${(e) => tree.on_menu(e, entry)}>
             <button class="entry" style=${row_style} title=${entry.path} onClick=${() => (is_notebook ? tree.on_open_notebook(entry.path) : tree.on_open_file(entry.path))}>
-                <span class="no-chevron"></span><span class="ico ${is_notebook ? "i-notebook" : file_icon(entry.name)}"></span
-                ><span class="entry-name">${entry.name}</span>
+                <span class="no-chevron"></span><${Ico} name=${is_notebook ? "i-notebook" : file_icon(entry.name)} /><span class="entry-name">${entry.name}</span>
                 ${is_notebook && tree.running_paths.has(entry.path) ? html`<span class="dot ok running-mark" title="Running"></span>` : null}
             </button>
             <button class="row-action danger" title="Delete ${entry.name}" aria-label="Delete ${entry.name}" onClick=${() => tree.on_delete(entry)}>
-                <span class="ico i-trash"></span>
+                <svg class="ico" aria-hidden="true"><use href="#i-trash" /></svg>
             </button>
         </div>
     </li>`
@@ -660,7 +670,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
         aria-label="Refresh"
         onClick=${() => void refresh_sources()}
     >
-        <span class="ico i-refresh"></span>
+        <svg class="ico" aria-hidden="true"><use href="#i-refresh" /></svg>
     </button>`
 
     // How long each connect has been going. A step that takes minutes (the first install on a
@@ -721,7 +731,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                     ${on_cancel == null
                         ? null
                         : html`<button class="text-button opener-cancel" title="Back to your workspace" onClick=${on_cancel}>
-                              <span class="ico i-close"></span>Back
+                              <svg class="ico" aria-hidden="true"><use href="#i-close" /></svg>Back
                           </button>`}
                 </div>
             </header>
@@ -733,7 +743,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                           ${local_rows.map(({ path, st }) => {
                               const name = basename(path) || path
                               const time = elapsed(`local:${path}`, st)
-                              const body = html`<span class="ws-card-icon"><span class="ico i-folder"></span></span>
+                              const body = html`<span class="ws-card-icon"><svg class="ico" aria-hidden="true"><use href="#i-folder" /></svg></span>
                                   <span class="ws-name">${name}</span>
                                   <span class="ws-path" title=${path}>${short_path(path)}</span>
                                   ${st.state === "ready"
@@ -746,18 +756,18 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                                   ${st.state !== "ready" && st.detail ? html`<p class="ws-card-detail">${st.detail}</p>` : null}
                                   ${st.state === "ready"
                                       ? html`<button class="icon-button danger ws-card-corner" title="Shut down this workspace" aria-label=${`Shut down ${name}`} onClick=${() => shutdown_local(path)}>
-                                            <span class="ico i-power"></span>
+                                            <svg class="ico" aria-hidden="true"><use href="#i-power" /></svg>
                                         </button>`
                                       : st.state === "error"
                                         ? html`<div class="ws-card-actions">
                                                   <button class="text-button" onClick=${() => open_workspace(path)}>Try again</button>
                                               </div>
-                                              <button class="icon-button ws-card-corner" title="Dismiss" aria-label="Dismiss" onClick=${() => cancel_local(path)}><span class="ico i-close"></span></button>`
+                                              <button class="icon-button ws-card-corner" title="Dismiss" aria-label="Dismiss" onClick=${() => cancel_local(path)}><svg class="ico" aria-hidden="true"><use href="#i-close" /></svg></button>`
                                         : html`<div class="ws-card-actions"><button class="text-button" onClick=${() => cancel_local(path)}>Cancel</button></div>`}
                               </div>`
                           })}
                           ${connected_hosts.map(({ host, st }) => {
-                              const body = html`<span class="ws-card-icon"><span class="ico i-server"></span></span>
+                              const body = html`<span class="ws-card-icon"><svg class="ico" aria-hidden="true"><use href="#i-server" /></svg></span>
                                   <span class="ws-name">${host}</span>
                                   <span class="ws-path">over SSH</span>
                                   <span class="ws-state"><span class="dot ok"></span>Connected</span>`
@@ -769,7 +779,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                                       aria-label=${`Disconnect from ${host}`}
                                       onClick=${() => cancel_remote(host)}
                                   >
-                                      <span class="ico i-close"></span>
+                                      <svg class="ico" aria-hidden="true"><use href="#i-close" /></svg>
                                   </button>
                               </div>`
                           })}
@@ -784,7 +794,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                           ${recent.map(
                               (p) => html`<div class="ws-card" key=${p}>
                                   <button class="ws-card-open" title=${`Open ${p}`} onClick=${() => open_workspace(p)}>
-                                      <span class="ws-card-icon quiet"><span class="ico i-folder"></span></span>
+                                      <span class="ws-card-icon quiet"><svg class="ico" aria-hidden="true"><use href="#i-folder" /></svg></span>
                                       <span class="ws-name">${basename(p) || p}</span>
                                       <span class="ws-path" title=${p}>${short_path(p)}</span>
                                   </button>
@@ -797,7 +807,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                                           set_tick((n) => n + 1)
                                       }}
                                   >
-                                      <span class="ico i-close"></span>
+                                      <svg class="ico" aria-hidden="true"><use href="#i-close" /></svg>
                                   </button>
                               </div>`
                           )}
@@ -833,7 +843,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                               <div class="dir-grid">
                                   ${listing.entries.map(
                                       (d) => html`<button class="dir-pill" title=${d.path} onClick=${() => browse(d.path)}>
-                                          <span class="ico i-folder"></span><span class="dir-name">${d.name}</span>
+                                          <svg class="ico" aria-hidden="true"><use href="#i-folder" /></svg><span class="dir-name">${d.name}</span>
                                       </button>`
                                   )}
                                   ${listing.entries.length === 0 ? html`<p class="ws-empty">No folders in here.</p>` : null}
@@ -848,7 +858,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                 </div>
                 ${error == null
                     ? null
-                    : html`<p class="opener-error" role="alert"><span class="ico i-alert"></span><span>${error}</span></p>`}
+                    : html`<p class="opener-error" role="alert"><svg class="ico" aria-hidden="true"><use href="#i-alert" /></svg><span>${error}</span></p>`}
             </section>
 
             ${!tunneled && ssh_hosts.length > 0
@@ -871,7 +881,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                           ${ssh_hosts.map((h) => {
                               const st = remote_state(h)
                               const time = elapsed(`remote:${h}`, st)
-                              const body = html`<span class="ico i-server"></span><span class="ws-name">${h}</span>`
+                              const body = html`<svg class="ico" aria-hidden="true"><use href="#i-server" /></svg><span class="ws-name">${h}</span>`
                               return html`<li class="ws-row ${st?.state === "error" ? "error" : ""}" key=${h}>
                                   ${st?.state === "ready" && st.url != null
                                       ? open_link(st.url, h, body)
@@ -888,7 +898,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                                         : st.state === "error"
                                           ? html`<span class="ws-state"><span class="dot bad"></span>Could not connect</span>
                                                 <button class="text-button" onClick=${() => connect_remote(h)}>Try again</button>
-                                                <button class="icon-button" title="Dismiss" aria-label="Dismiss" onClick=${() => cancel_remote(h)}><span class="ico i-close"></span></button>`
+                                                <button class="icon-button" title="Dismiss" aria-label="Dismiss" onClick=${() => cancel_remote(h)}><svg class="ico" aria-hidden="true"><use href="#i-close" /></svg></button>`
                                           : html`<span class="ws-state"><span class="spinner"></span>${state_label(st)} · ${time}</span>
                                                 <button class="text-button" onClick=${() => cancel_remote(h)}>Cancel</button>`}
                                   ${st != null && st.state !== "ready" && (st.detail || st.state === "installing")
@@ -2276,15 +2286,15 @@ const Land = () => {
                         onAuxClick=${(e) => e.button === 1 && close_terminal(t.tid)}
                     >
                         <button class="title" role="tab" aria-selected=${t.tid === active_terminal} title=${t.label} onClick=${() => set_active_terminal(t.tid)}>
-                            <span class="ico i-terminal"></span><span class="tab-name">${t.label}</span>
+                            <svg class="ico" aria-hidden="true"><use href="#i-terminal" /></svg><span class="tab-name">${t.label}</span>
                         </button>
                         <button class="close" title="Close this terminal and end its shell" aria-label=${`Close ${t.label}`} onClick=${() => close_terminal(t.tid)}>
-                            <span class="ico i-close"></span>
+                            <svg class="ico" aria-hidden="true"><use href="#i-close" /></svg>
                         </button>
                     </div>`
                 )}
                 <button class="icon-button new-terminal-tab" title="New terminal" aria-label="New terminal" onClick=${() => new_terminal()}>
-                    <span class="ico i-add"></span>
+                    <svg class="ico" aria-hidden="true"><use href="#i-add" /></svg>
                 </button>
             </div>
             <div class="panel-actions">
@@ -2294,7 +2304,7 @@ const Land = () => {
                     aria-label="Switch the terminal between light and dark"
                     onClick=${() => set_terminal_scheme((s) => (s === "light" ? "dark" : "light"))}
                 >
-                    <span class="ico ${terminal_scheme === "light" ? "i-sun" : "i-moon"}"></span>
+                    <${Ico} name=${terminal_scheme === "light" ? "i-sun" : "i-moon"} />
                 </button>
                 <button
                     class="icon-button dock-toggle"
@@ -2302,10 +2312,10 @@ const Land = () => {
                     aria-label="Move the terminal"
                     onClick=${cycle_dock}
                 >
-                    <span class="ico ${terminal_dock === "bottom" ? "i-dock-right" : terminal_dock === "right" ? "i-dock-tab" : "i-dock-bottom"}"></span>
+                    <${Ico} name=${terminal_dock === "bottom" ? "i-dock-right" : terminal_dock === "right" ? "i-dock-tab" : "i-dock-bottom"} />
                 </button>
                 <button class="icon-button" title="Hide the terminal (Ctrl+\`). Its shells keep running." aria-label="Hide the terminal" onClick=${hide_terminal}>
-                    <span class="ico i-close"></span>
+                    <svg class="ico" aria-hidden="true"><use href="#i-close" /></svg>
                 </button>
             </div>
         </div>
@@ -2434,7 +2444,7 @@ const Land = () => {
                           ...copy_items,
                       ]
                     : [
-                          { label: "Open", icon: "i-open", run: () => (entry.type === "notebook" ? open_notebook(entry.path) : open_file(entry.path)) },
+                          { label: "Open", icon: "i-arrow", run: () => (entry.type === "notebook" ? open_notebook(entry.path) : open_file(entry.path)) },
                           ...(nb == null ? [] : [{ label: "Shut down", icon: "i-stop", run: () => shutdown_notebook(nb.notebook_id) }]),
                           "-",
                           ...copy_items,
@@ -2489,10 +2499,10 @@ const Land = () => {
                           <span class="wordmark">Space<span class="land-accent">Station</span></span>
                           <span class="head-buttons">
                               <button class="icon-button menu-button" title="More" aria-label="More" aria-haspopup="menu" onClick=${(e) => open_header_menu(e.currentTarget)}>
-                                  <span class="ico i-more"></span>
+                                  <svg class="ico" aria-hidden="true"><use href="#i-more" /></svg>
                               </button>
                               <button class="icon-button collapse-button" title="Hide the sidebar" aria-label="Hide the sidebar" onClick=${() => set_sidebar_hidden(true)}>
-                                  <span class="ico i-sidebar"></span>
+                                  <svg class="ico" aria-hidden="true"><use href="#i-sidebar" /></svg>
                               </button>
                           </span>
                           ${workspace?.root
@@ -2513,7 +2523,7 @@ const Land = () => {
                                     ${workspace.git == null
                                         ? null
                                         : html`<span class="where-line" title=${workspace.git.detached ? `Detached HEAD at ${workspace.git.branch}` : `On branch ${workspace.git.branch}`}>
-                                              <span class="ico i-branch"></span><span class="where-text">${workspace.git.branch}</span>${workspace.git.detached
+                                              <svg class="ico" aria-hidden="true"><use href="#i-branch" /></svg><span class="where-text">${workspace.git.branch}</span>${workspace.git.detached
                                                   ? html`<span class="git-detached">detached</span>`
                                                   : null}
                                           </span>`}
@@ -2527,10 +2537,10 @@ const Land = () => {
                                   ? null
                                   : html`<span class="section-actions">
                                         <button class="icon-button" title="New notebook or file" aria-label="New notebook or file" onClick=${(e) => create_menu(e.currentTarget, workspace.root)}>
-                                            <span class="ico i-add"></span>
+                                            <svg class="ico" aria-hidden="true"><use href="#i-add" /></svg>
                                         </button>
                                         <button class="icon-button" title="Read the files again" aria-label="Refresh the files" onClick=${() => refresh()}>
-                                            <span class="ico i-refresh"></span>
+                                            <svg class="ico" aria-hidden="true"><use href="#i-refresh" /></svg>
                                         </button>
                                     </span>`}
                           </h2>
@@ -2559,7 +2569,7 @@ const Land = () => {
                                                     aria-label=${`Shut down ${basename(nb.path)}`}
                                                     onClick=${() => shutdown_notebook(nb.notebook_id)}
                                                 >
-                                                    <span class="ico i-stop"></span>
+                                                    <svg class="ico" aria-hidden="true"><use href="#i-stop" /></svg>
                                                 </button>
                                             </div>
                                         </li>`
@@ -2585,7 +2595,7 @@ const Land = () => {
                             ${sidebar_hidden
                                 ? html`<div class="strip-lead">
                                       <button id="sidebar-reopen" class="icon-button" title="Show the sidebar" aria-label="Show the sidebar" onClick=${() => set_sidebar_hidden(false)}>
-                                          <span class="ico i-sidebar"></span>
+                                          <svg class="ico" aria-hidden="true"><use href="#i-sidebar" /></svg>
                                       </button>
                                   </div>`
                                 : null}
@@ -2598,7 +2608,7 @@ const Land = () => {
                                         onAuxClick=${(e) => e.button === 1 && close_tab(t.id)}
                                     >
                                         <button class="title" role="tab" aria-selected=${t.id === active} title=${t.path} onClick=${() => set_active(t.id)}>
-                                            <span class="ico ${t.kind === "file" ? file_icon(basename(t.path)) : "i-notebook"}"></span><span class="tab-name">${basename(t.path)}</span>
+                                            <${Ico} name=${t.kind === "file" ? file_icon(basename(t.path)) : "i-notebook"} /><span class="tab-name">${basename(t.path)}</span>
                                         </button>
                                         <button
                                             class="close"
@@ -2606,17 +2616,17 @@ const Land = () => {
                                             aria-label=${`Close ${basename(t.path)}`}
                                             onClick=${() => close_tab(t.id)}
                                         >
-                                            <span class="ico i-close"></span>
+                                            <svg class="ico" aria-hidden="true"><use href="#i-close" /></svg>
                                         </button>
                                     </div>`
                                 )}
                                 ${tab_mode
                                     ? html`<div class="tab terminal-tab ${active === "__terminal__" ? "active" : ""}" key="__terminal__">
                                           <button class="title" role="tab" aria-selected=${active === "__terminal__"} title="Terminal" onClick=${() => set_active("__terminal__")}>
-                                              <span class="ico i-terminal"></span><span class="tab-name">Terminal</span>
+                                              <svg class="ico" aria-hidden="true"><use href="#i-terminal" /></svg><span class="tab-name">Terminal</span>
                                           </button>
                                           <button class="close" title="Hide the terminal. Its shells keep running." aria-label="Hide the terminal" onClick=${hide_terminal}>
-                                              <span class="ico i-close"></span>
+                                              <svg class="ico" aria-hidden="true"><use href="#i-close" /></svg>
                                           </button>
                                       </div>`
                                     : null}
@@ -2630,7 +2640,7 @@ const Land = () => {
                                     aria-pressed=${terminal_open}
                                     onClick=${toggle_terminal}
                                 >
-                                    <span class="ico i-terminal"></span>Terminal
+                                    <svg class="ico" aria-hidden="true"><use href="#i-terminal" /></svg>Terminal
                                 </button>
                             </div>`}
                         </nav>
@@ -2646,7 +2656,7 @@ const Land = () => {
                         ${workspace_status != null && !offline
                             ? html`<div class="workspace-status ${workspace_status.kind}" role="status" aria-live="polite">
                                   ${workspace_status.kind === "down"
-                                      ? html`<span class="ico i-alert"></span>
+                                      ? html`<svg class="ico" aria-hidden="true"><use href="#i-alert" /></svg>
                                             <span class="text">The server for this workspace stopped, and its notebooks with it. The files and the terminal are fine.</span>
                                             <button class="text-button primary" onClick=${restart_workspace}>Start it again</button>`
                                       : html`<span class="spinner"></span>
@@ -2724,9 +2734,9 @@ const Land = () => {
                 ? null
                 : html`<div class="land-toasts">
                       <div class="land-toast" role="alert">
-                          <span class="ico i-alert"></span>
+                          <svg class="ico" aria-hidden="true"><use href="#i-alert" /></svg>
                           <p>${error}</p>
-                          <button class="icon-button" title="Dismiss" aria-label="Dismiss" onClick=${() => set_error(null)}><span class="ico i-close"></span></button>
+                          <button class="icon-button" title="Dismiss" aria-label="Dismiss" onClick=${() => set_error(null)}><svg class="ico" aria-hidden="true"><use href="#i-close" /></svg></button>
                       </div>
                   </div>`}
         </div>
@@ -2745,4 +2755,7 @@ const framed_by_land = (() => {
     }
 })()
 if (framed_by_land) window.parent.postMessage({ type: "spacestation:close-notebook-tab" }, location.origin)
-else render(html`<${Land} />`, document.querySelector("#land-app"))
+else {
+    mount_icons()
+    render(html`<${Land} />`, document.querySelector("#land-app"))
+}

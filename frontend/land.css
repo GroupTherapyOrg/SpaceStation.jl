@@ -75,137 +75,39 @@ button {
     border-radius: var(--land-radius);
 }
 
-/* ---- icons ---- */
+/* ---- icons: symbols from the sprite in common/Icons.js ---- */
 
 .ico {
     display: inline-block;
     flex-shrink: 0;
     width: 16px;
     height: 16px;
-    background-color: currentColor;
-    -webkit-mask: center / contain no-repeat;
-    mask: center / contain no-repeat;
+    fill: none;
+    stroke-width: var(--ico-w, 1.2);
+    overflow: visible;
 }
-
-.ico.i-chevron {
-    -webkit-mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/chevron-forward-outline.svg");
-    mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/chevron-forward-outline.svg");
+/* A file's kind is one of four hues, from the same tokens as everything else. */
+svg.ico.k-code {
+    color: var(--land-accent);
 }
-.ico.i-folder {
-    -webkit-mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/folder-outline.svg");
-    mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/folder-outline.svg");
+svg.ico.k-doc {
+    color: var(--land-julia-purple);
 }
-.ico.i-folder-open {
-    -webkit-mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/folder-open-outline.svg");
-    mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/folder-open-outline.svg");
+svg.ico.k-config {
+    color: var(--land-warn);
 }
-.ico.i-file {
-    -webkit-mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/document-outline.svg");
-    mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/document-outline.svg");
+svg.ico.k-data {
+    color: var(--land-julia-green);
 }
-.ico.i-file-text {
-    -webkit-mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/document-text-outline.svg");
-    mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/document-text-outline.svg");
+svg.ico.k-quiet {
+    color: var(--land-faint);
 }
-.ico.i-code {
-    -webkit-mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/code-slash-outline.svg");
-    mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/code-slash-outline.svg");
+svg.ico.k-plain,
+svg.ico.k-folder {
+    color: var(--land-muted);
 }
-.ico.i-notebook {
-    -webkit-mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/reader-outline.svg");
-    mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/reader-outline.svg");
-}
-.ico.i-add {
-    -webkit-mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/add-outline.svg");
-    mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/add-outline.svg");
-}
-.ico.i-close {
-    -webkit-mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/close-outline.svg");
-    mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/close-outline.svg");
-}
-.ico.i-terminal {
-    -webkit-mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/terminal-outline.svg");
-    mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/terminal-outline.svg");
-}
-.ico.i-more {
-    -webkit-mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/ellipsis-horizontal.svg");
-    mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/ellipsis-horizontal.svg");
-}
-.ico.i-refresh {
-    -webkit-mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/refresh-outline.svg");
-    mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/refresh-outline.svg");
-}
-.ico.i-power {
-    -webkit-mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/power-outline.svg");
-    mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/power-outline.svg");
-}
-.ico.i-stop {
-    -webkit-mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/stop-circle-outline.svg");
-    mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/stop-circle-outline.svg");
-}
-.ico.i-trash {
-    -webkit-mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/trash-outline.svg");
-    mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/trash-outline.svg");
-}
-.ico.i-branch {
-    -webkit-mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/git-branch-outline.svg");
-    mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/git-branch-outline.svg");
-}
-.ico.i-server {
-    -webkit-mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/server-outline.svg");
-    mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/server-outline.svg");
-}
-.ico.i-sun {
-    -webkit-mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/sunny-outline.svg");
-    mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/sunny-outline.svg");
-}
-.ico.i-moon {
-    -webkit-mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/moon-outline.svg");
-    mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/moon-outline.svg");
-}
-.ico.i-auto {
-    -webkit-mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/contrast-outline.svg");
-    mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/contrast-outline.svg");
-}
-.ico.i-copy {
-    -webkit-mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/copy-outline.svg");
-    mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/copy-outline.svg");
-}
-.ico.i-paste {
-    -webkit-mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/clipboard-outline.svg");
-    mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/clipboard-outline.svg");
-}
-.ico.i-alert {
-    -webkit-mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/alert-circle-outline.svg");
-    mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/alert-circle-outline.svg");
-}
-.ico.i-open {
-    -webkit-mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/arrow-forward-outline.svg");
-    mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/arrow-forward-outline.svg");
-}
-.ico.i-home {
-    -webkit-mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/home-outline.svg");
-    mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/home-outline.svg");
-}
-.ico.none {
-    background: none;
-}
-/* Panel furniture has no Ionicon: a framed panel with one part filled. */
-.ico.i-sidebar {
-    -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='3.25' y='5.25' width='17.5' height='13.5' rx='2.5' fill='none' stroke='black' stroke-width='1.6'/%3E%3Cline x1='9.5' y1='5.25' x2='9.5' y2='18.75' stroke='black' stroke-width='1.6'/%3E%3C/svg%3E");
-    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='3.25' y='5.25' width='17.5' height='13.5' rx='2.5' fill='none' stroke='black' stroke-width='1.6'/%3E%3Cline x1='9.5' y1='5.25' x2='9.5' y2='18.75' stroke='black' stroke-width='1.6'/%3E%3C/svg%3E");
-}
-.ico.i-dock-bottom {
-    -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='3.25' y='5.25' width='17.5' height='13.5' rx='2.5' fill='none' stroke='black' stroke-width='1.6'/%3E%3Crect x='4' y='13.5' width='16' height='4.75' rx='1' fill='black'/%3E%3C/svg%3E");
-    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='3.25' y='5.25' width='17.5' height='13.5' rx='2.5' fill='none' stroke='black' stroke-width='1.6'/%3E%3Crect x='4' y='13.5' width='16' height='4.75' rx='1' fill='black'/%3E%3C/svg%3E");
-}
-.ico.i-dock-right {
-    -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='3.25' y='5.25' width='17.5' height='13.5' rx='2.5' fill='none' stroke='black' stroke-width='1.6'/%3E%3Crect x='14' y='6' width='6' height='12' rx='1' fill='black'/%3E%3C/svg%3E");
-    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='3.25' y='5.25' width='17.5' height='13.5' rx='2.5' fill='none' stroke='black' stroke-width='1.6'/%3E%3Crect x='14' y='6' width='6' height='12' rx='1' fill='black'/%3E%3C/svg%3E");
-}
-.ico.i-dock-tab {
-    -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='3.25' y='5.25' width='17.5' height='13.5' rx='2.5' fill='none' stroke='black' stroke-width='1.6'/%3E%3Crect x='4' y='6' width='7' height='4' rx='1' fill='black'/%3E%3C/svg%3E");
-    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='3.25' y='5.25' width='17.5' height='13.5' rx='2.5' fill='none' stroke='black' stroke-width='1.6'/%3E%3Crect x='4' y='6' width='7' height='4' rx='1' fill='black'/%3E%3C/svg%3E");
+svg.ico.k-folder {
+    fill: color-mix(in srgb, currentColor 14%, transparent);
 }
 
 /* ---- controls shared by every surface ---- */
@@ -718,26 +620,23 @@ body.resizing-v .terminal-host {
     text-overflow: ellipsis;
 }
 .entry .ico {
-    width: 15px;
-    height: 15px;
+    width: 16px;
+    height: 16px;
     color: var(--land-muted);
 }
-.entry .ico.i-chevron {
+.entry .ico.chevron {
     width: 11px;
     height: 11px;
     color: var(--land-faint);
     transition: transform 0.12s ease-out;
 }
-#land li.dir.open > .entry-row .i-chevron {
+#land li.dir.open > .entry-row .chevron {
     transform: rotate(90deg);
 }
 /* a file has no chevron: leave its width, so names line up under the folder's */
 .entry .no-chevron {
     width: 11px;
     flex-shrink: 0;
-}
-#land li.notebook > .entry-row .entry .ico {
-    color: var(--land-julia-purple);
 }
 #land li.file > .entry-row .entry-name {
     color: var(--land-muted);
@@ -925,9 +824,6 @@ body.resizing-v .terminal-host {
     width: 14px;
     height: 14px;
 }
-.tab.notebook .title .ico {
-    color: var(--land-julia-purple);
-}
 .tab .close {
     display: inline-flex;
     align-items: center;
@@ -962,9 +858,10 @@ body.resizing-v .terminal-host {
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    -webkit-mask: none;
-    mask: none;
     background-color: var(--land-fg);
+}
+.tab.dirty:not(:hover) .close .ico use {
+    display: none;
 }
 
 .terminal-toggle {
