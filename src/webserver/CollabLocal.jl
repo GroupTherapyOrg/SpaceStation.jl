@@ -106,10 +106,15 @@ function _scan_registry_now(matches::Function; pid::Union{Nothing,Integer}=nothi
             continue
         end
         port = parse(Int, port_m.captures[1])
+        secret = String(secret_m.captures[1])
         # don't adopt a corpse (stale file → tunnel/redirect to a dead port); a server that is merely busy
-        # (accepts, answers late) IS the workspace's server — spawning next to it would make two
-        _probe_port(port) != :dead || continue
-        return (path=ws_path, port=port, secret=String(secret_m.captures[1]))
+        # (accepts, answers late) IS the workspace's server — spawning next to it would make two.
+        # And the one that answers must be the one the file describes: it is asked with the file's own
+        # secret. A live pid and an answering port are not that. Pids are reused and so are ports (on a
+        # shared node, by anybody's server), and a hub that adopted such a pair relayed every request
+        # to a server that refused it, with nothing in the page to get out of it.
+        _probe_port(port; target="/api/v1/config?secret=$(HTTP.escapeuri(secret))") in (:dead, :denied) && continue
+        return (path=ws_path, port=port, secret=secret)
     end
     nothing
 end
