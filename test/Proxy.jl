@@ -129,6 +129,77 @@ end
                 @test occursin("<html", lowercase(body(r)))
             end
 
+            @testset "signing in: a link that works once, and a hub that keeps its sign-in" begin
+                @test Pluto.same_secret("abc", "abc")
+                @test !Pluto.same_secret("abc", "abd") && !Pluto.same_secret("ab", "abc") && !Pluto.same_secret("abcabc", "abc")
+                @test !Pluto.same_secret("", "") && !Pluto.same_secret("", "abc") && !Pluto.same_secret("abc", "")
+                @test length(hub_secret) >= 24
+
+                # a sign-in link for another browser: asked for by a signed-in page, with a POST
+                @test hpost("$base/api/v1/sign-in-code").status == 403
+                @test hget("$base/api/v1/sign-in-code?secret=$hub_secret").status != 200
+                made = hpost("$base/api/v1/sign-in-code?secret=$hub_secret")
+                @test made.status == 200
+                code = match(r"\"code\":\s*\"([0-9a-f]{32})\"", body(made)).captures[1]
+                @test !occursin(hub_secret, body(made))
+                # the address without its slash is redirected first: that must not use the code up
+                r = hget("$base?code=$code")
+                @test r.status == 302 && HTTP.header(r, "Location") == "/w/$wid/?code=$code"
+                # it opens a page, and that answer carries the cookie the browser goes on with
+                page = hget("$base/?code=$code")
+                @test page.status == 200 && occursin("<html", lowercase(body(page)))
+                @test any(c -> occursin(hub_secret, c) && occursin("HttpOnly", c), cookies(page))
+                # and then no more: a few seconds after its first use it is worth nothing
+                Pluto.SIGN_IN_CODE_GRACE[] = 0.0
+                again_code = match(r"\"code\":\s*\"([0-9a-f]{32})\"", body(hpost("$base/api/v1/sign-in-code?secret=$hub_secret"))).captures[1]
+                @test hget("$base/?code=$again_code").status == 200
+                @test hget("$base/?code=$again_code").status == 403
+                Pluto.SIGN_IN_CODE_GRACE[] = 15.0
+                # for a page, not for a request that does something
+                other = match(r"\"code\":\s*\"([0-9a-f]{32})\"", body(hpost("$base/api/v1/sign-in-code?secret=$hub_secret"))).captures[1]
+                @test hpost("$base/api/v1/file/mkdir?path=$(HTTP.escapeuri(joinpath(ws, "made-with-a-code")))&code=$other").status == 403
+                @test !isdir(joinpath(ws, "made-with-a-code"))
+                # and not after its time
+                Pluto.SIGN_IN_CODE_LIFETIME[] = -1.0
+                late = try
+                    match(r"\"code\":\s*\"([0-9a-f]{32})\"", body(hpost("$base/api/v1/sign-in-code?secret=$hub_secret"))).captures[1]
+                finally
+                    Pluto.SIGN_IN_CODE_LIFETIME[] = 300.0
+                end
+                @test hget("$base/?code=$late").status == 403
+                @test !Pluto.take_sign_in_code!("not a code") && !Pluto.take_sign_in_code!("0"^32)
+
+                # the hub keeps its sign-in for its next start on this port: owner-only, beside its connection file
+                kept = Pluto.kept_sign_in_path(hub_port)
+                @test isfile(kept) && dirname(kept) == dirname(Pluto.collab_registry_path(hub_port))
+                Sys.iswindows() || @test filemode(kept) & 0o077 == 0
+                @test Pluto._read_kept_sign_in(kept) == hub_secret
+                again = Pluto.ServerSession(; options=Pluto.Configuration.from_flat_kwargs(; workspace_use_distributed=false, launch_browser=false, hub=true))
+                @test again.secret != hub_secret
+                Pluto.keep_sign_in!(again, hub_port)
+                @test again.secret == hub_secret                       # what its next start takes up
+                # not one that anybody else could have read or written, not an old one, not when turned off
+                if !Sys.iswindows()
+                    chmod(kept, 0o644)
+                    @test Pluto._read_kept_sign_in(kept) === nothing
+                    chmod(kept, 0o600)
+                end
+                Pluto.SIGN_IN_KEPT_FOR[] = 0.0
+                @test Pluto._read_kept_sign_in(kept) === nothing
+                Pluto.SIGN_IN_KEPT_FOR[] = 30 * 24 * 3600.0
+                fresh = Pluto.ServerSession(; options=Pluto.Configuration.from_flat_kwargs(; workspace_use_distributed=false, launch_browser=false, hub=true))
+                mine = fresh.secret
+                withenv("SPACESTATION_KEEP_SIGN_IN" => "0") do
+                    Pluto.keep_sign_in!(fresh, hub_port)
+                end
+                @test fresh.secret == mine
+                write(kept, "not a sign-in\n"); Sys.iswindows() || chmod(kept, 0o600)
+                @test Pluto._read_kept_sign_in(kept) === nothing
+                Pluto.keep_sign_in!(fresh, hub_port)                    # an unusable file is replaced, with this hub's own
+                @test fresh.secret == mine && Pluto._read_kept_sign_in(kept) == mine
+                write(kept, "$(floor(Int, time())) $hub_secret\n"); Sys.iswindows() || chmod(kept, 0o600)
+            end
+
             @testset "/w/<id> without a slash redirects, keeping the query" begin
                 r = hget("$base?secret=$hub_secret")
                 @test r.status == 302
@@ -171,6 +242,29 @@ end
                 r = hpost("$base/new?secret=$hub_secret"; headers=["Origin" => "http://evil.example"])
                 @test r.status == 403
                 @test length(child_session.notebooks) == 2               # nothing was relayed
+
+                # The cookie alone signs a request in only when the browser says it comes from this
+                # server's own pages or from the user. A page on another port of this machine is the
+                # "same site" to a browser, which adds the cookie to its requests: a link or an image
+                # there to /new, /shutdown or /move used to be carried out.
+                cookie = ["Cookie" => "pluto_secret_$(hub_port)=$hub_secret"]
+                from(site; mode="no-cors", dest="image") = vcat(cookie, ["Sec-Fetch-Site" => site, "Sec-Fetch-Mode" => mode, "Sec-Fetch-Dest" => dest])
+                @test hget("$base/api/v1/notebooks"; headers=cookie).status == 200                                   # not a browser: as before
+                @test hget("$base/api/v1/notebooks"; headers=from("same-origin"; mode="cors", dest="empty")).status == 200
+                @test hget("$base/new"; headers=from("none"; mode="navigate", dest="document")).status != 403         # the user typed it
+                for site in ("same-site", "cross-site")
+                    @test hget("$base/api/v1/notebooks"; headers=from(site)).status == 403
+                    @test hget("$base/api/v1/notebooks"; headers=from(site; mode="cors", dest="empty")).status == 403
+                    @test hget("$base/new"; headers=from(site; mode="navigate", dest="document")).status == 403       # a link that does something
+                    @test hget("$base/shutdown"; headers=from(site; mode="navigate", dest="document")).status == 403
+                    @test hget("$base/"; headers=from(site; mode="navigate", dest="document")).status == 200          # a link to the page
+                    @test hget("$base/"; headers=from(site; mode="navigate", dest="iframe")).status == 403            # the page in somebody's frame
+                    # and one that carries the secret itself is no forgery: whoever wrote it had the secret
+                    @test hget("$base/api/v1/notebooks?secret=$hub_secret"; headers=from(site)[2:end]).status == 200
+                end
+                @test Pluto.is_page_path("/") && Pluto.is_page_path("/w/0123456789abcdef/") && Pluto.is_page_path("/w/0123456789abcdef/edit") && Pluto.is_page_path("/w/0123456789abcdef")
+                @test !Pluto.is_page_path("/open") && !Pluto.is_page_path("/w/0123456789abcdef/shutdown") && !Pluto.is_page_path("/w/nope/")
+                @test length(child_session.notebooks) == 3               # one: the user's own /new, and no other
             end
 
             @testset "the websocket is relayed frame for frame" begin

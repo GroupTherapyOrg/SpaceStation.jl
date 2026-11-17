@@ -84,6 +84,39 @@ const basename = (p) => (p.split("/").pop() ?? "").split("\\").pop() ?? ""
 // (Chrome's "prevent this page from creating additional dialogs", frames without allow-modals, and
 // some webviews have no prompt() at all) — they then return at once and every button
 // that asks first appears dead, with no error. A native <dialog>.showModal() is always shown.
+/** Say something that needs no answer and goes away by itself ("copied"). Errors stay until dismissed; these do not. */
+const say = (text) => {
+    let host = document.querySelector(".land-toasts.passing")
+    if (host == null) {
+        host = document.createElement("div")
+        host.className = "land-toasts passing"
+        document.body.append(host)
+    }
+    const note = document.createElement("div")
+    note.className = "land-toast notice"
+    note.setAttribute("role", "status")
+    const p = document.createElement("p")
+    p.textContent = text
+    note.append(icon_element("i-copy"), p)
+    host.append(note)
+    setTimeout(() => note.remove(), 4500)
+}
+
+/** Once this page is signed in (its cookie works), the secret that came in its address has done its
+ *  work. Left there it is copied with the address, shown in a screen share and kept in the history. */
+let address_cleaned = false
+const forget_secret_in_address = () => {
+    if (address_cleaned) return
+    address_cleaned = true
+    try {
+        const here = new URL(window.location.href)
+        if (!here.searchParams.has("secret") && !here.searchParams.has("code")) return
+        here.searchParams.delete("secret")
+        here.searchParams.delete("code")
+        history.replaceState(history.state, "", here.pathname + here.search + here.hash)
+    } catch {}
+}
+
 let dialog_count = 0
 const open_dialog = (build) =>
     new Promise((resolve) => {
@@ -2199,14 +2232,15 @@ const Land = () => {
         try {
             const ws_response = await fetch("./api/v1/workspace", { signal })
             unreachable.current = 0
-            // 403: this page's sign-in is no longer good. The server makes a new secret each time it
-            // starts, so every page left open across a restart ends up here; say so, instead of a
-            // toast reading "403" over a page that has quietly stopped working.
+            // 403: this page's sign-in is no longer good (a hub keeps its secret across restarts, for a
+            // month; a server that is not a hub makes a new one each start). Say so, instead of a toast
+            // reading "403" over a page that has quietly stopped working.
             if (ws_response.status === 403) {
                 set_signed_out(true)
                 return
             }
             set_signed_out(false)
+            forget_secret_in_address()
             if (ws_response.status === 404) {
                 set_files_status(null)
                 set_no_workspace(true)
@@ -2901,6 +2935,20 @@ const Land = () => {
 
     // The ⋯ menu in the sidebar's header. Whether the active notebook has an environment to open is
     // asked when the menu is: a notebook gets one the first time it runs.
+    /** The address bar no longer carries the secret, so "copy the address into the other browser"
+     *  does not sign that one in. This link does: once, within a few minutes, and it is not the secret. */
+    const copy_sign_in_link = useCallback(async () => {
+        try {
+            const { code, expires_in } = await get_json("./api/v1/sign-in-code", { method: "POST" })
+            const link = new URL(window.location.href)
+            link.search = `?code=${code}`
+            link.hash = ""
+            if (await copy_text(link.href)) say(`Sign-in link copied. It works once, within ${Math.round(expires_in / 60)} minutes.`)
+            else set_error("The link could not be copied: the browser did not allow it.")
+        } catch (e) {
+            set_error(String(e?.message ?? e))
+        }
+    }, [])
     const open_header_menu = useCallback(
         async (anchor) => {
             const box = anchor.getBoundingClientRect()
@@ -2925,11 +2973,12 @@ const Land = () => {
                 ...SCHEMES.map((s) => ({ label: scheme === s.value ? `${s.label}  ✓` : s.label, icon: s.icon, run: () => set_color_scheme(s.value) })),
                 "-",
                 { label: "Launcher", icon: "i-home", run: go_home },
+                { label: "Copy a sign-in link for another browser", icon: "i-copy", run: copy_sign_in_link },
                 "-",
                 { label: hub ? "Shut down this workspace…" : "Shut down SpaceStation…", icon: "i-power", danger: true, run: shutdown_server },
             ])
         },
-        [active_notebook_tab, new_terminal, go_home, shutdown_server, hub]
+        [active_notebook_tab, new_terminal, go_home, shutdown_server, hub, copy_sign_in_link]
     )
 
     const relative_path = (path) => {
@@ -2980,8 +3029,8 @@ const Land = () => {
                 <img class="land-logo" src=${logo_url} alt="" />
                 <h1>This page is signed out</h1>
                 <p>
-                    SpaceStation was restarted since this page was opened, and each start has a new sign-in link. Nothing is lost: notebooks and files are
-                    where they were.
+                    Its sign-in is no longer good: it was more than a month old, or SpaceStation was started again with a new one. Nothing is lost:
+                    notebooks and files are where they were.
                 </p>
                 <p>Open the link that <code>spacestation</code> printed when it started, or run it again.</p>
                 <button class="text-button primary" onClick=${() => window.location.reload()}>Try again</button>

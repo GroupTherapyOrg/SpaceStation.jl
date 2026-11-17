@@ -37,17 +37,100 @@ Naming from `Host` restores the intent: one cookie per address the browser can a
 secret_cookie_name(session::ServerSession, request::HTTP.Request) =
     "pluto_secret_$(browser_visible_port(request, something(session.options.server.port, 0)))"
 
+"Are these the same secret? Every byte is compared, so the time taken says nothing about where they differ."
+function same_secret(a::AbstractString, b::AbstractString)::Bool
+    x, y = codeunits(a), codeunits(b)
+    (isempty(x) || isempty(y)) && return false
+    diff = UInt8(length(x) == length(y) ? 0 : 1)
+    for i in eachindex(y)
+        diff |= xor(y[i], x[mod1(i, length(x))])
+    end
+    diff == 0
+end
+
+###
+# A sign-in link for another browser.
+#
+# The page takes `?secret=` out of its address once it is signed in (an address is copied, shown in
+# a screen share and kept in the history), so the address bar no longer carries a way in. A way in
+# for another browser is asked for instead: a code that works once, for a few minutes. It is not the
+# secret, so a link that was pasted somewhere it should not have been is worth nothing afterwards.
+###
+const SIGN_IN_CODES = Dict{String,Float64}() # code => when it stops working
+const SIGN_IN_CODES_LOCK = ReentrantLock()
+const SIGN_IN_CODE_LIFETIME = Ref(300.0)
+
+function new_sign_in_code()::String
+    code = bytes2hex(rand(Random.RandomDevice(), UInt8, 16))
+    lock(SIGN_IN_CODES_LOCK) do
+        now = time()
+        filter!(kv -> kv.second > now, SIGN_IN_CODES)
+        SIGN_IN_CODES[code] = now + SIGN_IN_CODE_LIFETIME[]
+    end
+    code
+end
+
+const SIGN_IN_CODE_GRACE = Ref(15.0)
+
 """
-Return whether the `request` was authenticated in one of two ways:
+Use a sign-in code: true within its lifetime, and from its first use only for a few seconds more.
+Not strictly once: opening one page is often two requests with the same address (a redirect to the
+address with its slash, a browser that asks twice), and the second must not be refused.
+"""
+function take_sign_in_code!(code::AbstractString)::Bool
+    occursin(r"^[0-9a-f]{32}$", code) || return false
+    lock(SIGN_IN_CODES_LOCK) do
+        now = time()
+        until = get(SIGN_IN_CODES, code, nothing)
+        (until === nothing || until <= now) && (delete!(SIGN_IN_CODES, code); return false)
+        SIGN_IN_CODES[code] = min(until, now + SIGN_IN_CODE_GRACE[])
+        true
+    end
+end
+
+"A page of the shell or the editor, under a hub's workspace prefix or not: showing one changes nothing."
+function is_page_path(path::AbstractString)::Bool
+    m = match(r"^/w/[0-9a-f]{16}(/.*)?$", path)
+    rest = m === nothing ? path : something(m.captures[1], "")
+    rest ∈ ("", "/", "/land", "/edit")
+end
+
+"""
+May a request that is signed in only by its cookie be acted on? The cookie is ambient: the browser
+adds it by itself, and not only to requests this server's own pages make. `SameSite=Strict` keeps
+it off requests from other sites, but a browser's "site" has no port in it: a page on any other
+port of this machine (another program's, another user's on a shared machine through a forward) is
+the same site, gets the cookie added, and a plain link or image there to `/shutdown`, `/move` or
+`/open?path=…` was carried out. Those are GETs, which the Origin check for writes does not cover.
+
+Browsers say where a request comes from (`Sec-Fetch-Site`). One from this server's own pages
+(`same-origin`) or from the user (`none`: typed, a bookmark, a link in another program) passes. One
+from anywhere else passes only when it is the user being taken to a page. A client that sends no
+such header is not a browser of this decade, or not a browser: it is judged as before.
+"""
+function fetch_site_allows(request::HTTP.Request)::Bool
+    site = lowercase(HTTP.header(request, "Sec-Fetch-Site", ""))
+    (isempty(site) || site == "same-origin" || site == "none") && return true
+    uppercase(request.method) == "GET" || return false
+    (lowercase(HTTP.header(request, "Sec-Fetch-Mode", "")) == "navigate" && lowercase(HTTP.header(request, "Sec-Fetch-Dest", "")) == "document") || return false
+    is_page_path(HTTP.URI(request.target).path)
+end
+
+"""
+Return whether the `request` was authenticated in one of these ways:
 1. the session's `secret` was included in the URL as a search parameter, or
-2. the session's `secret` was included in a cookie.
+2. the session's `secret` was included in a cookie, or
+3. a page was asked for with a sign-in code (`?code=`) that had not been used.
 """
 function is_authenticated(session::ServerSession, request::HTTP.Request)
     (
         secret_in_url = try
             uri = HTTP.URI(request.target)
             query = HTTP.queryparams(uri)
-            get(query, "secret", "") == session.secret
+            # a code is used up by the first check, and a request can be checked more than once on
+            # its way (a hub checks before it relays, and the handler checks again): remember it
+            same_secret(get(query, "secret", ""), session.secret) || get(request.context, :signed_in_by_code, false) ||
+                (request.method == "GET" && haskey(query, "code") && take_sign_in_code!(query["code"]) && (request.context[:signed_in_by_code] = true))
         catch e
             @warn "Failed to authenticate request using URL" exception = (e, catch_backtrace())
             false
@@ -56,8 +139,8 @@ function is_authenticated(session::ServerSession, request::HTTP.Request)
         secret_in_cookie = try
             cookies = HTTP.cookies(request)
             cookie_name = secret_cookie_name(session, request)
-            any(cookies) do cookie
-                cookie.name == cookie_name && cookie.value == session.secret
+            fetch_site_allows(request) && any(cookies) do cookie
+                cookie.name == cookie_name && same_secret(cookie.value, session.secret)
             end
         catch e
             @warn "Failed to authenticate request using cookies" exception = (e, catch_backtrace())
@@ -163,6 +246,51 @@ function auth_required(session::ServerSession, request::HTTP.Request)
     end
 end
 
+
+###
+# A sign-in that outlives the hub.
+#
+# A hub made a new secret each time it started. Every page left open across a restart (an update, a
+# crash, a laptop that was shut) was signed out, and with one address for local and remote
+# workspaces that is every tab the user has. A hub now keeps its secret beside its connection file
+# (the same directory, the same owner-only mode: that file already holds it while the hub runs) and
+# takes it up again at its next start on the same port, for as long as `SIGN_IN_KEPT_FOR` allows.
+# `SPACESTATION_KEEP_SIGN_IN=0` turns this off; deleting the file signs every browser out.
+###
+const SIGN_IN_KEPT_FOR = Ref(30 * 24 * 3600.0)
+kept_sign_in_path(port::Integer) = joinpath(collab_registry_dir(), "sign-in-$(port).txt")
+
+function _read_kept_sign_in(path::AbstractString)::Union{Nothing,String}
+    isfile(path) || return nothing
+    if !Sys.iswindows()
+        st = stat(path)
+        # written by this user and readable by nobody else, or it is not ours to trust
+        (st.uid == ccall(:getuid, Cuint, ()) && filemode(st) & 0o077 == 0) || return nothing
+    end
+    m = match(r"^(\d+(?:\.\d+)?) ([A-Za-z0-9]{16,128})\s*$", read(path, String))
+    m === nothing && return nothing
+    made = parse(Float64, m.captures[1])
+    -60 <= time() - made < SIGN_IN_KEPT_FOR[] || return nothing # (a clock set back a little is not a reason to sign everybody out)
+    String(m.captures[2])
+end
+
+"A hub takes up the secret it had the last time it ran on this port, or keeps the one it has now for the next time."
+function keep_sign_in!(session::ServerSession, port::Integer)
+    get(ENV, "SPACESTATION_KEEP_SIGN_IN", "1") == "0" && return nothing
+    path = kept_sign_in_path(port)
+    try
+        kept = offload_blocking(() -> _read_kept_sign_in(path))
+        if kept !== nothing
+            session.secret = kept
+        else
+            mkpath(dirname(path))
+            _write_private_file(path, "$(floor(Int, time())) $(session.secret)\n")
+        end
+    catch e
+        @warn "SpaceStation: could not keep the sign-in for the next start" exception = (e, catch_backtrace())
+    end
+    nothing
+end
 
 """
     auth_middleware(f::HTTP.Handler) -> HTTP.Handler
