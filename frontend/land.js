@@ -18,14 +18,60 @@ import { pluto_file_extensions, has_pluto_file_extension } from "./common/PlutoF
 import { cycle_color_scheme, get_color_scheme, prefers_dark } from "./common/ColorScheme.js"
 import { mount_icons, file_icon } from "./common/Icons.js"
 
+// What the page remembers. localStorage can be missing (blocked in a private window, by a policy)
+// or full; both used to leave a blank or half-drawn page. So: every read and write is guarded, a
+// copy in memory stands in when the real one fails, and a key is written only when its value
+// changes (dragging a pane used to write seven keys several hundred times).
+const store = (() => {
+    const memory = new Map()
+    return {
+        get: (key) => {
+            try {
+                const v = localStorage.getItem(key)
+                if (v != null) memory.set(key, v)
+                return v ?? memory.get(key) ?? null
+            } catch {
+                return memory.get(key) ?? null
+            }
+        },
+        set: (key, value) => {
+            value = String(value)
+            if (memory.get(key) === value) return
+            memory.set(key, value)
+            try {
+                localStorage.setItem(key, value)
+            } catch {}
+        },
+        remove: (key) => {
+            memory.delete(key)
+            try {
+                localStorage.removeItem(key)
+            } catch {}
+        },
+    }
+})()
+
+/** What a failed request said, for a person: the server's own words when it sent any. */
+const failure_text = async (r) => {
+    let said = ""
+    try {
+        said = (await r.text()).trim()
+    } catch {}
+    try {
+        const parsed = JSON.parse(said)
+        said = String(parsed.detail ?? parsed.error ?? parsed.message ?? said)
+    } catch {}
+    return said !== "" && said.length < 400 && !said.startsWith("<") ? said : `the server answered ${r.status}`
+}
+
 const get_text = async (url, opts) => {
     const r = await fetch(url, opts)
-    if (!r.ok) throw new Error(`${url} → ${r.status}`)
+    if (!r.ok) throw new Error(await failure_text(r))
     return await r.text()
 }
 const get_json = async (url, opts) => {
     const r = await fetch(url, opts)
-    if (!r.ok) throw new Error(`${url} → ${r.status}`)
+    if (!r.ok) throw new Error(await failure_text(r))
     return await r.json()
 }
 
@@ -42,9 +88,11 @@ const open_dialog = (build) =>
     new Promise((resolve) => {
         const dialog = document.createElement("dialog")
         dialog.className = "land-dialog"
+        const before = document.activeElement
         const done = (result) => {
             dialog.close()
             dialog.remove()
+            if (before instanceof HTMLElement && before.isConnected) before.focus()
             resolve(result)
         }
         build(dialog, done)
@@ -164,8 +212,10 @@ const open_menu = (x, y, items) => {
     const menu = document.createElement("div")
     menu.className = "land-menu context"
     menu.setAttribute("role", "menu")
+    const before = document.activeElement
     const close = () => {
         menu.remove()
+        if (before instanceof HTMLElement && before.isConnected) before.focus()
         document.removeEventListener("pointerdown", on_outside, true)
         document.removeEventListener("keydown", on_key, true)
         window.removeEventListener("blur", close)
@@ -219,15 +269,6 @@ const open_menu = (x, y, items) => {
     return close
 }
 
-// One canonical homebase: the launcher tab names itself this, so a workspace's "home" button can focus it
-// (or reopen it if it was closed) via window.open(url, HOMEBASE_WINDOW_NAME) — instead of every workspace
-// spawning its own disconnected in-tab launcher.
-const HOMEBASE_WINDOW_NAME = "spacestation-homebase"
-const homebase_self_url = () => window.location.origin + window.location.pathname + window.location.search
-// Tag a workspace URL with this homebase's address (in the #fragment — never sent to the server) so the
-// workspace it opens knows where "home" is.
-const with_homebase = (url) => (url == null ? url : `${url}#homebase=${encodeURIComponent(homebase_self_url())}`)
-
 // App-wide light/dark/auto. Same-origin pages (the launcher, every workspace under the hub, the
 // notebook frames) follow at once through storage events; a workspace link also carries the
 // choice as a ?scheme= seed (ColorScheme.js handles both ends). The terminal's own scheme toggle
@@ -252,14 +293,14 @@ const logo_url = new URL("img/spacestation.svg", import.meta.url).href
 const RECENT_KEY = "spacestation recent workspaces"
 const get_recent_workspaces = () => {
     try {
-        const r = JSON.parse(localStorage.getItem(RECENT_KEY) ?? "[]")
+        const r = JSON.parse(store.get(RECENT_KEY) ?? "[]")
         return Array.isArray(r) ? r : []
     } catch {
         return []
     }
 }
 const remember_workspace = (path) => {
-    localStorage.setItem(RECENT_KEY, JSON.stringify([path, ...get_recent_workspaces().filter((p) => p !== path)].slice(0, 8)))
+    store.set(RECENT_KEY, JSON.stringify([path, ...get_recent_workspaces().filter((p) => p !== path)].slice(0, 8)))
 }
 
 // Terminals live in the terminal panel as their own tabs. Their shells persist on the server
@@ -269,7 +310,7 @@ const remember_workspace = (path) => {
 const TABS_KEY = "spacestation tabs by workspace"
 const restore_tabs = (workspace_root) => {
     try {
-        const saved = JSON.parse(localStorage.getItem(TABS_KEY) ?? "{}")?.[workspace_root]
+        const saved = JSON.parse(store.get(TABS_KEY) ?? "{}")?.[workspace_root]
         if (saved == null || !Array.isArray(saved.tabs)) return null
         const tabs = saved.tabs.filter((t) => t && typeof t.id === "string" && typeof t.path === "string").map((t) => ({ id: t.id, path: t.path, kind: t.kind === "file" ? "file" : "notebook" }))
         // `known`: every notebook that was running when this was saved, tabbed or not. One that is
@@ -283,15 +324,15 @@ const restore_tabs = (workspace_root) => {
 }
 const save_tabs = (workspace_root, tabs, active, known) => {
     try {
-        const parsed = JSON.parse(localStorage.getItem(TABS_KEY) ?? "{}")
+        const parsed = JSON.parse(store.get(TABS_KEY) ?? "{}")
         const all = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}
         all[workspace_root] = { tabs: tabs.map((t) => ({ id: t.id, path: t.path, kind: t.kind ?? "notebook" })), active, known }
-        localStorage.setItem(TABS_KEY, JSON.stringify(all))
+        store.set(TABS_KEY, JSON.stringify(all))
     } catch {}
 }
 
 const forget_workspace = (path) => {
-    localStorage.setItem(RECENT_KEY, JSON.stringify(get_recent_workspaces().filter((p) => p !== path)))
+    store.set(RECENT_KEY, JSON.stringify(get_recent_workspaces().filter((p) => p !== path)))
 }
 
 const TERMINALS_KEY = "spacestation terminals by workspace"
@@ -299,19 +340,23 @@ const LEGACY_TERMINALS_KEY = "spacestation terminals"
 const restore_terminals = (workspace_root) => {
     if (typeof workspace_root !== "string" || workspace_root.length === 0) return []
     try {
-        const all = JSON.parse(localStorage.getItem(TERMINALS_KEY) ?? "{}")
+        const all = JSON.parse(store.get(TERMINALS_KEY) ?? "{}")
         let saved = all && typeof all === "object" && !Array.isArray(all) ? all[workspace_root] : null
         // One-time migration: old builds stored one global list. Adopt it for the workspace that
         // first loads after upgrade, then remove it so other workspaces don't inherit those tabs.
         if (!Array.isArray(saved)) {
-            const legacy = JSON.parse(localStorage.getItem(LEGACY_TERMINALS_KEY) ?? "[]")
+            const legacy = JSON.parse(store.get(LEGACY_TERMINALS_KEY) ?? "[]")
             if (Array.isArray(legacy) && legacy.length > 0) {
                 saved = legacy
-                localStorage.removeItem(LEGACY_TERMINALS_KEY)
+                store.remove(LEGACY_TERMINALS_KEY)
             }
         }
         if (!Array.isArray(saved)) return []
-        return saved.filter((t) => t && typeof t.tid === "string").map((t) => ({ tid: t.tid, label: t.label ?? "Terminal" }))
+        // `cwd` and `notebook_env` too: reattaching from the workspace root to a shell that was opened
+        // in a subfolder made the server take it for a stale one and end it, job and all
+        return saved
+            .filter((t) => t && typeof t.tid === "string")
+            .map((t) => ({ tid: t.tid, label: t.label ?? "Terminal", ...(typeof t.cwd === "string" ? { cwd: t.cwd } : {}), ...(typeof t.notebook_env === "string" ? { notebook_env: t.notebook_env } : {}) }))
     } catch {
         return []
     }
@@ -320,11 +365,11 @@ const save_terminals = (workspace_root, terminals) => {
     if (typeof workspace_root !== "string" || workspace_root.length === 0) return
     let all = {}
     try {
-        const parsed = JSON.parse(localStorage.getItem(TERMINALS_KEY) ?? "{}")
+        const parsed = JSON.parse(store.get(TERMINALS_KEY) ?? "{}")
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) all = parsed
     } catch {}
-    all[workspace_root] = terminals.map((t) => ({ tid: t.tid, label: t.label }))
-    localStorage.setItem(TERMINALS_KEY, JSON.stringify(all))
+    all[workspace_root] = terminals.map((t) => ({ tid: t.tid, label: t.label, ...(t.cwd ? { cwd: t.cwd } : {}), ...(t.notebook_env ? { notebook_env: t.notebook_env } : {}) }))
+    store.set(TERMINALS_KEY, JSON.stringify(all))
 }
 
 // How long to wait for an SSH connection before giving up (seconds). A busy ProxyJump login node can
@@ -334,7 +379,7 @@ const SSH_TIMEOUT_KEY = "spacestation ssh connect timeout"
 const SSH_TIMEOUT_DEFAULT = 25
 const clamp_ssh_timeout = (v) => Math.max(3, Math.min(180, Math.round(Number(v) || SSH_TIMEOUT_DEFAULT)))
 const get_ssh_timeout = () => {
-    const v = Number(localStorage.getItem(SSH_TIMEOUT_KEY))
+    const v = Number(store.get(SSH_TIMEOUT_KEY))
     return Number.isFinite(v) && v >= 3 ? clamp_ssh_timeout(v) : SSH_TIMEOUT_DEFAULT
 }
 
@@ -343,6 +388,15 @@ const short_path = (path) => {
     const sep = path.includes("\\") && !path.includes("/") ? "\\" : "/"
     const parts = path.split(sep).filter((x) => x !== "")
     return parts.length <= 3 ? path : `…${sep}${parts.slice(-2).join(sep)}`
+}
+/** What leads up to a folder's own name, shortened at folder boundaries: "…/scratchpad/" for
+ *  /a/b/scratchpad/demo-ws. The name itself is shown after it, and stands out. */
+const path_lead = (path) => {
+    const sep = path.includes("\\") && !path.includes("/") ? "\\" : "/"
+    const parts = path.split(sep).filter((x) => x !== "")
+    if (parts.length <= 1) return path.startsWith(sep) ? sep : ""
+    const lead = parts.length <= 3 ? (path.startsWith(sep) ? sep : "") + parts.slice(0, -1).join(sep) : `…${sep}${parts[parts.length - 2]}`
+    return lead + sep
 }
 const greeting = () => {
     const h = new Date().getHours()
@@ -385,10 +439,10 @@ const FileEntry = ({ entry, listings, expanded, tree, depth }) => {
         const children = listings[entry.path]
         return html`<li class="dir ${open ? "open" : ""}">
             <div class="entry-row" onContextMenu=${(e) => tree.on_menu(e, entry)}>
-                <button class="entry" style=${row_style} aria-expanded=${open} onClick=${() => tree.on_toggle(entry.path)}>
+                <button class="entry" style=${row_style} title=${entry.path} aria-expanded=${open} onClick=${(e) => e.detail > 1 || tree.on_toggle(entry.path)}>
                     <svg class="ico chevron" aria-hidden="true"><use href="#i-chevron" /></svg><${Ico} name=${open ? "i-folder-open" : "i-folder"} /><span class="entry-name">${entry.name}</span>
                 </button>
-                <button class="row-action" title="New notebook or file in ${entry.name}" aria-label="New notebook or file in ${entry.name}" onClick=${() => tree.on_create_in(entry.path)}>
+                <button class="row-action" title="New notebook or file in ${entry.name}" aria-label="New notebook or file in ${entry.name}" onClick=${(e) => tree.on_create_menu(e.currentTarget, entry.path)}>
                     <svg class="ico" aria-hidden="true"><use href="#i-add" /></svg>
                 </button>
             </div>
@@ -429,12 +483,15 @@ const FileEntry = ({ entry, listings, expanded, tree, depth }) => {
     const kind = is_notebook ? null : file_icon(entry.name)
     return html`<li class="${is_notebook ? "notebook" : "file"} ${kind?.kind === "k-quiet" ? "quiet" : ""} ${tree.current_path === entry.path ? "current" : ""}">
         <div class="entry-row" onContextMenu=${(e) => tree.on_menu(e, entry)}>
-            <button class="entry" style=${row_style} title=${entry.path} onClick=${() => (is_notebook ? tree.on_open_notebook(entry.path) : tree.on_open_file(entry.path))}>
+            <button
+                class="entry"
+                style=${row_style}
+                title=${entry.path}
+                aria-current=${tree.current_path === entry.path ? "page" : undefined}
+                onClick=${() => (is_notebook ? tree.on_open_notebook(entry.path) : tree.on_open_file(entry.path))}
+            >
                 <span class="no-chevron"></span><${Ico} name=${is_notebook ? "i-notebook" : kind} /><span class="entry-name">${entry.name}</span>
                 ${is_notebook && tree.running_paths.has(entry.path) ? html`<span class="dot ok running-mark" title="Running"></span>` : null}
-            </button>
-            <button class="row-action danger" title="Delete ${entry.name}" aria-label="Delete ${entry.name}" onClick=${() => tree.on_delete(entry)}>
-                <svg class="ico" aria-hidden="true"><use href="#i-trash" /></svg>
             </button>
         </div>
     </li>`
@@ -449,7 +506,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
     // src/webserver/Proxy.jl), so resolve it against this page before handing it to a tab. It
     // carries the homebase fragment: the workspace's way back here.
     const abs_url = (url) => new URL(url, window.location.href).href
-    const open_href = (url) => with_homebase(abs_url(url))
+    const open_href = (url) => abs_url(url)
     const [listing, set_listing] = useState(
         /** @type {{path: String, parent: String, entries: Array<{name: String, path: String}>, crumbs: Array<{name: String, path: String}>}?} */ (null)
     )
@@ -481,7 +538,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
     // The SSH connect timeout is a homebase setting. The server resets it to its default on restart, so
     // push our stored value on load and whenever it changes (and persist it locally for next time).
     useEffect(() => {
-        localStorage.setItem(SSH_TIMEOUT_KEY, String(ssh_timeout))
+        store.set(SSH_TIMEOUT_KEY, String(ssh_timeout))
         fetch(`./api/v1/remote/config?connect_timeout=${encodeURIComponent(ssh_timeout)}`, { method: "POST" }).catch(() => {})
     }, [ssh_timeout])
 
@@ -498,7 +555,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                 set_remote_states((s) => ({ ...s, [host]: status }))
             }
             if (status.state === "ready" && status.url != null) {
-                window.open(open_href(status.url), "_blank") // may be blocked: the pill stays a clickable link either way
+                window.open(open_href(status.url), `spacestation-${status.url}`) // may be blocked: the pill stays a clickable link either way
             }
         } catch (e) {
             if (cancelled_hosts.current.has(host)) return
@@ -535,7 +592,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
             }
             if (status.state === "ready" && status.url != null) {
                 remember_workspace(path)
-                window.open(open_href(status.url), "_blank") // may be blocked: the ready card stays a clickable link either way
+                window.open(open_href(status.url), `spacestation-${status.url}`) // may be blocked: the ready card stays a clickable link either way
             }
         } catch (e) {
             if (cancelled_paths.current.has(path)) return
@@ -609,7 +666,8 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
             ])
         }
         load()
-        const iv = setInterval(load, 3000)
+        // not while the tab is in the background: nobody is looking, and it adds up
+        const iv = setInterval(() => document.visibilityState === "visible" && load(), 3000)
         return () => {
             alive = false
             clearInterval(iv)
@@ -623,6 +681,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
         try {
             set_listing(await get_json(path == null ? "./api/v1/browse" : `./api/v1/browse?path=${encodeURIComponent(path)}`))
             if (!quiet) set_error(null)
+            return true
         } catch (e) {
             // stay where we were: the periodic refresh re-reads `browsed_path`, and a mistyped path
             // must not become the folder it asks for from now on
@@ -712,7 +771,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
     const crumbs = listing?.crumbs ?? []
 
     // A link to something that is ready, opened in a new tab (which keeps its opener: the way home).
-    const open_link = (url, title, body, classname = "ws-open") => html`<a class=${classname} href=${open_href(url)} target="_blank" rel="opener" title=${`Open ${title}`}>${body}</a>`
+    const open_link = (url, title, body, classname = "ws-open") => html`<a class=${classname} href=${open_href(url)} target=${`spacestation-${url}`} title=${`Open ${title}`}>${body}</a>`
 
     return html`<div class="workspace-opener">
         <div class="opener-page">
@@ -831,7 +890,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                                   onSubmit=${(e) => {
                                       e.preventDefault()
                                       const v = e.target.elements.path.value.trim()
-                                      if (v !== "") browse(v).then(() => (e.target.elements.path.value = ""))
+                                      if (v !== "") browse(v).then((found) => found && (e.target.elements.path.value = ""))
                                   }}
                               >
                                   <input name="path" type="text" aria-label="Go to a folder" placeholder="Go to a folder: type or paste a path, then Enter" autocomplete="off" spellcheck=${false} />
@@ -1005,8 +1064,8 @@ const TerminalView = ({ tid, cwd, visible, scheme, notebook_env, on_exit }) => {
     // xterm clamp to its minimum 2 columns and ship that to the PTY — which is exactly what leaves a
     // backgrounded terminal reattaching wrapped to a sliver. The guard makes a hide a no-op.
     const refit = useCallback(() => {
-        clearTimeout(refit_timer.current)
-        refit_timer.current = setTimeout(() => {
+        cancelAnimationFrame(refit_timer.current)
+        refit_timer.current = requestAnimationFrame(() => {
             const node = node_ref.current
             const fit = fit_ref.current
             if (node == null || fit == null) return
@@ -1042,7 +1101,7 @@ const TerminalView = ({ tid, cwd, visible, scheme, notebook_env, on_exit }) => {
                 term._core?.viewport?.syncScrollArea?.(true)
                 term.refresh(0, term.rows - 1)
             } catch {}
-        }, 60)
+        })
     }, [])
 
     useEffect(() => {
@@ -1124,6 +1183,13 @@ const TerminalView = ({ tid, cwd, visible, scheme, notebook_env, on_exit }) => {
                 const key = e.key.toLowerCase()
                 const mod = is_mac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey
                 if (!mod || e.altKey) return true
+                // ⌘← ⌘→ ⌘⌫ on macOS: start of line, end of line, delete to the start
+                const line_edit = is_mac && !e.shiftKey ? { arrowleft: "\x01", arrowright: "\x05", backspace: "\x15" }[key] : undefined
+                if (line_edit != null) {
+                    if (socket?.readyState === WebSocket.OPEN) socket.send("0:" + line_edit)
+                    e.preventDefault()
+                    return false
+                }
                 if (key === "c" && (is_mac || e.shiftKey || term.hasSelection())) {
                     if (term.hasSelection()) {
                         copy_text(term.getSelection())
@@ -1266,6 +1332,10 @@ const TerminalView = ({ tid, cwd, visible, scheme, notebook_env, on_exit }) => {
                     if (meta.exited || meta.failed) {
                         exited = meta.exited === true
                         failed = meta.failed === true
+                        if (exited) {
+                            socket_ref.current = null // its close is expected: nothing to re-attach to
+                            on_exit_ref.current?.(tid)
+                        }
                         return
                     }
                     if (first_frame) {
@@ -1305,7 +1375,17 @@ const TerminalView = ({ tid, cwd, visible, scheme, notebook_env, on_exit }) => {
             retry_timer_ref.current = () => clearTimeout(retry_timer)
             connect()
             term.onData((d) => socket?.readyState === WebSocket.OPEN && socket.send("0:" + d))
-            term.onResize(({ rows, cols }) => socket?.readyState === WebSocket.OPEN && socket.send(`1:${rows},${cols}`))
+            let told = { rows: term.rows, cols: term.cols }
+            let width_timer = null
+            const tell_size = () => {
+                told = { rows: term.rows, cols: term.cols }
+                if (socket?.readyState === WebSocket.OPEN) socket.send(`1:${term.rows},${term.cols}`)
+            }
+            term.onResize(({ rows, cols }) => {
+                clearTimeout(width_timer)
+                if (cols === told.cols) tell_size()
+                else width_timer = setTimeout(tell_size, 90)
+            })
             const ro = new ResizeObserver(() => refit())
             ro.observe(node_ref.current)
             ro_ref.current = ro
@@ -1319,7 +1399,7 @@ const TerminalView = ({ tid, cwd, visible, scheme, notebook_env, on_exit }) => {
     // separately (close_terminal → POST /api/v1/terminal/close).
     useEffect(() => {
         return () => {
-            clearTimeout(refit_timer.current)
+            cancelAnimationFrame(refit_timer.current)
             retry_timer_ref.current?.()
             paste_cleanup_ref.current?.()
             paste_cleanup_ref.current = null
@@ -1494,7 +1574,7 @@ const FileEditorPane = ({ path, label, visible, on_dirty }) => {
 
     return html`<div class="file-pane">
         <div class="file-toolbar">
-            <span class="file-path" title=${path}>${"\u200e" + (label ?? path)}</span>
+            <span class="file-path" title=${path}>${label ?? path}</span>
             <span class="file-status ${failed ? "error" : ""}" role="status">${status !== "" ? status : dirty ? "Unsaved changes" : ""}</span>
             <button class="text-button file-save ${dirty ? "primary" : ""}" disabled=${!dirty} onClick=${save} title=${`Save (${is_mac ? "⌘S" : "Ctrl+S"})`}>Save</button>
         </div>
@@ -1562,18 +1642,20 @@ const Land = () => {
     const [tabs, set_tabs] = useState(/** @type {Array<{id: String, path: String, kind?: String}>} */ ([]))
     const [active, set_active] = useState(/** @type {String?} */ (null))
     const [error, set_error] = useState(/** @type {String?} */ (null))
-    const [sidebar_width, set_sidebar_width] = useState(() => Number(localStorage.getItem("spacestation sidebar width")) || SIDEBAR_WIDTH)
-    const [sidebar_hidden, set_sidebar_hidden] = useState(() => localStorage.getItem("spacestation sidebar hidden") === "true")
-    const [terminal_open, set_terminal_open] = useState(() => localStorage.getItem("spacestation terminal open") === "true")
-    const [terminal_height, set_terminal_height] = useState(() => Number(localStorage.getItem("spacestation terminal height")) || TERMINAL_HEIGHT)
-    const [terminal_width, set_terminal_width] = useState(() => Number(localStorage.getItem("spacestation terminal width")) || TERMINAL_WIDTH)
+    // what the background poll could not do; it clears itself when the poll works again
+    const [poll_error, set_poll_error] = useState(/** @type {String?} */ (null))
+    const [sidebar_width, set_sidebar_width] = useState(() => Number(store.get("spacestation sidebar width")) || SIDEBAR_WIDTH)
+    const [sidebar_hidden, set_sidebar_hidden] = useState(() => store.get("spacestation sidebar hidden") === "true")
+    const [terminal_open, set_terminal_open] = useState(() => store.get("spacestation terminal open") === "true")
+    const [terminal_height, set_terminal_height] = useState(() => Number(store.get("spacestation terminal height")) || TERMINAL_HEIGHT)
+    const [terminal_width, set_terminal_width] = useState(() => Number(store.get("spacestation terminal width")) || TERMINAL_WIDTH)
     const [terminal_dock, set_terminal_dock] = useState(() => {
-        const saved = localStorage.getItem("spacestation terminal dock")
+        const saved = store.get("spacestation terminal dock")
         return saved === "right" || saved === "tab" ? saved : "bottom"
     })
     // The terminal's colours are its own preference, not the page theme's: plenty of people want a
     // light UI with a dark terminal. Defaults to dark, which is what the terminal has always been.
-    const [terminal_scheme, set_terminal_scheme] = useState(() => (localStorage.getItem("spacestation terminal scheme") === "light" ? "light" : "dark"))
+    const [terminal_scheme, set_terminal_scheme] = useState(() => (store.get("spacestation terminal scheme") === "light" ? "light" : "dark"))
     const terminal_ever_opened = useRef(false)
     if (terminal_open) terminal_ever_opened.current = true
     const [show_opener, set_show_opener] = useState(false)
@@ -1668,17 +1750,6 @@ const Land = () => {
         const root = workspace?.root
         if (root != null && tabs_restored_for.current === root) save_tabs(root, tabs, active, running.map((nb) => nb.notebook_id))
     }, [tabs, active, running, workspace?.root])
-    // If this tab was spawned by a homebase, it carries the homebase URL in its #fragment — remember it so
-    // the "home" button returns there instead of opening a disconnected in-tab launcher.
-    const homebase_url = useRef(/** @type {String?} */ (null))
-    if (homebase_url.current == null) {
-        const m = window.location.hash.match(/[#&]homebase=([^&]+)/)
-        if (m) {
-            try {
-                homebase_url.current = decodeURIComponent(m[1])
-            } catch (e) {}
-        }
-    }
     // This server may be reached over an SSH tunnel (when it's a remote workspace). If so, its child
     // workspace ports aren't forwarded to the browser, so workspaces open IN-PLACE rather than in new tabs.
     const [tunneled, set_tunneled] = useState(false)
@@ -1708,66 +1779,18 @@ const Land = () => {
      *  extension half — the header half only applies to files that already exist. */
     const has_notebook_extension = useCallback((name) => has_pluto_file_extension(name, notebook_extensions), [notebook_extensions])
 
-    // The launcher (no workspace of its own) is THE homebase — name the tab so workspaces can target it.
-    useEffect(() => {
-        if (no_workspace) window.name = HOMEBASE_WINDOW_NAME
-    }, [no_workspace])
-
     // Tab title tells the homebase apart from workspaces in the browser's tab strip: the launcher reads
     // "SpaceStation (launcher)"; a workspace reads "SpaceStation — <folder>".
     useEffect(() => {
         document.title = no_workspace ? "SpaceStation (launcher)" : workspace?.root ? `SpaceStation — ${basename(workspace.root)}` : "SpaceStation"
     }, [no_workspace, workspace])
 
-    // "Home" from inside a workspace. Over a tunnel: clear the workspace and reload this same tab (the
-    // remote homebase). Otherwise: focus the homebase tab if open, or reopen it if it was closed — one
-    // shared homebase, never a disconnected duplicate. (In-tab opener only when no homebase is known.)
+    // The logo: the launcher, shown over this workspace, with a way back. (It used to ask the
+    // browser to raise the tab that opened this one, which browsers do not allow: the button did
+    // nothing.) The workspace keeps running underneath.
     const go_home = useCallback(() => {
         if (!hub && tunneled) {
             fetch("./api/v1/workspace/close", { method: "POST" }).finally(() => window.location.reload())
-            return
-        }
-        // Focus the homebase tab that opened us. opener.focus() is one of the few cross-origin-permitted
-        // calls, so unlike window.open(url, name) it actually focuses across the different ports our
-        // workspaces live on — and it doesn't reload the homebase. (Anchor-opened tabs keep their opener
-        // thanks to rel="opener" on the workspace links.)
-        try {
-            if (window.opener && !window.opener.closed) {
-                window.opener.focus()
-                return
-            }
-        } catch (e) {}
-        // Under a hub the launcher is the hub's root, always: seed it when no homebase was recorded.
-        if (hub && homebase_url.current == null) homebase_url.current = new URL("../../", window.location.href).href
-        // No live opener. If we know the homebase, switch to its tab: reuse it (never a duplicate) and
-        // focus the returned handle, so an ALREADY-OPEN homebase actually gets raised to the front — plain
-        // window.open(url, name) reuses the tab but only auto-focuses when it has to CREATE one.
-        if (homebase_url.current) {
-            // window.open("", name) hands back the existing named tab WITHOUT reloading it; if none is open
-            // it returns a fresh blank tab, which we then point at the homebase.
-            let w = null
-            try {
-                w = window.open("", HOMEBASE_WINDOW_NAME)
-            } catch (e) {}
-            if (w == null) {
-                // Popup blocked / unsupported: last-resort reopen-by-name.
-                window.open(homebase_url.current, HOMEBASE_WINDOW_NAME)
-                return
-            }
-            let is_blank = false
-            try {
-                is_blank = w.location.href === "about:blank"
-            } catch (e) {
-                // cross-origin: the homebase runs on another port, so it's already open — just focus it.
-            }
-            if (is_blank) {
-                try {
-                    w.location.href = homebase_url.current
-                } catch (e) {}
-            }
-            try {
-                w.focus()
-            } catch (e) {}
             return
         }
         set_show_opener(true)
@@ -1800,13 +1823,13 @@ const Land = () => {
     }, [workspace?.root])
 
     useEffect(() => {
-        localStorage.setItem("spacestation sidebar width", String(sidebar_width))
-        localStorage.setItem("spacestation sidebar hidden", String(sidebar_hidden))
-        localStorage.setItem("spacestation terminal open", String(terminal_open))
-        localStorage.setItem("spacestation terminal height", String(terminal_height))
-        localStorage.setItem("spacestation terminal scheme", terminal_scheme)
-        localStorage.setItem("spacestation terminal width", String(terminal_width))
-        localStorage.setItem("spacestation terminal dock", terminal_dock)
+        store.set("spacestation sidebar width", String(sidebar_width))
+        store.set("spacestation sidebar hidden", String(sidebar_hidden))
+        store.set("spacestation terminal open", String(terminal_open))
+        store.set("spacestation terminal height", String(terminal_height))
+        store.set("spacestation terminal scheme", terminal_scheme)
+        store.set("spacestation terminal width", String(terminal_width))
+        store.set("spacestation terminal dock", terminal_dock)
     }, [sidebar_width, sidebar_hidden, terminal_open, terminal_height, terminal_width, terminal_dock, terminal_scheme])
 
     useEffect(() => {
@@ -1882,8 +1905,14 @@ const Land = () => {
         // going away regardless. Persistent shells only survive detaches (hide / dock / reload).
         fetch(`./api/v1/terminal/close?tid=${encodeURIComponent(tid)}`, { method: "POST" }).catch(() => {})
         set_terminals((ts) => {
+            const at = ts.findIndex((t) => t.tid === tid)
             const remaining = ts.filter((t) => t.tid !== tid)
-            set_active_terminal((a) => (a === tid ? (remaining.length ? remaining[remaining.length - 1].tid : null) : a))
+            set_active_terminal((a) => (a === tid ? (remaining[Math.min(at, remaining.length - 1)]?.tid ?? null) : a))
+            // closing the last one closes the panel: it used to start another in its place
+            if (remaining.length === 0) {
+                set_terminal_open(false)
+                set_active((a) => (a === "__terminal__" ? null : a))
+            }
             return remaining
         })
     }, [])
@@ -1940,6 +1969,7 @@ const Land = () => {
     const [files_status, set_files_status] = useState(/** @type {{since: number, detail: String}?} */ (null))
     const [workspace_status, set_workspace_status] = useState(/** @type {{kind: "busy" | "down", since: number, detail: String}?} */ (null))
     const refreshing = useRef(false)
+    const unreachable = useRef(0) // polls in a row that nothing answered
     const refresh = useCallback(async () => {
         // One poll in flight at a time, with a deadline: against a stalled child every poll would
         // otherwise pile up on the one origin, and the browser's per-origin connection limit would
@@ -1952,11 +1982,12 @@ const Land = () => {
         let root_now = null
         try {
             const ws_response = await fetch("./api/v1/workspace", { signal })
+            unreachable.current = 0
             if (ws_response.status === 404) {
                 set_files_status(null)
                 set_no_workspace(true)
                 set_workspace(null)
-                set_error(null)
+                set_poll_error(null)
                 return // the launcher has no notebooks to list (a hub's root list would poll every workspace's child)
             } else if (ws_response.status === 504) {
                 const info = await ws_response.json().catch(() => ({}))
@@ -1991,7 +2022,7 @@ const Land = () => {
             if (nb_response.status === 503 || nb_response.status === 504) {
                 const info = await nb_response.json().catch(() => ({}))
                 set_workspace_status((prev) => ({ kind: info.workspace_down ? "down" : "busy", since: prev?.since ?? Date.now(), detail: String(info.detail ?? "") }))
-                set_error(null)
+                set_poll_error(null)
                 return
             }
             if (!nb_response.ok) throw new Error(`notebooks request failed: ${nb_response.status}`)
@@ -2017,7 +2048,7 @@ const Land = () => {
                 }
                 tabs_restored_for.current = root_now
             }
-            set_error(null)
+            set_poll_error(null)
         } catch (e) {
             // A rejected fetch (TypeError) means nothing answered — the server is gone, or for a
             // remote workspace the SSH tunnel is down, which is just what a closed laptop lid looks
@@ -2025,8 +2056,10 @@ const Land = () => {
             // rebuilding the tunnel, on the same local port, so this tab's URL stays valid. Wait for
             // it instead. A response that arrives and is bad (a thrown status) is still a real error.
             if (e?.name === "AbortError") set_workspace_status((prev) => ({ kind: "busy", since: prev?.since ?? Date.now(), detail: "no answer within 15 seconds" }))
-            else if (e instanceof TypeError) set_offline(true)
-            else set_error(String(e))
+            else if (e instanceof TypeError) {
+                unreachable.current += 1
+                if (unreachable.current >= 2) set_offline(true)
+            } else set_poll_error(String(e?.message ?? e))
         } finally {
             clearTimeout(deadline)
             refreshing.current = false
@@ -2086,7 +2119,13 @@ const Land = () => {
             try {
                 const r = await fetch("./ping", { cache: "no-store" })
                 if (r.ok) {
-                    window.location.reload()
+                    // Back. A reload revives every notebook frame's dead socket at once, but it also
+                    // throws away a file that has not been saved: then just carry on in place.
+                    const unsaved = [...file_dirty.values()].some(Boolean)
+                    unreachable.current = 0
+                    set_offline(false)
+                    if (!unsaved) window.location.reload()
+                    else refresh()
                     return
                 }
             } catch {}
@@ -2130,11 +2169,28 @@ const Land = () => {
         }
         // closing a notebook tab does NOT shut down the notebook (JupyterHub semantics) — it keeps running, listed under "Running"
         set_tabs((tabs) => {
+            const at = tabs.findIndex((t) => t.id === id)
             const remaining = tabs.filter((t) => t.id !== id)
-            set_active((a) => (a === id ? (remaining.length > 0 ? remaining[remaining.length - 1].id : null) : a))
+            // the tab that slides into its place, as in a browser; the last one when it was the last
+            set_active((a) => (a === id ? (remaining[Math.min(at, remaining.length - 1)]?.id ?? null) : a))
             return remaining
         })
     }, [set_tab_dirty])
+
+    // What is in front has the keyboard, and its tab is in view. Without this a click on a file left
+    // the keys on the tree, and a chord that switched tabs from inside a notebook left them inside
+    // the notebook that had just been hidden.
+    useEffect(() => {
+        if (active == null) return
+        const frame = requestAnimationFrame(() => {
+            document.querySelector("#tabs .tab.active")?.scrollIntoView({ block: "nearest", inline: "nearest" })
+            if (document.querySelector("dialog[open], .land-menu.context") != null) return
+            const front = document.querySelector("#frames > .active")
+            if (front instanceof HTMLIFrameElement) front.contentWindow?.focus()
+            else front?.querySelector(".cm-content, .xterm-helper-textarea")?.focus()
+        })
+        return () => cancelAnimationFrame(frame)
+    }, [active])
 
     // A notebook frame asks to be closed: its session is gone (the editor's "Close tab"), or it
     // navigated to this hub and would otherwise render a whole Land inside the tab (see the bottom
@@ -2154,7 +2210,13 @@ const Land = () => {
      *  proposes: a name with a notebook extension makes a notebook either way. */
     const create_in = useCallback(
         async (dir, kind = "notebook") => {
-            const taken = names_in(dir)
+            let taken = names_in(dir)
+            if (workspace != null && dir !== workspace.root && listings[dir] == null) {
+                try {
+                    const { entries } = await get_json(`./api/v1/workspace/listing?path=${encodeURIComponent(dir)}`)
+                    taken = new Set(entries.map((e) => e.name))
+                } catch {}
+            }
             const proposed = kind === "notebook" ? "notebook.jl" : ""
             const typed = await ask_text({
                 title: kind === "notebook" ? `New notebook in ${basename(dir) || dir}` : `New file in ${basename(dir) || dir}`,
@@ -2175,7 +2237,13 @@ const Land = () => {
             try {
                 if (has_notebook_extension(name)) {
                     const id = await get_text("./new", { method: "POST" })
-                    await get_text(`./move?id=${encodeURIComponent(id)}&newpath=${encodeURIComponent(path)}`, { method: "POST" })
+                    try {
+                        await get_text(`./move?id=${encodeURIComponent(id)}&newpath=${encodeURIComponent(path)}`, { method: "POST" })
+                    } catch (e) {
+                        // it could not be put where it was asked for: do not leave it running somewhere else
+                        fetch(`./shutdown?id=${encodeURIComponent(id)}`, { method: "POST" }).catch(() => {})
+                        throw e
+                    }
                     add_tab(id, path)
                 } else {
                     await get_json(`./api/v1/file/new?path=${encodeURIComponent(path)}`, { method: "POST" })
@@ -2190,7 +2258,7 @@ const Land = () => {
                 set_error(`${name} could not be created: ${e?.message ?? e}`)
             }
         },
-        [add_tab, open_file, refresh, toggle_dir, load_listing, workspace, has_notebook_extension, names_in]
+        [add_tab, open_file, refresh, toggle_dir, load_listing, workspace, has_notebook_extension, names_in, listings]
     )
     const create_menu = useCallback(
         (anchor, dir) => {
@@ -2223,7 +2291,7 @@ const Land = () => {
     const shutdown_notebook = useCallback(
         async (id) => {
             const nb = running.find((n) => n.notebook_id === id)
-            if (!(await ask_confirm(`Shut down ${nb ? basename(nb.path) : "this notebook"}?\n\nIts process stops. The file stays on disk and its outputs stay cached, so opening it again shows them.`, { action: "Shut down" }))) return
+            if (!(await ask_confirm(`Shut down ${nb ? basename(nb.path) : "this notebook"}?\n\nIts process stops. The file stays on disk and its outputs stay cached, so opening it again shows them.`, { action: "Shut down", danger: true }))) return
             try {
                 await get_text(`./shutdown?id=${encodeURIComponent(id)}`, { method: "POST" })
                 close_tab(id)
@@ -2247,16 +2315,27 @@ const Land = () => {
     }, [terminal_open, terminal_dock])
     toggle_terminal_ref.current = toggle_terminal
 
-    const cycle_dock = useCallback(() => {
-        const next = terminal_dock === "bottom" ? "right" : terminal_dock === "right" ? "tab" : "bottom"
-        if (next === "tab") {
-            set_terminal_open(true)
-            set_active("__terminal__")
-        } else if (terminal_dock === "tab") {
-            set_active((a) => (a === "__terminal__" ? null : a))
-        }
-        set_terminal_dock(next)
-    }, [terminal_dock])
+    /** Put the terminal at the bottom, at the right, or among the editor's tabs. */
+    const set_dock = useCallback(
+        (next) => {
+            if (next === terminal_dock) return
+            if (next === "tab") {
+                set_terminal_open(true)
+                set_active("__terminal__")
+            }
+            set_terminal_dock(next)
+        },
+        [terminal_dock]
+    )
+    // The places are a choice, not a cycle: pick one from a menu under the button.
+    const dock_menu = useCallback(
+        (anchor) => {
+            const box = anchor.getBoundingClientRect()
+            const place = (dock, label, icon) => ({ label: dock === terminal_dock ? `${label}  ✓` : label, icon, run: () => set_dock(dock) })
+            open_menu(box.right - 190, box.bottom + 4, [place("bottom", "Dock at the bottom", "i-dock-bottom"), place("right", "Dock at the right", "i-dock-right"), place("tab", "Show as a tab", "i-dock-tab")])
+        },
+        [terminal_dock, set_dock]
+    )
 
     // the terminals UI (a tab strip of terminals + their bodies); rendered either in the docked
     // panel or inside the editor "Terminal" tab. `shown` gates which shell is live/painted.
@@ -2303,13 +2382,8 @@ const Land = () => {
                 >
                     <${Ico} name=${terminal_scheme === "light" ? "i-sun" : "i-moon"} />
                 </button>
-                <button
-                    class="icon-button dock-toggle"
-                    title=${terminal_dock === "bottom" ? "Move the terminal to the right" : terminal_dock === "right" ? "Show the terminal as a tab" : "Move the terminal to the bottom"}
-                    aria-label="Move the terminal"
-                    onClick=${cycle_dock}
-                >
-                    <${Ico} name=${terminal_dock === "bottom" ? "i-dock-right" : terminal_dock === "right" ? "i-dock-tab" : "i-dock-bottom"} />
+                <button class="icon-button dock-toggle" title="Where the terminal sits" aria-label="Where the terminal sits" aria-haspopup="menu" onClick=${(e) => dock_menu(e.currentTarget)}>
+                    <${Ico} name=${terminal_dock === "bottom" ? "i-dock-bottom" : terminal_dock === "right" ? "i-dock-right" : "i-dock-tab"} />
                 </button>
                 <button class="icon-button" title="Hide the terminal (Ctrl+\`). Its shells keep running." aria-label="Hide the terminal" onClick=${hide_terminal}>
                     <svg class="ico" aria-hidden="true"><use href="#i-close" /></svg>
@@ -2340,7 +2414,7 @@ const Land = () => {
                 hub
                     ? `Shut down the server for this workspace?\n\nIts running notebooks stop; this terminal, the launcher and other workspaces keep running.`
                     : "Shut down the SpaceStation server?\n\nRunning notebooks and the integrated terminal will stop. SSH remote servers keep running and can be reattached later.",
-                { action: "Shut down" }
+                { action: "Shut down", danger: true }
             ))
         )
             return
@@ -2465,7 +2539,7 @@ const Land = () => {
         on_toggle: toggle_dir,
         on_open_notebook: open_notebook,
         on_open_file: open_file,
-        on_create_in: (dir) => create_in(dir, "notebook"),
+        on_create_menu: create_menu,
         on_delete: delete_entry,
         on_menu: entry_menu,
         current_path: active_tab?.path ?? null,
@@ -2504,9 +2578,8 @@ const Land = () => {
                           </span>
                           ${workspace?.root
                               ? html`<div class="side-where">
-                                    <span class="workspace-name">${basename(workspace.root) || workspace.root}</span>
                                     <button
-                                        class="where-line"
+                                        class="where-line where-path"
                                         title=${`${workspace.root}\nClick to copy the path`}
                                         aria-label=${`Workspace folder ${workspace.root}. Copy the path`}
                                         onClick=${() => {
@@ -2515,11 +2588,13 @@ const Land = () => {
                                             setTimeout(() => set_path_copied(false), 1200)
                                         }}
                                     >
-                                        <span class="where-text">${path_copied ? "Path copied" : short_path(workspace.root)}</span>
+                                        ${path_copied
+                                            ? html`<span class="where-name">Path copied</span>`
+                                            : html`<span class="where-prefix">${path_lead(workspace.root)}</span><span class="where-name">${basename(workspace.root) || workspace.root}</span>`}
                                     </button>
                                     ${workspace.git == null
                                         ? null
-                                        : html`<span class="where-line" title=${workspace.git.detached ? `Detached HEAD at ${workspace.git.branch}` : `On branch ${workspace.git.branch}`}>
+                                        : html`<span class="where-line where-branch" title=${workspace.git.detached ? `Detached HEAD at ${workspace.git.branch}` : `On branch ${workspace.git.branch}`}>
                                               <svg class="ico" aria-hidden="true"><use href="#i-branch" /></svg><span class="where-text">${workspace.git.branch}</span>${workspace.git.detached
                                                   ? html`<span class="git-detached">detached</span>`
                                                   : null}
@@ -2596,7 +2671,14 @@ const Land = () => {
                                       </button>
                                   </div>`
                                 : null}
-                            <div class="tab-scroller" role="tablist">
+                            <div
+                                class="tab-scroller"
+                                role="tablist"
+                                onWheel=${(e) => {
+                                    // a wheel that only goes up and down still moves along the strip
+                                    if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) e.currentTarget.scrollLeft += e.deltaY
+                                }}
+                            >
                                 ${tabs.map(
                                     (t) => html`<div
                                         class="tab ${t.kind === "file" ? "file" : "notebook"} ${t.id === active ? "active" : ""} ${t.kind === "file" && dirty_tabs.has(t.path) ? "dirty" : ""}"
@@ -2727,13 +2809,13 @@ const Land = () => {
                         : null}
                 </div>
             </main>
-            ${error == null
+            ${(error ?? poll_error) == null
                 ? null
                 : html`<div class="land-toasts">
                       <div class="land-toast" role="alert">
                           <svg class="ico" aria-hidden="true"><use href="#i-alert" /></svg>
-                          <p>${error}</p>
-                          <button class="icon-button" title="Dismiss" aria-label="Dismiss" onClick=${() => set_error(null)}><svg class="ico" aria-hidden="true"><use href="#i-close" /></svg></button>
+                          <p>${error ?? poll_error}</p>
+                          <button class="icon-button" title="Dismiss" aria-label="Dismiss" onClick=${() => (set_error(null), set_poll_error(null))}><svg class="ico" aria-hidden="true"><use href="#i-close" /></svg></button>
                       </div>
                   </div>`}
         </div>

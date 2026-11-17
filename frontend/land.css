@@ -159,17 +159,20 @@ svg.ico.k-folder {
     gap: 6px;
     transition: background-color 0.12s ease-out, box-shadow 0.12s ease-out, transform 0.16s var(--land-ease);
 }
+.text-button:focus-visible {
+    outline-offset: 2px;
+}
 .text-button:hover {
     background-color: var(--land-active);
 }
 .text-button.primary {
     background-color: var(--land-raised-bg);
     color: var(--land-fg);
-    box-shadow: var(--land-raised-shadow), var(--land-ring);
+    box-shadow: var(--land-ring), var(--land-lift);
 }
 .text-button.primary:hover {
     background-color: var(--land-raised-bg);
-    box-shadow: var(--land-raised-shadow), inset 0 0 0 2px var(--land-accent);
+    box-shadow: inset 0 0 0 2px var(--land-accent), var(--land-lift);
     transform: translateY(-1px);
 }
 .text-button.danger {
@@ -368,39 +371,63 @@ body.resizing-v .terminal-host {
     font-size: 16px;
     line-height: 28px;
 }
+/* Where this workspace is: one line, the folder's own name standing out of its path; and under it,
+   the branch. Both start on the text edge; the branch's mark hangs in the icon column. */
 .side-where {
     grid-column: 2 / -1;
     min-width: 0;
-    margin-top: 6px;
+    margin-top: 5px;
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    gap: 2px;
+    gap: 3px;
+    font-size: 12.5px;
+    line-height: 18px;
+    color: var(--land-muted);
 }
-.side-where .workspace-name {
+.side-where .where-line {
+    display: flex;
+    align-items: center;
     max-width: 100%;
-    font-size: 13px;
+    min-width: 0;
+}
+.side-where .where-path {
+    margin: -1px 0 -1px -6px;
+    padding: 1px 6px;
+    border: none;
+    border-radius: 6px;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+}
+.side-where .where-path:hover {
+    background-color: var(--land-hover);
+}
+.side-where .where-prefix {
+    flex: 0 1 auto;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.side-where .where-name {
+    flex: 0 0 auto;
+    max-width: 100%;
+    color: var(--land-fg);
     font-weight: 600;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
-.side-where .where-line {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    max-width: 100%;
-    color: var(--land-muted);
-    font-family: var(--julia-mono-font-stack);
-    font-size: 11px;
-    line-height: 16px;
+.side-where .where-branch {
+    gap: 6px;
 }
-/* the branch mark hangs in the icon column, so the branch's name starts on the text edge */
-.side-where .where-line .ico {
-    width: 12px;
-    height: 12px;
+.side-where .where-branch .ico {
+    width: 13px;
+    height: 13px;
     flex-shrink: 0;
-    margin-left: -17px;
+    margin-left: -19px;
 }
 .side-where .where-text {
     min-width: 0;
@@ -408,18 +435,7 @@ body.resizing-v .terminal-host {
     overflow: hidden;
     text-overflow: ellipsis;
 }
-.side-where button.where-line {
-    margin: 0 0 0 -5px;
-    padding: 0 5px;
-    border: none;
-    border-radius: 5px;
-    background: none;
-    text-align: left;
-}
-.side-where button.where-line:hover {
-    background-color: var(--land-hover);
-    color: var(--land-fg);
-}
+
 .git-detached {
     flex-shrink: 0;
     padding: 0 5px;
@@ -514,7 +530,6 @@ body.resizing-v .terminal-host {
 .land-menu-item:hover:not(:disabled),
 .land-menu-item:focus-visible {
     background-color: var(--land-hover);
-    outline: none;
 }
 .land-menu-item:disabled {
     color: var(--land-faint);
@@ -601,6 +616,10 @@ body.resizing-v .terminal-host {
 .entry-row:hover {
     background-color: var(--land-hover);
 }
+#land li.current > .entry-row .entry-name {
+    font-weight: 600;
+    color: var(--land-fg);
+}
 #land li.current > .entry-row {
     background-color: var(--land-selected);
 }
@@ -612,7 +631,7 @@ body.resizing-v .terminal-host {
     align-items: center;
     gap: 6px;
     height: 100%;
-    padding: 0 4px 0 calc(6px + var(--depth, 0) * 14px);
+    padding: 0 4px 0 calc(6px + min(var(--depth, 0), 10) * 14px); /* past ten levels the names would have no room */
     border: none;
     background: none;
     text-align: left;
@@ -685,7 +704,8 @@ body.resizing-v .terminal-host {
 }
 
 .row-action {
-    display: none;
+    display: inline-flex;
+    opacity: 0;
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
@@ -703,7 +723,7 @@ body.resizing-v .terminal-host {
 }
 .entry-row:hover .row-action,
 .entry-row:focus-within .row-action {
-    display: inline-flex;
+    opacity: 1;
 }
 .row-action:hover {
     background-color: var(--land-active);
@@ -809,7 +829,7 @@ body.resizing-v .terminal-host {
 .tab.active {
     background: var(--land-raised-sheen), var(--land-raised-bg);
     color: var(--land-fg);
-    box-shadow: var(--land-raised-shadow), var(--land-ring);
+    box-shadow: var(--land-ring), var(--land-lift);
 }
 .tab .title {
     display: flex;
@@ -1009,7 +1029,6 @@ body.resizing-v .terminal-host {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    direction: rtl; /* a long path loses its start, not the file's name */
     text-align: left;
 }
 .file-toolbar .file-status {
@@ -1073,7 +1092,7 @@ body.resizing-v .terminal-host {
 .terminal-surface.scheme-light {
     --term-bg: var(--terminal-light-bg);
     --term-fg: var(--terminal-light-fg);
-    --term-muted: rgba(20, 25, 35, 0.55);
+    --term-muted: rgba(20, 25, 35, 0.64);
     --term-hover: rgba(20, 25, 35, 0.06);
     --term-active: rgba(20, 25, 35, 0.1);
     --term-ring: rgba(20, 25, 35, 0.08);
@@ -1446,7 +1465,7 @@ dialog.land-dialog .buttons .text-button {
 .ws-card:has(.ws-card-open:not(.inert):hover),
 .ws-card:has(.ws-card-open:focus-visible) {
     transform: scale(1.035);
-    box-shadow: var(--land-raised-shadow), var(--land-ring), 0 14px 28px -14px rgba(0, 0, 0, 0.45);
+    box-shadow: var(--land-ring), var(--land-lift), 0 14px 28px -14px rgba(0, 0, 0, 0.45);
     z-index: 1;
 }
 .ws-card-open {
@@ -1828,7 +1847,7 @@ dialog.land-dialog .buttons .text-button {
     max-width: calc(100vw - 320px);
 }
 .main-split.dock-bottom > #terminal-panel {
-    max-height: calc(100% - 120px);
+    max-height: calc(100% - 200px);
 }
 .main-split.dock-right > #terminal-panel {
     max-width: calc(100% - 280px);
@@ -1849,5 +1868,37 @@ dialog.land-dialog .buttons .text-button {
     .text-button.primary:hover,
     .land-logo-button:hover {
         transform: none;
+    }
+}
+
+/* A narrow window: the sidebar lies over the page instead of squeezing it to nothing. */
+@media (max-width: 720px) {
+    #land > aside {
+        position: fixed;
+        z-index: 30;
+        inset: var(--land-gap) auto var(--land-gap) var(--land-gap);
+        max-width: calc(100vw - 56px);
+        box-shadow: var(--land-glass), var(--land-shadow);
+    }
+    #sidebar-resizer {
+        display: none;
+    }
+}
+
+/* Windows high contrast and the like: shadows and tints are thrown away, so the things that are
+   only a shadow or a tint get a real outline. (Transparent ones are drawn in this mode.) */
+.island,
+.ws-card,
+.land-menu,
+dialog.land-dialog,
+.tab.active,
+#land li.current > .entry-row {
+    outline: 1px solid transparent;
+    outline-offset: -1px;
+}
+@media (forced-colors: active) {
+    .dot {
+        forced-color-adjust: none;
+        background-color: ButtonText;
     }
 }
