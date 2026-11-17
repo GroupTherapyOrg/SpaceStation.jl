@@ -24,7 +24,9 @@ import SpaceStation as Pluto
             helpers = lock(() -> copy(Pluto.FILE_HELPERS), Pluto.FILE_HELPERS_LOCK)
             @test all(h -> !process_exited(h.proc), helpers)
             # a helper is nobody's server but its hub's: it does not announce itself
-            @test readdir(Pluto.collab_registry_dir()) == [basename(Pluto.collab_registry_path(port))]
+            # (the hub's own kept sign-in is in that directory too; a connection file is a .json)
+            @test filter(endswith(".json"), readdir(Pluto.collab_registry_dir())) == [basename(Pluto.collab_registry_path(port))]
+            @test Pluto._read_kept_sign_in(Pluto.kept_sign_in_path(port)) == session.secret
             # nobody without its secret gets anything from it, and WITH the secret only the forwarded routes exist
             h1 = helpers[1]
             @test get("http://127.0.0.1:$(h1.port)/api/v1/browse?path=$(HTTP.escapeuri(ws))").status == 403

@@ -1291,6 +1291,18 @@ body.moving-tab #frames iframe {
     margin-top: 1px;
     color: var(--land-danger);
 }
+/* something that went well and needs no answer: above the errors, gone by itself */
+.land-toasts.passing {
+    bottom: auto;
+    top: 12px;
+    pointer-events: none;
+}
+.land-toast.notice {
+    padding-right: 13px;
+}
+.land-toast.notice > .ico {
+    color: var(--land-julia-green);
+}
 .land-toast p {
     flex: 1;
     min-width: 0;

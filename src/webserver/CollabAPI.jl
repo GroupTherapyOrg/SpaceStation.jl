@@ -1148,6 +1148,14 @@ function register_collab_api!(router, session::ServerSession)
     end
     HTTP.register!(router, "POST", "/api/v1/terminal/close", serve_api_terminal_close)
 
+    # A link that signs another browser in, once, within a few minutes (Authentication.jl). POST: it
+    # makes something, and only a page of this origin may ask.
+    function serve_api_sign_in_code(request::HTTP.Request)
+        HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8", "Cache-Control" => "no-store"],
+            _json(Pair["code" => new_sign_in_code(), "expires_in" => round(Int, SIGN_IN_CODE_LIFETIME[])]) * "\n")
+    end
+    HTTP.register!(router, "POST", "/api/v1/sign-in-code", serve_api_sign_in_code)
+
     # Which terminals exist (in this workspace: `?root=`). Answered by the process that owns them.
     function serve_api_terminals(request::HTTP.Request)
         query = HTTP.queryparams(HTTP.URI(request.target))

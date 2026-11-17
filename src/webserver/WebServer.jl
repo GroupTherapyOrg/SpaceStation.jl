@@ -348,6 +348,8 @@ function run!(session::ServerSession)
     # A hub decides here, once, that it never touches the user's files in its own process; its file
     # helpers come up in the background, and until one answers those requests get 504 (FileHelper.jl).
     session.options.server.hub && !helper && start_file_helpers!()
+    # before the secret is written anywhere or printed: a hub takes up the sign-in it had (Authentication.jl)
+    session.options.server.hub && !helper && keep_sign_in!(session, port)
     # The copy for older clients goes into the shared home: a hub with helpers has a helper write it.
     registry_file = helper ? "" : write_collab_registry_file(session, port; announce_legacy=!file_helpers_active())
     file_helpers_active() && announce_legacy_via_helper(registry_file)

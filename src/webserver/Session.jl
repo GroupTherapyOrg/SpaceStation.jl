@@ -1,4 +1,5 @@
 import UUIDs: UUID, uuid1
+import Random
 import .Configuration
 
 ###
@@ -52,7 +53,9 @@ Use the keyword constructor.
 Base.@kwdef mutable struct ServerSession
     connected_clients::Dict{Symbol,ClientSession} = Dict{Symbol,ClientSession}()
     notebooks::Dict{UUID,Notebook} = Dict{UUID,Notebook}()
-    secret::String = String(rand(('a':'z') ∪ ('A':'Z') ∪ ('0':'9'), 8))
+    # 24 of 62: beyond guessing. It was 8 (about 48 bits), which is little for a secret that opens a
+    # shell, and less for one that a hub now keeps across its restarts (`keep_sign_in!`).
+    secret::String = String(rand(Random.RandomDevice(), ('a':'z') ∪ ('A':'Z') ∪ ('0':'9'), 24))
     binder_token::Union{String,Nothing} = nothing
     options::Configuration.Options = Configuration.Options()
     
