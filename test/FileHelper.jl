@@ -52,6 +52,7 @@ import SpaceStation as Pluto
             @test too_late.status == 409 && read(joinpath(ws, "b.txt"), String) == "y = 3"   # nothing was written
             anyway = HTTP.post(b_url, [], "y = 5"; retry=false, status_exception=false, cookies=false)
             @test anyway.status == 200 && read(joinpath(ws, "b.txt"), String) == "y = 5"      # unconditional, as before
+            @test String(get("$base/api/v1/terminals").body) == "{\"terminals\":[]}\n"     # the hub's own, too
             # what a terminal is running is the hub's own answer (it owns the terminals), not a helper's
             running = get("$base/api/v1/terminal/running?tid=no-such-terminal")
             @test running.status == 200 && occursin("\"running\":null", String(running.body))

@@ -396,7 +396,39 @@ Sys.isunix() && @testset "What a terminal is running" begin
             @test timedwait(() -> Pluto.terminal_running("busy-test") == "sleep", 20) == :ok
             @test occursin("\"sleep\"", asked("busy-test"))
         end
+        # the server says which terminals exist, and in which workspace: a page asks, it does not remember
+        listed(q="") = String(HTTP.get("http://127.0.0.1:$port/api/v1/terminals$q"; retry=false).body)
+        home = Pluto.COLLAB_TERMINALS["busy-test"].cwd
+        @test occursin("\"tid\":\"busy-test\"", listed()) && occursin("\"tid\":\"busy-test\"", listed("?root=$(HTTP.escapeuri(home))"))
+        @test !occursin("busy-test", listed("?root=$(HTTP.escapeuri(joinpath(home, "elsewhere")))"))
+        @test Pluto.list_terminals(dirname(home)) == [["tid" => "busy-test", "cwd" => home]]       # started below it
+        # A terminal is its workspace's: one opened from a workspace on a folder inside this one (the
+        # same hub holds both) is in that one's list and not in this one's, although its folder is below.
+        inner = mkpath(joinpath(home, "inner"))
+        HTTP.WebSockets.open("ws://127.0.0.1:$port/terminal?tid=inner-test&rows=24&cols=80&cwd=$(HTTP.escapeuri(inner))&root=$(HTTP.escapeuri(inner))"; headers=["Origin" => "http://127.0.0.1:$port"]) do ws
+            @test timedwait(() -> haskey(Pluto.COLLAB_TERMINALS, "inner-test"), 20) == :ok
+        end
+        @test Pluto.list_terminals(inner) == [["tid" => "inner-test", "cwd" => Pluto.COLLAB_TERMINALS["inner-test"].cwd]]
+        @test Pluto.list_terminals(inner * "/") == Pluto.list_terminals(inner)
+        @test Pluto.list_terminals(home) == [["tid" => "busy-test", "cwd" => home]]
+        @test first.(Pluto.list_terminals()) == ["tid" => "busy-test", "tid" => "inner-test"]   # in the order opened
+        @test Pluto.close_terminal!("inner-test")
+        # A page coming back to a terminal that has gone is told so. It used to get a new shell under
+        # the old name: a terminal closed in one page came back in every other page that showed it.
+        said = String[]
+        HTTP.WebSockets.open("ws://127.0.0.1:$port/terminal?tid=inner-test&rows=24&cols=80&attach=1"; headers=["Origin" => "http://127.0.0.1:$port"]) do ws
+            for msg in ws
+                msg isa AbstractString && push!(said, msg)
+            end
+        end
+        @test said == ["{\"exited\":true}"]
+        @test !haskey(Pluto.COLLAB_TERMINALS, "inner-test")
+        # and one that is there is attached to as before
+        HTTP.WebSockets.open("ws://127.0.0.1:$port/terminal?tid=busy-test&rows=24&cols=80&attach=1"; headers=["Origin" => "http://127.0.0.1:$port"]) do ws
+            @test occursin("\"rows\"", HTTP.WebSockets.receive(ws))
+        end
         @test Pluto.close_terminal!("busy-test")
+        @test listed() == "{\"terminals\":[]}\n"
         @test Pluto.terminal_running("busy-test") === nothing
     finally
         close(server)

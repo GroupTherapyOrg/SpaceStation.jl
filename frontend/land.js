@@ -388,6 +388,42 @@ const restore_terminals = (workspace_root) => {
         return []
     }
 }
+/** Terminals this page has made whose shell does not exist yet: it starts when their first
+ *  connection asks for it. Every other connection is to a shell that should be there already, and
+ *  says so (`attach=1`), so that one closed elsewhere ends here too instead of starting again. */
+const unborn_terminals = /** @type {Set<String>} */ (new Set())
+
+/** The terminals that are alive in a workspace, from the server that owns them: `[{tid, cwd}]`, or
+ *  null when it cannot say (an older server without this route, or no answer in time). */
+const live_terminals = async (workspace_root) => {
+    try {
+        const r = await Promise.race([
+            fetch(`./api/v1/terminals?root=${encodeURIComponent(workspace_root)}`),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("no answer")), 2500)),
+        ])
+        if (!r.ok) return null
+        const list = (await r.json())?.terminals
+        return Array.isArray(list) ? list.filter((t) => t && typeof t.tid === "string") : null
+    } catch {
+        return null
+    }
+}
+/** This page's terminal tabs, brought in line with what is alive: the names and order it has for
+ *  the ones that still exist, plus any it did not know (opened in another browser, by another tab).
+ *  `fresh` are ones this page has just made and the server has not heard of yet. */
+const merge_terminals = (mine, live, workspace_root, fresh = new Set()) => {
+    if (live == null) return mine
+    const alive = new Set(live.map((t) => t.tid))
+    const kept = mine.filter((t) => alive.has(t.tid) || fresh.has(t.tid))
+    const have = new Set(kept.map((t) => t.tid))
+    let n = Math.max(0, ...kept.map((t) => parseInt(String(t.label ?? "").replace(/[^0-9]/g, ""), 10)).filter((x) => !isNaN(x)))
+    const found = live
+        .filter((t) => !have.has(t.tid))
+        .map((t) => (t.cwd && t.cwd !== workspace_root ? { tid: t.tid, label: basename(t.cwd) || t.cwd, cwd: t.cwd } : { tid: t.tid, label: `Terminal ${++n}` }))
+    const merged = [...kept, ...found]
+    return merged.length === mine.length && merged.every((t, i) => t.tid === mine[i].tid) ? mine : merged
+}
+
 const save_terminals = (workspace_root, terminals) => {
     if (typeof workspace_root !== "string" || workspace_root.length === 0) return
     let all = {}
@@ -1060,7 +1096,7 @@ const terminal_theme_for = (scheme) => {
           }
 }
 
-const TerminalView = ({ tid, cwd, visible, scheme, notebook_env, on_exit }) => {
+const TerminalView = ({ tid, cwd, root, visible, scheme, notebook_env, on_exit }) => {
     const node_ref = useRef(null)
     // "lost": the connection dropped and is being re-made; "failed": it could not be.
     const [link, set_link] = useState(/** @type {"ok" | "lost" | "failed"} */ ("ok"))
@@ -1344,7 +1380,10 @@ const TerminalView = ({ tid, cwd, visible, scheme, notebook_env, on_exit }) => {
                 // into the shell it spawns for this tid — only on spawn, so reattaching never repeats it.
                 const env_param = notebook_env ? `&notebook_env=${encodeURIComponent(notebook_env)}` : ""
                 // Relative to this page: under a hub's /w/<id>/ the terminal is the hub's, at that prefix.
-                const terminal_url = new URL(`./terminal?tid=${tid}${cwd_param}${size_param}${env_param}`, window.location.href)
+                // which workspace's terminal this is: the server lists a workspace's own to its pages
+                const root_param = root ? `&root=${encodeURIComponent(root)}` : ""
+                const attach_param = unborn_terminals.has(tid) ? "" : "&attach=1"
+                const terminal_url = new URL(`./terminal?tid=${tid}${cwd_param}${root_param}${size_param}${env_param}${attach_param}`, window.location.href)
                 terminal_url.protocol = `${proto}:`
                 const sock = new WebSocket(terminal_url.href)
                 socket = sock
@@ -1379,6 +1418,7 @@ const TerminalView = ({ tid, cwd, visible, scheme, notebook_env, on_exit }) => {
                     }
                     if (first_frame) {
                         first_frame = false
+                        unborn_terminals.delete(tid) // its shell exists now
                         // a re-made connection replays the scrollback: start from a clean screen, or
                         // everything already shown would be there twice
                         if (attempts > 0) term.reset()
@@ -1910,6 +1950,8 @@ const Land = () => {
     const [active_terminal, set_active_terminal] = useState(/** @type {String?} */ (null))
     const terminals_workspace = useRef(/** @type {String?} */ (null))
     const [terminals_loaded_for, set_terminals_loaded_for] = useState(/** @type {String?} */ (null))
+    const terminals_loaded_ref = useRef(/** @type {String?} */ (null))
+    terminals_loaded_ref.current = terminals_loaded_for
     const terminal_seq = useRef(/** @type {Number} */ (-1))
 
     // Terminal tabs belong to a workspace, not the browser origin. The old global localStorage
@@ -1918,17 +1960,51 @@ const Land = () => {
     useEffect(() => {
         const root = workspace?.root ?? null
         if (root == null || terminals_workspace.current === root) return
-        const restored = restore_terminals(root)
+        const remembered = restore_terminals(root)
         terminals_workspace.current = root
-        set_terminals(restored)
-        set_active_terminal(restored.length ? restored[restored.length - 1].tid : null)
-        const nums = restored.map((t) => parseInt(String(t.label ?? "").replace(/[^0-9]/g, ""), 10)).filter((x) => !isNaN(x))
-        terminal_seq.current = nums.length ? Math.max(...nums) : 0
-        // The state updates above land on the next render. Until then, `terminals` still belongs to
-        // the previous render/workspace and must neither be persisted nor treated as an empty list
-        // that needs a brand-new terminal.
-        set_terminals_loaded_for(root)
+        let superseded = false
+        ;(async () => {
+            // what is alive decides; what this browser remembers only names and orders them
+            const restored = merge_terminals(remembered, await live_terminals(root), root)
+            if (superseded || terminals_workspace.current !== root) return
+            set_terminals(restored)
+            set_active_terminal(restored.length ? restored[restored.length - 1].tid : null)
+            const nums = restored.map((t) => parseInt(String(t.label ?? "").replace(/[^0-9]/g, ""), 10)).filter((x) => !isNaN(x))
+            terminal_seq.current = nums.length ? Math.max(...nums) : 0
+            // Only now is the list this workspace's own: until then it must neither be saved nor
+            // taken for an empty one that needs a first terminal.
+            set_terminals_loaded_for(root)
+        })()
+        return () => {
+            superseded = true
+        }
     }, [workspace?.root])
+    // ones this page made a moment ago: their shell exists only once their socket has connected
+    const fresh_terminals = useRef(/** @type {Map<String, number>} */ (new Map()))
+    // and ones it closed a moment ago: a list read just before must not bring them back
+    const gone_terminals = useRef(/** @type {Map<String, number>} */ (new Map()))
+    const sync_terminals = useCallback(async (root) => {
+        const live = await live_terminals(root)
+        if (live == null || terminals_workspace.current !== root) return
+        const now = Date.now()
+        for (const [tid, made] of fresh_terminals.current) if (now - made > 30_000) fresh_terminals.current.delete(tid)
+        for (const [tid, closed] of gone_terminals.current) if (now - closed > 30_000) gone_terminals.current.delete(tid)
+        const still = live.filter((t) => !gone_terminals.current.has(t.tid))
+        set_terminals((mine) => {
+            const merged = merge_terminals(mine, still, root, new Set([...fresh_terminals.current.keys(), ...unborn_terminals]))
+            // the last one was closed somewhere else: the panel closes, as it does when it is closed
+            // here. Left open and empty it would start a new shell in its place.
+            if (mine.length > 0 && merged.length === 0) {
+                set_terminal_open(false)
+                set_active((a) => (a === "__terminal__" ? null : a))
+            }
+            return merged
+        })
+    }, [])
+    // the one in front is always one that exists
+    useEffect(() => {
+        if (terminals.length > 0 && !terminals.some((t) => t.tid === active_terminal)) set_active_terminal(terminals[terminals.length - 1].tid)
+    }, [terminals, active_terminal])
 
     useEffect(() => {
         store.set("spacestation sidebar width", String(sidebar_width))
@@ -1997,6 +2073,8 @@ const Land = () => {
             if (workspace?.root == null || terminals_workspace.current !== workspace.root) return
             terminal_seq.current += 1
             const tid = "term-" + Math.random().toString(36).slice(2, 12)
+            fresh_terminals.current.set(tid, Date.now())
+            unborn_terminals.add(tid)
             const entry = { tid, label: opts.label ?? `Terminal ${terminal_seq.current}` }
             if (opts.notebook_env) entry.notebook_env = opts.notebook_env
             if (opts.cwd) entry.cwd = opts.cwd
@@ -2012,6 +2090,9 @@ const Land = () => {
         // Reap the server-side shell (this is a real close, not a detach) — best-effort; the tab is
         // going away regardless. Persistent shells only survive detaches (hide / dock / reload).
         fetch(`./api/v1/terminal/close?tid=${encodeURIComponent(tid)}`, { method: "POST" }).catch(() => {})
+        fresh_terminals.current.delete(tid)
+        unborn_terminals.delete(tid)
+        gone_terminals.current.set(tid, Date.now())
         set_terminals((ts) => {
             const at = ts.findIndex((t) => t.tid === tid)
             const remaining = ts.filter((t) => t.tid !== tid)
@@ -2145,6 +2226,7 @@ const Land = () => {
             const running_now = await nb_response.json()
             set_workspace_status(null)
             set_running(running_now)
+            if (root_now != null && terminals_loaded_ref.current === root_now) void sync_terminals(root_now)
             // On first load: the tabs that were open here last time — files, and the notebooks among
             // them that are still running — with the same one in front. A workspace seen for the first
             // time shows its running notebooks as tabs (e.g. one passed via Pluto.run(notebook=…)).
@@ -2581,6 +2663,7 @@ const Land = () => {
                     <${TerminalView}
                         tid=${t.tid}
                         cwd=${t.cwd ?? workspace?.root}
+                        root=${workspace?.root}
                         visible=${shown && t.tid === active_terminal}
                         scheme=${terminal_scheme}
                         notebook_env=${t.notebook_env}
