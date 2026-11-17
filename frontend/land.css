@@ -1356,52 +1356,34 @@ dialog.land-dialog .buttons .text-button {
 /* ---- the launcher: one column, one scroll ---- */
 
 .workspace-opener {
-    position: relative;
     height: 100%;
     overflow-y: auto;
     box-sizing: border-box;
-    isolation: isolate;
 }
 .opener-page {
-    width: min(1080px, calc(100vw - 48px));
+    width: min(820px, calc(100vw - 32px));
     margin: 0 auto;
-    padding: 28px 0 72px;
+    padding: 56px 0 72px;
 }
 
-/* The launcher is a home screen: lit by the colour of the workspace in front, its name the title
-   of the page, the workspaces as tiles in a tray, and everything else kept small. */
-.workspace-opener::before {
-    content: "";
-    position: fixed;
-    inset: 0;
-    z-index: -1;
-    pointer-events: none;
-    background: radial-gradient(1000px 560px at 22% 4%, oklch(0.84 0.1 var(--h, 275) / 0.62), transparent 68%), radial-gradient(700px 420px at 92% 0%, oklch(0.86 0.08 calc(var(--h, 275) + 50) / 0.4), transparent 70%);
-}
-@media (prefers-color-scheme: dark) {
-    .workspace-opener::before {
-        background: radial-gradient(1000px 560px at 22% 4%, oklch(0.42 0.17 var(--h, 275) / 0.6), transparent 68%), radial-gradient(700px 420px at 92% 0%, oklch(0.4 0.14 calc(var(--h, 275) + 50) / 0.34), transparent 70%);
-    }
-}
 .opener-head {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 16px;
+    margin-bottom: 12px;
 }
 .opener-head .opener-logo {
-    width: 34px;
-    height: 34px;
+    width: 52px;
+    height: 52px;
 }
 .opener-head .opener-title {
     flex: 1;
     min-width: 0;
 }
-.opener-head .opener-title p {
-    margin: 0;
-}
-.opener-head .wordmark {
-    font-size: 17px;
-    line-height: 1.2;
+.opener-head h1 {
+    margin: 2px 0 0;
+    font-size: 34px;
+    line-height: 1.05;
 }
 .opener-head .opener-head-actions {
     display: flex;
@@ -1411,141 +1393,12 @@ dialog.land-dialog .buttons .text-button {
 /* a pill on the canvas: raised, like a tile */
 .opener-head .text-button {
     height: 32px;
-    background: var(--land-raised-sheen), var(--land-raised-bg);
+    background-color: var(--land-raised-bg);
     box-shadow: var(--land-raised-shadow);
 }
 .opener-head .text-button .ico {
     width: 15px;
     height: 15px;
-}
-.opener-hero {
-    margin: 64px 0 28px var(--land-pad);
-    min-height: 128px;
-}
-.opener-hero h1 {
-    margin: 8px 0 10px -2px;
-    font-size: clamp(34px, 5vw, 54px);
-    font-weight: 300;
-    line-height: 1.05;
-    letter-spacing: -0.025em;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-.opener-hero .hero-line {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    margin: 0;
-    color: var(--land-muted);
-}
-.opener-hero .hero-path {
-    font-family: var(--julia-mono-font-stack);
-    font-size: 12px;
-}
-/* a workspace's planet: a sphere of its own colour, lit like the three in the logo */
-.planet {
-    display: inline-block;
-    flex-shrink: 0;
-    width: 30px;
-    height: 30px;
-    border-radius: 50%;
-    background: radial-gradient(circle at 34% 28%, oklch(0.9 0.09 var(--h)), oklch(0.66 0.19 var(--h)) 52%, oklch(0.4 0.14 var(--h)) 100%);
-    box-shadow: 0 0 0 1px oklch(0.4 0.14 var(--h) / 0.5), 0 4px 14px -2px oklch(0.6 0.2 var(--h) / 0.55);
-}
-.ws-card .planet {
-    margin-bottom: 12px;
-}
-.recent-pills {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 8px;
-    margin: 14px 0 0 var(--land-pad);
-}
-.recent-pills > .section-label {
-    margin-right: 6px;
-}
-.recent-pill {
-    display: inline-flex;
-    align-items: center;
-    height: 34px;
-    border-radius: 999px;
-    background: var(--land-raised-sheen), var(--land-raised-bg);
-    box-shadow: var(--land-raised-shadow);
-    transition: transform 0.2s var(--land-ease), box-shadow 0.16s ease-out;
-}
-.recent-pill:hover,
-.recent-pill:focus-within {
-    transform: translateY(-1px);
-    box-shadow: var(--land-ring), var(--land-lift);
-}
-.recent-open {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    height: 100%;
-    padding: 0 4px 0 6px;
-    border: none;
-    border-radius: 999px;
-    background: none;
-}
-.recent-open .planet {
-    width: 20px;
-    height: 20px;
-}
-.recent-open .ws-name {
-    max-width: 180px;
-    font-weight: 600;
-}
-.recent-where {
-    max-width: 150px;
-    color: var(--land-muted);
-    font-family: var(--julia-mono-font-stack);
-    font-size: 11px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-.recent-forget {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 22px;
-    height: 22px;
-    margin-right: 6px;
-    padding: 0;
-    border: none;
-    border-radius: 50%;
-    background: none;
-    color: var(--land-muted);
-    opacity: 0;
-}
-.recent-forget .ico {
-    width: 12px;
-    height: 12px;
-}
-.recent-pill:hover .recent-forget,
-.recent-forget:focus-visible {
-    opacity: 1;
-}
-.recent-forget:hover {
-    background-color: var(--land-hover);
-    color: var(--land-fg);
-}
-.opener-columns {
-    display: grid;
-    grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
-    gap: 0 var(--land-gap);
-    align-items: start;
-}
-.opener-columns > :only-child {
-    grid-column: 1 / -1;
-}
-@media (max-width: 860px) {
-    .opener-columns {
-        grid-template-columns: minmax(0, 1fr);
-    }
 }
 
 .opener-section {
@@ -1579,7 +1432,7 @@ dialog.land-dialog .buttons .text-button {
    is a raised thing on it, as the open tab is in the workspace. Under the pointer or the keyboard a
    tile grows a little and takes the ring. */
 .tray {
-    --tile: calc((min(1080px, 100vw - 48px) - 2 * var(--land-pad) - 3 * var(--land-gap)) / 4);
+    --tile: calc((min(820px, 100vw - 32px) - 2 * var(--land-pad) - 3 * var(--land-gap)) / 4);
     display: flex;
     flex-wrap: wrap;
     gap: var(--land-gap);
@@ -1596,7 +1449,7 @@ dialog.land-dialog .buttons .text-button {
 }
 @media (max-width: 700px) {
     .tray {
-        --tile: calc((100vw - 48px - 2 * var(--land-pad) - var(--land-gap)) / 2);
+        --tile: calc((100vw - 32px - 2 * var(--land-pad) - var(--land-gap)) / 2);
     }
 }
 .ws-card {
@@ -1889,7 +1742,7 @@ dialog.land-dialog .buttons .text-button {
 }
 .dir-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
     padding: 6px;
     max-height: 300px;
     overflow-y: auto;
