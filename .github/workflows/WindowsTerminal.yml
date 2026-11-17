@@ -12,6 +12,12 @@ on:
       - 'src/webserver/CollabTerminal.jl'
       - 'test/conpty_windows.jl'
       - '.github/workflows/WindowsTerminal.yml'
+  pull_request:
+    paths:
+      - 'src/webserver/PTYWindows.jl'
+      - 'src/webserver/CollabTerminal.jl'
+      - 'test/conpty_windows.jl'
+      - '.github/workflows/WindowsTerminal.yml'
   workflow_dispatch:
 
 # A newer push to the same branch or pull request makes the run for the older one pointless, and
@@ -23,8 +29,14 @@ concurrency:
 
 jobs:
   conpty:
-    runs-on: windows-latest
+    # Both: the pseudo-console closes differently before Windows 11 24H2 / Server 2025 (it waits for
+    # the console host), and most machines in use are still the older kind.
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: julia-actions/setup-julia@v2

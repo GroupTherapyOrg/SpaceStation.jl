@@ -978,6 +978,10 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
     // Built by the server: splitting a path on "/" here turned a Windows one into a single bogus
     // crumb, and joining one back together means knowing about drives and backslashes.
     const crumbs = listing?.crumbs ?? []
+    // A path is drawn with the separator of the system it is on: `C: \ Users \ me`, `/ home / me`.
+    // (The root's own name carries one on Windows, `C:\`; drawn as it is, the row read `C:\ Users / me`.)
+    const crumb_sep = /^[A-Za-z]:|^\\\\/.test(crumbs[0]?.name ?? "") ? "\\" : "/"
+    const crumb_name = (c, i) => (i === 0 && crumb_sep === "\\" ? c.name.replace(/\\+$/, "") : c.name)
 
     // A link to something that is ready, opened in a new tab (which keeps its opener: the way home).
     const open_link = (url, title, body, classname = "ws-open") => html`<a class=${classname} href=${open_href(url)} target=${`spacestation-${url}`} title=${`Open ${title}`}>${body}</a>`
@@ -1111,10 +1115,26 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                                   <nav class="breadcrumbs" aria-label="Folder path">
                                       ${crumbs.map(
                                           (c, i) => html`<button class="crumb ${i === crumbs.length - 1 ? "current" : ""}" onClick=${() => browse(c.path)} title=${c.path}>
-                                                  ${c.name}</button
-                                              >${i > 0 && i < crumbs.length - 1 ? html`<span class="crumb-sep">/</span>` : null}`
+                                                  ${crumb_name(c, i)}</button
+                                              >${(i > 0 || crumb_sep === "\\") && i < crumbs.length - 1 ? html`<span class="crumb-sep">${crumb_sep}</span>` : null}`
                                       )}
                                   </nav>
+                                  ${
+                                      // Windows: the other drives. Nothing above `C:\` lists them, and a path on D: could only be typed.
+                                      (listing.drives ?? []).length > 1
+                                          ? html`<span class="drives" role="group" aria-label="Drives">
+                                                ${listing.drives.map(
+                                                    (d) => html`<button
+                                                        class="crumb drive ${crumbs[0]?.path?.toUpperCase() === d.toUpperCase() ? "current" : ""}"
+                                                        onClick=${() => browse(d)}
+                                                        title=${`Go to drive ${d}`}
+                                                    >
+                                                        ${d.replace(/[\\/]+$/, "")}
+                                                    </button>`
+                                                )}
+                                            </span>`
+                                          : null
+                                  }
                               </div>
                               <form
                                   class="paste-path"
@@ -2050,7 +2070,10 @@ const Land = () => {
         }
         let move = 0
         let jump = -1
-        if (e.ctrlKey && !e.metaKey && !e.altKey && e.key === "Tab") move = e.shiftKey ? -1 : 1
+        // Off macOS a browser keeps Ctrl+Tab and Ctrl+PageUp/PageDown for its own tabs: in an ordinary
+        // tab they never get here (they do in an installed-app window). Alt+[ and Alt+] are nobody's.
+        if (!mac && e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.code === "BracketLeft" || e.code === "BracketRight")) move = e.code === "BracketLeft" ? -1 : 1
+        else if (e.ctrlKey && !e.metaKey && !e.altKey && e.key === "Tab") move = e.shiftKey ? -1 : 1
         else if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && (e.key === "PageUp" || e.key === "PageDown")) move = e.key === "PageUp" ? -1 : 1
         else if (mac && e.metaKey && e.shiftKey && !e.altKey && !e.ctrlKey && (e.code === "BracketLeft" || e.code === "BracketRight")) move = e.code === "BracketLeft" ? -1 : 1
         else if (mac && e.metaKey && e.altKey && !e.shiftKey && !e.ctrlKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) move = e.key === "ArrowLeft" ? -1 : 1

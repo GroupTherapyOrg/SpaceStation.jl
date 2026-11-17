@@ -306,7 +306,10 @@ function _get_or_create_terminal(session::ServerSession, tid::String; requested_
         # repeats it, since only a freshly spawned shell gets here.
         if run !== nothing
             try
-                pty_write(t.pty, Vector{UInt8}(codeunits(run * "\n")))
+                # (Enter is a carriage return. A Unix tty turns a line feed into the same thing; the
+                # Windows console hands it on as Ctrl+Enter, which PowerShell's line editor takes as
+                # "open a line above": the command sat typed at the prompt and never ran.)
+                pty_write(t.pty, Vector{UInt8}(codeunits(run * (Sys.iswindows() ? "\r" : "\n"))))
             catch e
                 @warn "terminal: could not type the initial command" error = sprint(showerror, e) # no backtrace: see PinCode.jl
             end
@@ -407,7 +410,7 @@ end
 """
 What a terminal is running in the foreground right now: the name of the program (`julia`, `claude`,
 `vim`), or `nothing` when the shell is at its prompt, when there is no such terminal, or when it
-cannot be told (Windows). So that closing a terminal can ask first when that would stop something.
+cannot be told. So that closing a terminal can ask first when that would stop something.
 
 It asks the terminal itself which process group has it (`tcgetpgrp`), as terminal programs do: the
 shell's own group means "at the prompt". Counting the shell's children instead would take a prompt
@@ -417,7 +420,15 @@ function terminal_running(tid::AbstractString)::Union{Nothing,String}
     t = lock(COLLAB_TERMINALS_LOCK) do
         get(COLLAB_TERMINALS, String(tid), nothing)
     end
-    (t === nothing || !Sys.isunix()) && return nothing
+    t === nothing && return nothing
+    @static if Sys.iswindows()
+        return try
+            pty_running_child(t.pty)
+        catch
+            nothing
+        end
+    end
+    Sys.isunix() || return nothing
     try
         shell = Int(t.pty.child_pid)
         shell > 0 || return nothing

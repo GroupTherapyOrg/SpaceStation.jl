@@ -304,6 +304,42 @@ function pty_alive(pty::PTY)
     true
 end
 
+# ── What the shell is running ──
+
+"""
+The program the shell has started and that is still running (`ping`, `julia`, `claude`), or `nothing`
+when it sits at its prompt or it cannot be told. So that closing a terminal can ask first when that
+would stop something, as it does on the other systems. Windows has no foreground process group to ask
+for; the shell's own children are what it is waiting on (PowerShell and cmd keep none at the prompt).
+"""
+function pty_running_child(pty::PTY)::Union{Nothing,String}
+    (Sys.WORD_SIZE == 64 && pty.alive && pty.child_pid > 0) || return nothing
+    shell = UInt32(pty.child_pid)
+    snap = ccall((:CreateToolhelp32Snapshot, "kernel32"), Ptr{Cvoid}, (UInt32, UInt32), UInt32(0x00000002), UInt32(0)) # TH32CS_SNAPPROCESS
+    (snap == C_NULL || snap == Ptr{Cvoid}(typemax(UInt))) && return nothing
+    try
+        # PROCESSENTRY32W on 64-bit Windows: 568 bytes, the parent's id at byte 32, the file name
+        # (260 UTF-16 units) at byte 44. Its first field must hold the size.
+        entry = zeros(UInt8, 568)
+        GC.@preserve entry unsafe_store!(Ptr{UInt32}(pointer(entry)), UInt32(length(entry)))
+        ok = ccall((:Process32FirstW, "kernel32"), Cint, (Ptr{Cvoid}, Ptr{UInt8}), snap, entry)
+        while ok != 0
+            parent = GC.@preserve entry unsafe_load(Ptr{UInt32}(pointer(entry) + 32))
+            if parent == shell
+                units = collect(reinterpret(UInt16, entry[45:564]))
+                stop = something(findfirst(==(0x0000), units), length(units) + 1)
+                name = lowercase(transcode(String, units[1:stop-1]))
+                endswith(name, ".exe") && (name = name[1:end-4])
+                name == "conhost" || return isempty(name) ? "a program" : name
+            end
+            ok = ccall((:Process32NextW, "kernel32"), Cint, (Ptr{Cvoid}, Ptr{UInt8}), snap, entry)
+        end
+    finally
+        _close_handle(snap)
+    end
+    nothing
+end
+
 # ── Close ──
 
 function pty_close!(pty::PTY)
@@ -325,15 +361,21 @@ function pty_close!(pty::PTY)
     pty.hprocess = C_NULL
     pty.hthread = C_NULL
     pty.alive = false
-    # Closing the pseudo-console terminates the child and EOFs the output pipe, which stops
-    # the reader's PeekNamedPipe loop. Close the channel first so a blocked put! unwinds too.
-    ccall((:ClosePseudoConsole, "kernel32"), Cvoid, (Ptr{Cvoid},), hpc)
+    # The reader stops first (`alive` is false, and its channel is closed so a `put!` it is blocked
+    # in unwinds), and the read end of the output pipe is closed BEFORE the pseudo-console is.
+    # Before Windows 11 24H2 `ClosePseudoConsole` does not return until the console host has
+    # written its last frame, and it writes into that pipe: with a program still printing the pipe
+    # is full, nobody reads it any more, and the call never returned. It ran on the serving thread,
+    # so that was the whole hub, for ever, from closing one terminal tab. With no reader left on the
+    # pipe the host's write fails at once instead of waiting. The call also runs on another thread
+    # (`@threadcall`): however long Windows takes over it, the server goes on answering.
     try close(pty.output) catch end
     if !istaskdone(pty.reader_task)
-        try wait(pty.reader_task) catch end
+        try timedwait(() -> istaskdone(pty.reader_task), 2.0; pollint=0.005) catch end
     end
-    _close_handle(input_write)
     _close_handle(output_read)
+    @threadcall((:ClosePseudoConsole, "kernel32"), Cvoid, (Ptr{Cvoid},), hpc)
+    _close_handle(input_write)
     if hprocess != C_NULL
         ccall((:TerminateProcess, "kernel32"), Cint, (Ptr{Cvoid}, UInt32), hprocess, UInt32(1))
         ccall((:WaitForSingleObject, "kernel32"), UInt32, (Ptr{Cvoid}, UInt32), hprocess, UInt32(2000))

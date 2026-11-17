@@ -150,19 +150,32 @@ await step("launcher: fonts drawn", false, async () => (report.seen.launcher_fon
 await step("launcher: scrollbars", false, async () => (report.seen.launcher_scroll = await scroll_report()))
 await shot("1-launcher")
 
-await step("folder browser: where it starts", false, async () => {
-    const crumbs = await page.evaluate(() => document.querySelector("input[name=path]")?.closest("form")?.previousElementSibling?.innerText.replace(/\s+/g, " "))
-    return (report.seen.home_crumbs = crumbs)
+await step("folder browser: the first listing arrives", true, async () => {
+    // (the first one starts the process that reads folders for the hub: as long as a Julia start)
+    const t0 = Date.now()
+    await page.waitForSelector("input[name=path]", { timeout: 180000 })
+    report.seen.first_listing_ms = Date.now() - t0 + 3000
+    report.seen.home_crumbs = await page.evaluate(() => document.querySelector("nav.breadcrumbs")?.innerText.replace(/\s+/g, " "))
+    return { ms: report.seen.first_listing_ms, crumbs: report.seen.home_crumbs }
 })
+await shot("1b-launcher-listed")
 await step("folder browser: a typed path, as the system writes it", true, async () => {
     await page.click("input[name=path]")
-    await page.keyboard.type(workspace)
+    // in quotes, as a file manager's "Copy as path" gives it; on Windows in small letters too: the same folder
+    await page.keyboard.type(`"${process.platform === "win32" ? workspace.toLowerCase() : workspace}"`)
     await page.keyboard.press("Enter")
     const name = path.basename(workspace)
     const label = await until(() => page.evaluate((name) => [...document.querySelectorAll("button")].map((b) => b.textContent.replace(/\s+/g, " ").trim()).find((t) => t.startsWith("Open") && t.includes(name)), name), { what: `an Open button for ${name}` })
     const listed = await page.evaluate(() => [...document.querySelectorAll("input[name=path]")].map((i) => i.closest("form")?.nextElementSibling?.innerText.replace(/\s+/g, " ").slice(0, 200)))
-    report.seen.browser_crumbs = await page.evaluate(() => document.querySelector("input[name=path]")?.closest("form")?.previousElementSibling?.innerText.replace(/\s+/g, " "))
-    return { label, listed, crumbs: report.seen.browser_crumbs }
+    report.seen.browser_crumbs = await page.evaluate(() => document.querySelector("nav.breadcrumbs")?.innerText.replace(/\s+/g, " "))
+    report.seen.drives = await page.evaluate(() => [...document.querySelectorAll(".drives .crumb")].map((b) => b.textContent.trim()))
+    const sep = process.platform === "win32" ? "\\" : "/"
+    expect(report.seen.browser_crumbs.endsWith(`${sep} ${name}`), `the path's row reads ${JSON.stringify(report.seen.browser_crumbs)}`)
+    if (process.platform === "win32") {
+        expect(/^[A-Z]: \\ /.test(report.seen.browser_crumbs) && !report.seen.browser_crumbs.includes("/"), `the path's row reads ${JSON.stringify(report.seen.browser_crumbs)}`)
+        expect(report.seen.drives.length === 0 || report.seen.drives.every((d) => /^[A-Z]:$/.test(d)), `drives shown as ${JSON.stringify(report.seen.drives)}`)
+    }
+    return { label, listed, crumbs: report.seen.browser_crumbs, drives: report.seen.drives }
 })
 await shot("2-folder-browser")
 
@@ -285,8 +298,8 @@ await step("tree: a new file in a folder, with a space in its name", true, async
     await pick("New file")
     const a = await answer("Made Here.txt")
     expect(!a.refused, `refused: ${a.complaint}`)
-    await until(async () => fs.existsSync(path.join(workspace, "cluster", "Made Here.txt")), { timeout: 8000, what: "the file on disk" })
-    await until(async () => (await entries_shown()).includes("Made Here.txt"), { timeout: 8000, what: "the file in the tree" })
+    await until(async () => fs.existsSync(path.join(workspace, "cluster", "Made Here.txt")), { timeout: 25000, what: "the file on disk" })
+    await until(async () => (await entries_shown()).includes("Made Here.txt"), { timeout: 25000, what: "the file in the tree" })
     return { tabs: await page.evaluate(() => [...document.querySelectorAll(".tab")].map((t) => t.innerText.replace(/\s+/g, " ").trim())) }
 })
 await step("tree: a new folder", true, async () => {
@@ -294,33 +307,42 @@ await step("tree: a new folder", true, async () => {
     await pick("New folder")
     const a = await answer("sub dir")
     expect(!a.refused, `refused: ${a.complaint}`)
-    await until(async () => fs.existsSync(path.join(workspace, "cluster", "sub dir")), { timeout: 8000, what: "the folder on disk" })
-    await until(async () => (await entries_shown()).includes("sub dir"), { timeout: 8000, what: "the folder in the tree" })
+    await until(async () => fs.existsSync(path.join(workspace, "cluster", "sub dir")), { timeout: 25000, what: "the folder on disk" })
+    await until(async () => (await entries_shown()).includes("sub dir"), { timeout: 25000, what: "the folder in the tree" })
 })
 await step("tree: F2 renames", true, async () => {
     await page.evaluate(() => [...document.querySelectorAll("#land button.entry")].find((b) => b.innerText.trim() === "fatou.jl").focus())
     await page.keyboard.press("F2")
     const a = await answer("renamed") // the name is selected up to its extension
     expect(!a.refused, `refused: ${a.complaint}`)
-    await until(async () => fs.existsSync(path.join(workspace, "renamed.jl")) && !fs.existsSync(path.join(workspace, "fatou.jl")), { timeout: 8000, what: "renamed.jl on disk" })
-    await until(async () => (await entries_shown()).includes("renamed.jl"), { timeout: 8000, what: "renamed.jl in the tree" })
+    await until(async () => fs.existsSync(path.join(workspace, "renamed.jl")) && !fs.existsSync(path.join(workspace, "fatou.jl")), { timeout: 25000, what: "renamed.jl on disk" })
+    await until(async () => (await entries_shown()).includes("renamed.jl"), { timeout: 25000, what: "renamed.jl in the tree" })
 })
 await step("tree: a file that is open in a tab can be renamed and its tab follows", true, async () => {
     await right_click("Made Here.txt")
     await pick("Rename")
     const a = await answer("Moved")
     expect(!a.refused, `refused: ${a.complaint}`)
-    await until(async () => fs.existsSync(path.join(workspace, "cluster", "Moved.txt")), { timeout: 8000, what: "Moved.txt on disk" })
-    const tabs = await until(async () => { const t = await page.evaluate(() => [...document.querySelectorAll(".tab")].map((t) => t.innerText.replace(/\s+/g, " ").trim())); return t.some((x) => x.includes("Moved.txt")) ? t : null }, { timeout: 8000, what: "the tab's new name" })
+    await until(async () => fs.existsSync(path.join(workspace, "cluster", "Moved.txt")), { timeout: 25000, what: "Moved.txt on disk" })
+    const tabs = await until(async () => { const t = await page.evaluate(() => [...document.querySelectorAll(".tab")].map((t) => t.innerText.replace(/\s+/g, " ").trim())); return t.some((x) => x.includes("Moved.txt")) ? t : null }, { timeout: 25000, what: "the tab's new name" })
     return tabs
 })
-await step("tree: a name this system does not allow is refused in words", false, async () => {
-    await right_click("cluster")
-    await pick("New file")
-    const a = await answer(process.platform === "win32" ? "con.txt" : "a/b.txt")
-    await wait(800)
-    const said = { ...a, toasts: await toasts(), on_disk: fs.readdirSync(path.join(workspace, "cluster")) }
-    report.seen.bad_name = said
+await step("tree: a name this system does not allow is refused in words", true, async () => {
+    const tries = process.platform === "win32" ? ["con.txt", "notes 10:30.md", "a/b.txt"] : ["a/b.txt"]
+    const said = []
+    for (const name of tries) {
+        await right_click("cluster")
+        await pick("New file")
+        const a = await answer(name)
+        await wait(1000)
+        const t = await toasts()
+        said.push({ name, ...a, toasts: t })
+        expect(a.refused || t.some((x) => /Windows|device|not a path|could not/i.test(x)), `"${name}" was taken without a word`)
+        await page.evaluate(() => document.querySelectorAll(".land-toast button").forEach((b) => b.click()))
+    }
+    const on_disk = fs.readdirSync(path.join(workspace, "cluster"))
+    expect(JSON.stringify(on_disk.sort()) === JSON.stringify(["Moved.txt", "sub dir"]), `the folder now holds ${JSON.stringify(on_disk)}`)
+    report.seen.bad_names = said
     return said
 })
 await step("tree: delete asks, then removes", true, async () => {
@@ -329,8 +351,8 @@ await step("tree: delete asks, then removes", true, async () => {
     await page.waitForSelector("dialog.land-dialog .buttons", { timeout: 5000 })
     report.seen.delete_dialog = await page.evaluate(() => document.querySelector("dialog.land-dialog").innerText.replace(/\s+/g, " "))
     await page.evaluate(() => [...document.querySelectorAll("dialog.land-dialog .buttons button")].pop().click())
-    await until(async () => !fs.existsSync(path.join(workspace, "cluster", "Moved.txt")), { timeout: 8000, what: "the file gone from disk" })
-    await until(async () => !(await entries_shown()).includes("Moved.txt"), { timeout: 8000, what: "the file gone from the tree" })
+    await until(async () => !fs.existsSync(path.join(workspace, "cluster", "Moved.txt")), { timeout: 25000, what: "the file gone from disk" })
+    await until(async () => !(await entries_shown()).includes("Moved.txt"), { timeout: 25000, what: "the file gone from the tree" })
     return report.seen.delete_dialog
 })
 await step("tab menu: Copy path", true, async () => {
@@ -405,7 +427,7 @@ await step("terminal: paste by this system's key", !["darwin"].includes(process.
     await chord(process.platform === "darwin" ? ["Meta", "v"] : win ? ["Control", "v"] : ["Control", "Shift", "V"])
     await wait(800)
     await page.keyboard.press("Enter")
-    return (await saw("pasted-by-key-ok", 2, 10000)).slice(-4)
+    return (await saw("pasted-by-key-ok", 2, 25000)).slice(-4)
 })
 await step("terminal: the menu's Paste", true, async () => {
     await clip_write("echo pasted-by-menu-ok")
@@ -417,7 +439,7 @@ await step("terminal: the menu's Paste", true, async () => {
     await wait(800)
     await focus_terminal()
     await page.keyboard.press("Enter")
-    return { menu: report.seen.terminal_menu, rows: (await saw("pasted-by-menu-ok", 2, 10000)).slice(-3) }
+    return { menu: report.seen.terminal_menu, rows: (await saw("pasted-by-menu-ok", 2, 25000)).slice(-3) }
 })
 await step("terminal: select all, then the copy key, puts the text on the clipboard and interrupts nothing", true, async () => {
     await clip_write("nothing yet")
@@ -442,16 +464,27 @@ await step("terminal: Ctrl+C with nothing selected stops what is running", true,
     await wait(1500)
     await page.keyboard.type("echo after-interrupt-ok")
     await page.keyboard.press("Enter")
-    return (await saw("after-interrupt-ok", 2, 8000)).slice(-4)
+    return (await saw("after-interrupt-ok", 2, 25000)).slice(-4)
 })
-await step("terminal: a second one, and closing it", true, async () => {
+await step("terminal: a second one; closing it while a program runs asks first, then closes", true, async () => {
     await page.evaluate(() => document.querySelector("button.new-terminal-tab").click())
     await until(() => page.evaluate(() => document.querySelectorAll(".terminal-tab").length === 2), { timeout: 20000, what: "two terminal tabs" })
-    await wait(2500)
+    await wait(3500)
+    await focus_terminal()
+    await page.keyboard.type(win ? "ping -n 120 127.0.0.1" : "sleep 120")
+    await page.keyboard.press("Enter")
+    await wait(3000)
     await page.evaluate(() => [...document.querySelectorAll(".terminal-tab")].pop().querySelector(".close").click())
-    await wait(800)
-    if (await page.evaluate(() => document.querySelector("dialog.land-dialog") != null)) await page.evaluate(() => [...document.querySelectorAll("dialog.land-dialog .buttons button")].pop().click())
-    await until(() => page.evaluate(() => document.querySelectorAll(".terminal-tab").length === 1), { timeout: 10000, what: "one terminal tab again" })
+    await page.waitForSelector("dialog.land-dialog", { timeout: 8000 })
+    report.seen.close_running = await page.evaluate(() => document.querySelector("dialog.land-dialog").innerText.replace(/\s+/g, " "))
+    expect(new RegExp(win ? "ping" : "sleep", "i").test(report.seen.close_running), `it asked: ${JSON.stringify(report.seen.close_running)}`)
+    const t0 = Date.now()
+    await page.evaluate(() => [...document.querySelectorAll("dialog.land-dialog .buttons button")].pop().click())
+    await until(() => page.evaluate(() => document.querySelectorAll(".terminal-tab").length === 1), { timeout: 15000, what: "one terminal tab again" })
+    // and the server still answers: closing a terminal that is printing must not hold it up
+    const ping = await page.evaluate(() => fetch("./api/v1/terminals").then((r) => r.status))
+    expect(ping === 200, `the server answered ${ping} after the close`)
+    return { asked: report.seen.close_running, closed_ms: Date.now() - t0 }
 })
 await step("keys: Ctrl+` hides and shows the terminal", true, async () => {
     const shown = () => page.evaluate(() => { const p = document.querySelector("#terminal-panel"); return p != null && p.offsetParent != null && p.getBoundingClientRect().height > 40 })
@@ -463,6 +496,19 @@ await step("keys: Ctrl+` hides and shows the terminal", true, async () => {
     await chord(["Control", "Backquote"])
     await wait(900)
     expect(hidden && (await shown()), `hidden after one press: ${hidden}; showing after two: ${await shown()}`)
+})
+await step("keys: the next and the previous tab", process.platform !== "darwin", async () => {
+    const active = () => page.evaluate(() => document.querySelector(".tab.active:not(.terminal-tab)")?.innerText.replace(/\s+/g, " ").trim())
+    await page.evaluate(() => document.querySelector("#land button.entry").focus())
+    const a = await active()
+    await chord(process.platform === "darwin" ? ["Meta", "Shift", "BracketRight"] : ["Alt", "BracketRight"])
+    await wait(500)
+    const b = await active()
+    await chord(process.platform === "darwin" ? ["Meta", "Shift", "BracketLeft"] : ["Alt", "BracketLeft"])
+    await wait(500)
+    const c = await active()
+    expect(a != null && b != null && a !== b && c === a, `tabs in front: ${JSON.stringify([a, b, c])}`)
+    return [a, b, c]
 })
 await step("keys: the hints shown are this system's", true, async () => {
     const hints = await page.evaluate(() => [...document.querySelectorAll("[title], [aria-keyshortcuts], kbd")].map((e) => `${e.getAttribute("title") ?? ""} ${e.tagName === "KBD" ? e.textContent : ""}`).filter((t) => /[⌘⌥⇧⌃]|Ctrl|Cmd/.test(t)))
