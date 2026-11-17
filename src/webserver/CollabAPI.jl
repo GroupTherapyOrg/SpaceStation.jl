@@ -684,12 +684,18 @@ function register_collab_api!(router, session::ServerSession)
         query = HTTP.queryparams(HTTP.URI(request.target))
         notebook = _api_notebook_from_query(session, query)
         notebook === nothing && return _api_error(404, "notebook not found — is it open in this server? (pass ?path=/abs/path.jl or ?id=<uuid>)", false)
-        command = notebook_env_command(notebook)
-        env_dir = command === nothing ? nothing : PkgCompat.env_dir(notebook.nbpkg_ctx)
+        env_dir = notebook_env_dir(notebook; session)
+        command = env_dir === nothing ? nothing : notebook_env_command(notebook; session)
+        running = try
+            WorkspaceManager.get_workspace((session, notebook); allow_creation=false) !== nothing
+        catch
+            false
+        end
         body = _json(Pair[
-            "managed" => command !== nothing,
+            "managed" => notebook.nbpkg_ctx !== nothing && command !== nothing, # Pluto keeps it; else the notebook activated a project itself
             "env_dir" => env_dir,
             "command" => command,
+            "running" => running,
         ])
         HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], body * "\n")
     end

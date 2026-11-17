@@ -3174,8 +3174,11 @@ const Land = () => {
                 {
                     label: tab == null ? "Open notebook environment in terminal" : `Open the environment of ${basename(tab.path)} in a terminal`,
                     icon: "i-terminal",
-                    // no Pluto-managed environment: it has not run yet, or it activates its own with Pkg.activate
-                    disabled: env?.managed !== true,
+                    // Greyed out only when the server SAYS there is no environment to open, and then with the
+                    // reason beside it. (No answer in time, as over a slow link to another machine, is not a no:
+                    // the server works the command out again when the terminal starts.)
+                    disabled: env != null && env.command == null,
+                    keys: env != null && env.command == null ? (env.running === false ? "run the notebook first" : "its process is busy") : undefined,
                     run: () => tab && new_terminal({ label: `env: ${basename(tab.path)}`, notebook_env: tab.id }),
                 },
                 "-",
