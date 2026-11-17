@@ -5,201 +5,250 @@
 &nbsp;SpaceStation.jl
 </h1>
 
-### A workspace for Pluto notebooks — for humans and agents.
+### A workspace for Pluto notebooks, for people and coding agents.
 
 [Pluto.jl](https://github.com/fonsp/Pluto.jl) gives you a reactive notebook.
-**SpaceStation gives you the *space* around it:** a folder workspace, tabbed notebooks and files,
-a real terminal, point-and-click SSH remotes, outputs that survive restarts, and first-class
-**human + agent collaboration** on one live session — all on the unmodified Pluto editor.
+**SpaceStation gives you the space around it:** folders as workspaces, notebooks and files in tabs,
+a real terminal, workspaces on other machines over SSH, outputs that survive restarts, and a live
+session that a coding agent can share with you. The notebook editor is Pluto's, unmodified.
 
 <br>
 
-<img src="assets/screenshots/hero-slider-dark.png" width="920" alt="SpaceStation: a PlutoUI slider driving a live WasmMakie plot (sin at the slider's frequency) rendered to a browser canvas, with the workspace file tree and table of contents">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/hero-dark.webp">
+  <img src="assets/screenshots/hero-light.webp" width="920" alt="A SpaceStation workspace: the file tree on the left, a notebook with a slider and a plot open in a tab beside two other tabs, and a terminal docked below">
+</picture>
 
 </div>
 
-## Install & run
+## Get started
 
-SpaceStation installs as a **Julia [Pkg App](https://pkgdocs.julialang.org/dev/apps/)** — one command
-puts a real `spacestation` executable on your `PATH`, so it launches like any CLI tool (no
-`julia -e …`, no manual `import`):
+You need [Julia](https://julialang.org/install/) 1.12 or newer.
 
-```julia
-julia> import Pkg; Pkg.Apps.add(url="https://github.com/GroupTherapyOrg/SpaceStation.jl")
-```
+**1. Install it** (once):
 
 ```sh
-$ spacestation               # workspace picker
-$ spacestation ~/project     # open a folder as a workspace
-$ spacestation notebook.jl   # open a single notebook
-$ spacestation --help
+julia -e 'import Pkg; Pkg.Apps.add("SpaceStation")'
 ```
 
-Prefer it as a library? `import SpaceStation; SpaceStation.run()` works too (every `Pluto.run` keyword
-applies). Lazy/collab mode is the default; add `--autorun` for classic Pluto reactivity.
+This puts two commands in `~/.julia/bin`: `spacestation` and `pluto-collab`. If that folder is not
+on your `PATH`, Julia says so and names the folder to add.
 
-> Want to try everything below hands-on? There's a ready-made demo workspace with a guided
-> shot list: **[spacestation-demo](https://github.com/GroupTherapyOrg/spacestation-demo)**.
+**2. Run it:**
+
+```sh
+spacestation
+```
+
+Your browser opens the launcher. Pick a folder and it opens as a workspace in a new tab. (If the
+tab does not appear, allow pop-ups for `localhost`.)
+
+**3. Update it** whenever you like:
+
+```sh
+julia -e 'import Pkg; Pkg.Apps.update("SpaceStation")'
+```
+
+| Command | What it does |
+|---|---|
+| `spacestation` | Open the launcher |
+| `spacestation ~/project` | Open that folder as a workspace |
+| `spacestation notebook.jl` | Open a single notebook |
+| `spacestation --port 4000` | Use a port other than 1234 |
+| `spacestation --no-browser` | Print the address instead of opening a browser |
+| `spacestation --autorun` | Classic Pluto reactivity instead of [lazy mode](#you-and-an-agent-on-one-live-notebook) |
+| `spacestation --help` | Everything else |
+
+<details>
+<summary>Other ways to install and run</summary>
+
+<br>
+
+- **From the Julia REPL, or on Julia 1.10 and 1.11** (which have no apps): `import Pkg; Pkg.add("SpaceStation")`, then
+  `import SpaceStation; SpaceStation.run()`. Every `Pluto.run` keyword works.
+- **The development version:** `Pkg.Apps.add(url="https://github.com/GroupTherapyOrg/SpaceStation.jl")`.
+- **Remove it:** `Pkg.Apps.rm("SpaceStation")`.
+
+</details>
+
+> To try everything below on a ready-made folder, open the
+> **[spacestation-demo](https://github.com/GroupTherapyOrg/spacestation-demo)** workspace.
 
 ---
 
-# What SpaceStation adds to Pluto
+## What you get
 
-Everything in this section is something **vanilla Pluto doesn't have.** The notebook engine,
-editor, reactivity, `@bind`, packages, and the `.jl` file format are all Pluto's — and notebooks
-stay **byte-for-byte compatible in both directions.** SpaceStation only adds the space around them.
+Everything here is something plain Pluto does not have. The notebook engine, the editor, reactivity,
+`@bind`, package management and the `.jl` file format are all Pluto's, and notebooks stay
+compatible in both directions.
 
 | | |
 |---|---|
-| 📁 [Open a folder as a workspace](#-open-a-folder-as-a-workspace) | 🪟 [Notebooks & files are tabs](#-notebooks-and-files-are-tabs) |
-| 💻 [A real, persistent terminal](#-a-real-persistent-terminal) | 🌐 [SSH remote workspaces](#-ssh-remote-workspaces) |
-| 🤝 [Lazy mode — humans + agents, one session](#-lazy-mode-humans-and-agents-on-one-live-session) | 💾 [Two files; outputs survive restarts](#-two-files-and-outputs-that-survive-restarts) |
+| [One launcher for every workspace](#one-launcher-for-every-workspace) | [A folder is a workspace](#a-folder-is-a-workspace) |
+| [A real terminal](#a-real-terminal) | [Workspaces on other machines](#workspaces-on-other-machines) |
+| [You and an agent on one live notebook](#you-and-an-agent-on-one-live-notebook) | [Outputs that survive restarts](#outputs-that-survive-restarts) |
 
----
+### One launcher for every workspace
 
-## 📁 Open a folder as a workspace
-
-SpaceStation starts where an IDE does: a **VS Code-style "Open Folder"** hub with recent
-workspaces, a filesystem browser, and (if you have SSH hosts) one-click remotes. Pick a folder
-and its file tree becomes your sidebar — notebooks and files open as tabs beside it.
-
-<div align="center">
-<img src="assets/screenshots/opener-light.png" width="720" alt="The SpaceStation workspace opener (light theme): a folder browser to open any directory as a workspace, plus a list of SSH remote hosts below">
-</div>
-
----
-
-## 🪟 Notebooks and files are tabs
-
-Notebooks open as tabs — each one the **unmodified Pluto editor** in its own session. Plain
-files open in tabs too, edited with the same CodeMirror — including the per-notebook
-`*.pluto-cache.toml` sidecar, which is just readable TOML. Add and delete files right from the tree.
+The launcher is the page you start from and come back to. It shows the workspaces that are
+running, lets you browse to a folder or paste a path, and lists the hosts in your `~/.ssh/config`.
+Each workspace opens in its own browser tab, and the launcher stays where it is, so you can have
+several open at once: on this computer and on others.
 
 <div align="center">
-<img src="assets/screenshots/plots-line-dark.png" width="900" alt="A notebook open as a tab in SpaceStation, with the file-tree sidebar, a WasmMakie plot rendered inline, and a table of contents">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/launcher-dark.webp">
+  <img src="assets/screenshots/launcher-light.webp" width="640" alt="The launcher: two running workspaces, one on this computer and one on a remote host, a folder browser, and the list of remote hosts with one connected">
+</picture>
 </div>
 
----
+### A folder is a workspace
 
-## 💻 A real, persistent terminal
+The folder's files are the sidebar. Notebooks open as tabs, each one the Pluto editor. Other files
+open as tabs too, in a plain editor: Julia scripts, Markdown, CSV, TOML. From the tree you can add
+files and folders, rename, delete and copy paths.
 
-An integrated **PTY shell** runs in the workspace folder. Dock it bottom, right, or as an editor
-tab; and — unlike a browser terminal — it's a **persistent session**: refresh the page and the
-shell keeps running, replaying its scrollback on reconnect (tmux semantics, no tmux). It also
-exports `SPACESTATION_PORT`/`SPACESTATION_SECRET` and puts `pluto-collab` on `PATH`, so a coding agent
-launched here just works.
+Closing a tab does not stop a notebook. It stays in the **Running** list until you stop it there.
 
 <div align="center">
-<img src="assets/screenshots/terminal-dark.png" width="900" alt="The integrated terminal docked at the bottom of the editor, showing the SpaceStation live-session banner and a shell prompt in the workspace directory">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/files-dark.webp">
+  <img src="assets/screenshots/files-light.webp" width="900" alt="A Julia script open in an editor tab beside a notebook, a CSV file and a Markdown file, with the file tree's menu open: Open, Rename, Copy path, Copy relative path, Delete">
+</picture>
 </div>
 
----
+### A real terminal
 
-## 🌐 SSH remote workspaces
+A shell on the machine the workspace runs on: your login shell on macOS and Linux, PowerShell on
+Windows. Open as many as you need, and put them at the bottom, at the right, or in a tab.
 
-Click a host from your `~/.ssh/config` and the **entire workspace** — files, kernels, terminal, the
-agent API — runs on that machine over an SSH tunnel. First contact installs SpaceStation on the
-remote; after that it reconnects instantly. The VS Code Remote-SSH model, with zero config beyond
-your SSH setup.
+Terminals belong to the server, not to the page. Reload the page or close the browser and they
+keep running, with their scrollback, until you close them or stop SpaceStation.
+
+Every terminal has `pluto-collab` on its `PATH` and knows which session it is in, so a coding
+agent started there works on your live notebooks with no setup. A notebook's menu can also open a
+terminal in that notebook's own package environment.
 
 <div align="center">
-<img src="assets/screenshots/ssh-remotes-light.png" width="640" alt="The SSH remotes list in the SpaceStation opener (light theme) — click a host to run the whole workspace (files, kernels, terminal) on that machine over an SSH tunnel">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/terminal-dark.webp">
+  <img src="assets/screenshots/terminal-light.webp" width="900" alt="A notebook with a terminal docked at its right, where a Julia script from the workspace has just been run">
+</picture>
 </div>
 
----
+### Workspaces on other machines
 
-## 🤝 Lazy mode: humans and agents on one live session
-
-SpaceStation's default isn't autorun. Editing a cell — **in the browser *or* on disk** — marks that
-cell **stale** instead of running it. When explicitly run, its dependents follow through normal
-Pluto reactivity. Because of that, a human in the browser and a coding agent in a terminal can work on the
-**same live notebook** at once — same kernel, same state. The agent edits the `.jl` with its normal
-file tools; the affected cells turn **amber within a second** in the browser, and a run applies them.
-No MCP, no plugins — just a small CLI, [`pluto-collab`](bin/pluto-collab).
+Click a host from your `~/.ssh/config`. SpaceStation connects, installs itself there the first
+time, and from then on that machine's folders open like local ones: in the same launcher, at the
+same address on your computer, next to your local workspaces. The files, the notebook processes
+and the terminals are all on the remote machine.
 
 <div align="center">
-<img src="assets/screenshots/lazy-stale-dark.png" width="920" alt="Lazy mode in SpaceStation: after an edit, the changed cell turns amber (stale) while untouched cells stay green — two notebook tabs and the integrated terminal are open">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/remote-dark.webp">
+  <img src="assets/screenshots/remote-light.webp" width="900" alt="A workspace on the host gpu-node-07, named at the top of the sidebar, with a notebook that plots a damped wave">
+</picture>
 </div>
 
-The agent surface is deliberately **two-tiered** — editing and executing are separate steps:
-
-1. **Edit → _stage._** The agent edits the `.jl` with its normal file tools. That only marks the
-   changed cells **stale** — *nothing runs*. The human watches them turn
-   amber within a second.
-2. **Run → _apply._** An explicit `run --stale` executes only the stale closure. Separating stage
-   from apply is deliberate: you review what's about to run, expensive cells don't fire on every
-   keystroke, and the session stays reproducible.
-
-The mechanism is plain — no MCP, no plugins:
-
-- a **connection file** at `~/.local/state/pluto/servers/<node>-<port>.json` (port + secret — the Jupyter idiom),
-- a plain **HTTP API** at `/api/v1/…` (curl-able, authed with `?secret=…`),
-- a tiny **CLI**, in two equivalent front-ends:
-
-```sh
-pluto-collab        status nb.jl     # Unix shorthand — a bash script (curl + sed)
-spacestation collab status nb.jl     # any platform incl. Windows PowerShell — built into the app, no deps
-
-# the flow (either front-end — same commands, arguments, and exit codes):
-… status nb.jl               # REVIEW: per-cell STALE / COLD / ERRORED / output (reflects the file right now)
-… run    nb.jl --stale       # APPLY:  run exactly what's outdated (blocks; exit 1 on error)
-… output nb.jl --cell <id>   # read a cell's full, untruncated output
-… figure nb.jl --cell <id>   # save a cell's rendered plot to an image file
+```mermaid
+flowchart LR
+    B["Your browser<br/>localhost:1234"] --> H["SpaceStation<br/>on your computer"]
+    H --> L["Local workspaces"]
+    H -- "one SSH tunnel per host" --> R["SpaceStation<br/>on the remote host"]
+    R --> W["Its workspaces:<br/>files, notebooks, terminals"]
 ```
 
-`pluto-collab` needs bash + curl (Unix); **`spacestation collab …` is the identical command set built
-into the app** with no external dependencies, so the surface works the same in a Windows terminal.
-Inside a SpaceStation terminal, `SPACESTATION_PORT` / `SPACESTATION_SECRET` point either one at the live
-session automatically.
+What it needs:
 
-Two guarantees make the loop reliable:
+- **SSH keys.** `ssh <host>` must work without asking for a password. Hosts behind a `ProxyJump`
+  are fine.
+- **Julia on the remote host.** [juliaup](https://github.com/JuliaLang/juliaup) is the easy way.
 
-- **`status` always reflects the file.** It re-syncs from disk on every call, so *immediately* after
-  an edit it reports the true stale set — the review step never lags the ~½-second file watcher.
-- **Runs share the browser's execution queue.** HTTP runs go through the same path as browser clicks,
-  so both sides see cells turn amber → running → green live. Staleness is verified against
-  content-addressed **execution keys**, so reverting an edit un-stales a cell with no run at all.
+There are no ports to forward by hand. The tunnel is opened for you and reopened if the connection
+drops. What runs on the remote host keeps running when your laptop sleeps or disconnects, and it
+is there when you connect again.
 
-See **[COLLAB.md](COLLAB.md)** for the full details and an `AGENTS.md` stanza you can drop into any repo.
+### You and an agent on one live notebook
+
+SpaceStation's default is **lazy mode**: editing a cell, in the browser or in the file on disk,
+marks it **stale** instead of running it. That is what lets a person in the browser and a coding
+agent in a terminal work on the same running notebook.
+
+**1. An edit is staged.** The agent changes the `.jl` file with its ordinary file tools. Within a
+second the cell turns amber in your browser, still showing its old output. Nothing has run.
+
+<div align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/lazy-stale-dark.webp">
+  <img src="assets/screenshots/lazy-stale-light.webp" width="900" alt="A notebook cell outlined in amber: its code says 26 and its output still says 20. In the terminal below, pluto-collab status reports 1 stale cell">
+</picture>
+</div>
+
+**2. A run applies it.** `run --stale` runs the stale cells, and what depends on them follows
+through Pluto's reactivity. You watch it happen in the browser.
+
+<div align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/lazy-ran-dark.webp">
+  <img src="assets/screenshots/lazy-ran-light.webp" width="900" alt="The same notebook after pluto-collab run --stale: the cell and the cells that depend on it show their new values, and the terminal reports the result">
+</picture>
+</div>
+
+The whole agent side is one small command, with no MCP server and no plugin:
+
+```sh
+pluto-collab status nb.jl               # each cell: stale, cold, errored, or its output
+pluto-collab run    nb.jl --stale       # run what is out of date; exit code 1 if a cell errors
+pluto-collab output nb.jl --cell <id>   # one cell's full output
+pluto-collab figure nb.jl --cell <id>   # save one cell's plot as an image
+```
+
+`pluto-collab` is a shell script (bash and curl). On Windows, or anywhere those are missing,
+`spacestation collab …` is the same set of commands built into the app.
+
+**[COLLAB.md](COLLAB.md)** has the details, the HTTP API underneath, and a block to paste into a
+repository's `AGENTS.md`.
+
+### Outputs that survive restarts
+
+Every notebook is two files: the `.jl`, which is your code and is exactly what Pluto writes, and a
+`<notebook>.jl.pluto-cache.toml` beside it that holds each cell's output. Open a notebook after a
+restart and its outputs are back at once, without running anything. Plain Pluto runs the whole
+notebook again.
+
+A stored output is only used while the cell's code, and the results it depends on, are unchanged.
+Cells that should never be reused (random numbers, the clock, files) opt out with
+`always_stale = true`. The cache is plain TOML that any tool can read, and it is safe to delete.
+
+<div align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/sidecar-dark.webp">
+  <img src="assets/screenshots/sidecar-light.webp" width="900" alt="A notebook's .pluto-cache.toml file open in a tab: for each cell an execution key, a result hash, the run time and the stored output">
+</picture>
+</div>
 
 ---
 
-## 💾 Two files, and outputs that survive restarts
+## Where it runs
 
-Every notebook is **two files**: the `.jl` (your code — the source of truth, unchanged from vanilla
-Pluto) and a plain-TOML **`<notebook>.jl.pluto-cache.toml`** sidecar holding every cell's output plus
-its execution key. Reopen a notebook and **every output is restored instantly** from that sidecar —
-no recompute. Vanilla Pluto has no output persistence; it either re-runs everything on open or shows
-nothing.
-
-<table>
-<tr>
-<td width="50%"><img src="assets/screenshots/cache-with-dark.png" alt="A notebook reopened WITH its .pluto-cache.toml sidecar: every output restored instantly, no recompute"></td>
-<td width="50%"><img src="assets/screenshots/cache-without-dark.png" alt="The same notebook reopened WITHOUT its sidecar: every cell shows 'Code not executed' — vanilla Pluto has no output persistence"></td>
-</tr>
-<tr>
-<td align="center"><em><strong>With</strong> the sidecars → outputs restored on open</em></td>
-<td align="center"><em><strong>Without</strong> them → "Code not executed" (plain Pluto)</em></td>
-</tr>
-</table>
-
-<div align="center"><em>Same notebook, same fresh restart — the sidecar is the only difference. Restored cells are trusted <strong>only when their execution keys match</strong> the current code and upstream results; impure cells (<code>rand()</code>, the clock, I/O) opt out with <code>always_stale = true</code>.</em></div>
-
----
+- **Systems:** macOS, Linux and Windows. A browser walkthrough of the app runs on all three in CI.
+- **Browsers:** Chrome and other Chromium browsers, and Firefox. Safari has not been checked with
+  a workspace on a remote host.
+- **Light and dark:** follows your system, or pick one in the launcher.
 
 ## Relationship to Pluto.jl
 
 SpaceStation is a friendly fork of [Pluto.jl](https://github.com/fonsp/Pluto.jl). The notebook engine,
-editor, file format, and reactivity are Pluto's, and notebooks remain fully compatible in both
+editor, file format and reactivity are Pluto's, and notebooks remain fully compatible in both
 directions. For everything about notebooks themselves (reactivity, `@bind`, packages, exporting),
 see the [Pluto documentation](https://plutojl.org/). 🎈
 
-SpaceStation adds the *space around* the notebooks: workspaces, tabs, terminal, remotes, persistence,
-and first-class human + agent collaboration. `--autorun` gives you classic Pluto reactivity
-whenever you want it, byte-for-byte.
+SpaceStation adds the space around the notebooks: workspaces, tabs, terminals, remote hosts,
+stored outputs, and working alongside an agent. `--autorun` gives you classic Pluto reactivity
+whenever you want it.
 
 **SpaceStation is developed and owned by Dale Black / [GroupTherapyOrg](https://github.com/GroupTherapyOrg).
-It is an independent fork and is NOT developed, maintained, or endorsed by the Pluto.jl team** — please
+It is an independent fork and is NOT developed, maintained, or endorsed by the Pluto.jl team.** Please
 direct SpaceStation questions, issues, and feedback to this repository, not to the Pluto developers.
 
 ## Status
