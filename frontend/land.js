@@ -398,6 +398,15 @@ const path_lead = (path) => {
     const lead = parts.length <= 3 ? (path.startsWith(sep) ? sep : "") + parts.slice(0, -1).join(sep) : `…${sep}${parts[parts.length - 2]}`
     return lead + sep
 }
+/** A workspace's colour: one of seven hues, always the same one for the same folder (or host). */
+const PLANET_HUES = [300, 25, 255, 150, 75, 205, 345]
+const planet_hue = (key) => {
+    let h = 0
+    for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0
+    return PLANET_HUES[h % PLANET_HUES.length]
+}
+const Planet = ({ of }) => html`<span class="planet" style=${`--h: ${planet_hue(of)}`} aria-hidden="true"></span>`
+
 const greeting = () => {
     const h = new Date().getHours()
     return h < 5 ? "Good night" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening"
@@ -732,6 +741,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
     // cluster) with nothing moving on screen reads as a hang; a running clock says it is alive.
     const busy_since = useRef(/** @type {Record<String, number>} */ ({}))
     const [, set_tick] = useState(0)
+    const [pointed, set_pointed] = useState(/** @type {String?} */ (null))
     const is_busy = (st) => st != null && st.state !== "ready" && st.state !== "error"
     const elapsed = (key, st) => {
         if (!is_busy(st)) {
@@ -756,7 +766,6 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
         const listed = running.find((w) => w.kind === "remote" && w.host === h)
         return remote_states[h] ?? (listed == null ? null : { state: listed.state, detail: "", url: listed.url })
     }
-    const connected_hosts = ssh_hosts.map((host) => ({ host, st: remote_state(host) })).filter(({ st }) => st?.state === "ready" && st.url != null)
     const anything_busy = local_rows.some((r) => is_busy(r.st)) || ssh_hosts.some((h) => is_busy(remote_state(h)))
     useEffect(() => {
         if (!anything_busy) return
@@ -764,7 +773,15 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
         return () => clearInterval(iv)
     }, [anything_busy])
 
+    const connected_hosts = ssh_hosts.map((host) => ({ host, st: remote_state(host) })).filter(({ st }) => st?.state === "ready" && st.url != null)
     const recent = get_recent_workspaces().filter((p) => !local_rows.some((r) => r.path === p))
+    const hero_candidates = [
+        ...local_rows.map(({ path, st }) => ({ key: path, name: basename(path) || path, where: short_path(path), running: st.state === "ready", remote: false })),
+        ...connected_hosts.map(({ host }) => ({ key: host, name: host, where: "over SSH", running: true, remote: true })),
+        ...recent.map((p) => ({ key: p, name: basename(p) || p, where: short_path(p), running: false, remote: false })),
+    ]
+    const hero = hero_candidates.find((c) => c.key === pointed) ?? hero_candidates[0] ?? null
+    const point_at = (key) => ({ onMouseEnter: () => set_pointed(key), onFocusCapture: () => set_pointed(key) })
 
     // Built by the server: splitting a path on "/" here turned a Windows one into a single bogus
     // crumb, and joining one back together means knowing about drives and backslashes.
@@ -773,13 +790,13 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
     // A link to something that is ready, opened in a new tab (which keeps its opener: the way home).
     const open_link = (url, title, body, classname = "ws-open") => html`<a class=${classname} href=${open_href(url)} target=${`spacestation-${url}`} title=${`Open ${title}`}>${body}</a>`
 
-    return html`<div class="workspace-opener">
+    return html`<div class="workspace-opener" style=${hero == null ? "" : `--h: ${planet_hue(hero.key)}`}>
         <div class="opener-page">
             <header class="opener-head">
                 <img class="land-logo opener-logo" src=${logo_url} alt="" />
                 <div class="opener-title">
                     <p class="section-label">${greeting()}</p>
-                    <h1 class="wordmark">Space<span class="land-accent">Station</span></h1>
+                    <p class="wordmark">Space<span class="land-accent">Station</span></p>
                 </div>
                 <div class="opener-head-actions">
                     <${AppSchemeToggle} />
@@ -791,6 +808,19 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                 </div>
             </header>
 
+            <div class="opener-hero">
+                ${hero == null
+                    ? html`<p class="section-label">Start here</p>
+                          <h1>Open a folder</h1>
+                          <p class="hero-line">Its notebooks open as tabs, beside a terminal and the files.</p>`
+                    : html`<p class="section-label">${hero.running ? "Continue" : "Open again"}</p>
+                          <h1>${hero.name}</h1>
+                          <p class="hero-line">
+                              <span class="hero-path">${hero.where}</span>
+                              ${hero.running ? html`<span class="ws-state"><span class="dot ok"></span>${hero.remote ? "Connected" : "Running"}</span>` : null}
+                          </p>`}
+            </div>
+
             ${!tunneled && (local_rows.length > 0 || connected_hosts.length > 0)
                 ? html`<section class="opener-section">
                       <h2 class="section-label">Open workspaces</h2>
@@ -798,7 +828,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                           ${local_rows.map(({ path, st }) => {
                               const name = basename(path) || path
                               const time = elapsed(`local:${path}`, st)
-                              const body = html`<span class="ws-card-icon"><svg class="ico" aria-hidden="true"><use href="#i-folder" /></svg></span>
+                              const body = html`<${Planet} of=${path} />
                                   <span class="ws-name">${name}</span>
                                   <span class="ws-path" title=${path}>${short_path(path)}</span>
                                   ${st.state === "ready"
@@ -806,7 +836,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                                       : st.state === "error"
                                         ? html`<span class="ws-state"><span class="dot bad"></span>Did not start</span>`
                                         : html`<span class="ws-state"><span class="spinner"></span>${state_label(st)} · ${time}</span>`}`
-                              return html`<div class="ws-card ${st.state === "error" ? "error" : ""} ${is_busy(st) ? "busy" : ""}" key=${path}>
+                              return html`<div class="ws-card ${st.state === "error" ? "error" : ""} ${is_busy(st) ? "busy" : ""}" key=${path} ...${point_at(path)}>
                                   ${st.state === "ready" && st.url != null ? open_link(st.url, name, body, "ws-card-open") : html`<div class="ws-card-open inert">${body}</div>`}
                                   ${st.state !== "ready" && st.detail ? html`<p class="ws-card-detail">${st.detail}</p>` : null}
                                   ${st.state === "ready"
@@ -825,10 +855,10 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                               </div>`
                           })}
                           ${connected_hosts.map(({ host, st }) => {
-                              const body = html`<span class="ws-card-icon"><svg class="ico" aria-hidden="true"><use href="#i-server" /></svg></span>
+                              const body = html`<${Planet} of=${host} />
                                   <span class="ws-name">${host}</span>
                                   <span class="ws-path">over SSH</span>`
-                              return html`<div class="ws-card" key=${`remote:${host}`}>
+                              return html`<div class="ws-card" key=${`remote:${host}`} ...${point_at(host)}>
                                   ${open_link(st.url, host, body, "ws-card-open")}
                                   <div class="ws-card-foot">
                                       <span class="ws-state"><span class="dot ok"></span>Connected</span>
@@ -843,33 +873,30 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                 : null}
 
             ${recent.length > 0
-                ? html`<section class="opener-section">
-                      <h2 class="section-label">Recent</h2>
-                      <div class="island tray">
-                          ${recent.map(
-                              (p) => html`<div class="ws-card" key=${p}>
-                                  <button class="ws-card-open" title=${`Open ${p}`} onClick=${() => open_workspace(p)}>
-                                      <span class="ws-card-icon quiet"><svg class="ico" aria-hidden="true"><use href="#i-folder" /></svg></span>
-                                      <span class="ws-name">${basename(p) || p}</span>
-                                      <span class="ws-path" title=${p}>${short_path(p)}</span>
-                                  </button>
-                                  <button
-                                      class="icon-button ws-card-corner on-hover"
-                                      title="Remove from this list"
-                                      aria-label=${`Remove ${basename(p) || p} from recent`}
-                                      onClick=${() => {
-                                          forget_workspace(p)
-                                          set_tick((n) => n + 1)
-                                      }}
-                                  >
-                                      <svg class="ico" aria-hidden="true"><use href="#i-close" /></svg>
-                                  </button>
-                              </div>`
-                          )}
-                      </div>
-                  </section>`
+                ? html`<div class="recent-pills">
+                      <span class="section-label">Recent</span>
+                      ${recent.map(
+                          (p) => html`<span class="recent-pill" key=${p} ...${point_at(p)}>
+                              <button class="recent-open" title=${`Open ${p}`} onClick=${() => open_workspace(p)}>
+                                  <${Planet} of=${p} /><span class="ws-name">${basename(p) || p}</span><span class="recent-where">${path_lead(p)}</span>
+                              </button>
+                              <button
+                                  class="recent-forget"
+                                  title="Remove from this list"
+                                  aria-label=${`Remove ${basename(p) || p} from recent`}
+                                  onClick=${() => {
+                                      forget_workspace(p)
+                                      set_tick((n) => n + 1)
+                                  }}
+                              >
+                                  <svg class="ico" aria-hidden="true"><use href="#i-close" /></svg>
+                              </button>
+                          </span>`
+                      )}
+                  </div>`
                 : null}
 
+            <div class="opener-columns">
             <section class="opener-section">
                 <h2 class="section-label">Open a folder <span class="spacer"></span>${refresh_button}</h2>
                 <div class="island browse-panel">
@@ -969,6 +996,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                       </ul>
                   </section>`
                 : null}
+            </div>
         </div>
     </div>`
 }
