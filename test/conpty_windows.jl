@@ -114,6 +114,64 @@ catch e
     push!(fails, "cmd /K chcp path threw")
 end
 
+println("\n== Test: what the shell is running (so closing a terminal can ask first) ==")
+try
+    exe = ps_exe()
+    pty = W.pty_spawn([exe, "-NoLogo", "-NoExit", "-Command", "Write-Host READY_MARKER"]; dir = "C:\\")
+    drain(pty; timeout = 20, want = "READY_MARKER")
+    sleep(1)
+    idle = W.pty_running_child(pty)
+    println("  at the prompt: ", repr(idle))
+    check(idle === nothing, "a shell at its prompt runs nothing")
+    W.pty_write(pty, "ping -n 60 127.0.0.1\r")
+    drain(pty; timeout = 10, want = "Reply")
+    busy = W.pty_running_child(pty)
+    println("  with ping running: ", repr(busy))
+    check(busy == "ping", "the program the shell started is named")
+    W.pty_close!(pty)
+catch e
+    println("  EXCEPTION: ", sprint(showerror, e))
+    push!(fails, "pty_running_child threw")
+end
+
+println("\n== Test: a line feed is not Enter; a carriage return is ==")
+try
+    exe = ps_exe()
+    pty = W.pty_spawn([exe, "-NoLogo", "-NoExit", "-Command", "Write-Host READY_MARKER"]; dir = "C:\\")
+    drain(pty; timeout = 20, want = "READY_MARKER")
+    sleep(1)
+    W.pty_write(pty, "echo typed_ahead_\$(40+2)\r")
+    out = drain(pty; timeout = 10, want = "typed_ahead_42")
+    println("  ", repr(String(copy(out))))
+    check(occursin("typed_ahead_42", String(out)), "a command ended by a carriage return runs")
+    W.pty_close!(pty)
+catch e
+    println("  EXCEPTION: ", sprint(showerror, e))
+    push!(fails, "carriage-return test threw")
+end
+
+println("\n== Test: closing a terminal while its program prints, with nobody reading ==")
+try
+    # (before Windows 11 24H2 the close waits for the console host's last frame; with the pipe full
+    # and no reader it waited for ever, on the thread that serves every request)
+    pty = W.pty_spawn(["cmd.exe", "/c", "for /L %i in (1,1,2000000) do @echo line %i of output that fills the pipe"]; dir = "C:\\")
+    drain(pty; timeout = 5, want = "line 50 ")
+    sleep(2) # nothing is taken from the channel now: it fills, the reader blocks, the pipe fills
+    closing = @async W.pty_close!(pty)
+    ticks = Ref(0)
+    ticker = @async while !istaskdone(closing)
+        ticks[] += 1
+        sleep(0.05)
+    end
+    done = timedwait(() -> istaskdone(closing), 30.0)
+    println("  close returned: ", done, "; other tasks ran ", ticks[], " times meanwhile")
+    check(done == :ok, "pty_close! returned while the program was printing")
+    check(!istaskfailed(closing), "pty_close! did not throw")
+catch e
+    println("  EXCEPTION: ", sprint(showerror, e))
+    push!(fails, "close-while-printing test threw")
+end
+
 println("\n", isempty(fails) ? "ALL CONPTY TESTS PASSED ✅" : "FAILURES ($(length(fails))) ❌:")
 foreach(f -> println("  - ", f), fails)
 exit(isempty(fails) ? 0 : 1)

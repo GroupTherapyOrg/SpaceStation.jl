@@ -52,6 +52,30 @@ import Malt
         WorkspaceManager.unmake_workspace((🍭, notebook); verbose=false)
     end
 
+    @testset "A notebook that activates a project: that project is its environment" begin
+        # (the "open the notebook's environment in a terminal" action was greyed out for all of these)
+        🍭 = ServerSession()
+        project = mktempdir()
+        write(joinpath(project, "Project.toml"), "name = \"TheNotebooksProject\"\n")
+        notebook = Notebook([
+            Cell("""begin
+                import Pkg
+                Pkg.activate($(repr(project)); io=devnull)
+            end"""),
+            Cell("where = dirname(Base.active_project())"),
+        ])
+        @test Pluto.notebook_env_dir(notebook; session=🍭) === nothing # not running: nothing to ask
+        @test Pluto.notebook_env_command(notebook; session=🍭) === nothing
+        update_run!(🍭, notebook, notebook.cells)
+        @test notebook.cells[1].errored == false
+        @test notebook.nbpkg_ctx === nothing # Pluto does not manage the packages of such a notebook
+        dir = Pluto.notebook_env_dir(notebook; session=🍭)
+        @test dir !== nothing && realpath(dir) == realpath(project)
+        command = Pluto.notebook_env_command(notebook; session=🍭)
+        @test command !== nothing && occursin("--project=", command) && occursin(basename(project), command)
+        WorkspaceManager.unmake_workspace((🍭, notebook); verbose=false)
+    end
+
     Sys.iswindows() || @testset "Pluto inside Pluto" begin
         🍭 = ServerSession()
         🍭.options.evaluation.capture_stdout = false

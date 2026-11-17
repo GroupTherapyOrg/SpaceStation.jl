@@ -150,7 +150,7 @@ end
 
 # The `julia --project=<env>` line for a notebook that is open in this workspace's child server
 # (`/api/v1/notebook/env` there), or nothing when this process has no child for the folder, the
-# child does not know the notebook, or it has no managed environment.
+# child does not know the notebook, or it has no environment to name (see `notebook_env_command`).
 function _child_notebook_env_command(session::ServerSession, cwd::AbstractString, notebook_id::AbstractString)::Union{Nothing,String}
     isempty(cwd) && return nothing
     port, secret = _terminal_target(session, String(cwd))
@@ -159,7 +159,6 @@ function _child_notebook_env_command(session::ServerSession, cwd::AbstractString
         r = HTTP.get("http://127.0.0.1:$(port)/api/v1/notebook/env?id=$(HTTP.escapeuri(notebook_id))&secret=$(HTTP.escapeuri(secret))"; connect_timeout=3, readtimeout=10, retry=false, status_exception=false)
         r.status == 200 || return nothing
         body = String(r.body)
-        occursin("\"managed\":true", body) || return nothing
         m = match(r"\"command\":\"((?:[^\"\\\\]|\\\\.)*)\"", body)
         m === nothing ? nothing : _json_unescape(String(m.captures[1]))
     catch e
@@ -241,24 +240,55 @@ function _spawn_workspace_shell(session::ServerSession, dir::String; rows::Int=2
 end
 
 """
+Where a notebook's packages come from: the environment Pluto manages for it, else the project its own
+code activated (asked of its process, which has to be running). `nothing` when neither is known.
+"""
+function notebook_env_dir(notebook::Notebook; session::Union{Nothing,ServerSession}=nothing)::Union{Nothing,String}
+    ctx = notebook.nbpkg_ctx
+    if ctx !== nothing
+        env_dir = try
+            PkgCompat.env_dir(ctx)
+        catch
+            nothing
+        end
+        return (env_dir === nothing || isempty(env_dir)) ? nothing : String(env_dir)
+    end
+    session === nothing && return nothing
+    workspace = try
+        WorkspaceManager.get_workspace((session, notebook); allow_creation=false)
+    catch
+        nothing
+    end
+    workspace isa WorkspaceManager.Workspace || return nothing
+    answer = Channel{Any}(1)
+    @async put!(answer, try
+        WorkspaceManager.Malt.remote_eval_fetch(workspace.worker, :(Base.active_project()))
+    catch
+        nothing
+    end)
+    timedwait(() -> isready(answer), 3.0; pollint=0.02) == :ok || return nothing
+    project = take!(answer)
+    (project isa AbstractString && !isempty(project)) ? String(dirname(project)) : nothing
+end
+
+"""
 The shell command that activates a notebook's package environment, exactly as a user would type it
 (issue #29): `julia --project=<env>` with THIS server's Julia — the notebook process runs on the same
 binary, so the Manifest in that environment is only valid for it. `julia` is spelled bare when that
 is what `julia` on PATH resolves to, and as a full path otherwise, so the line always works when
 retyped. Quoted for the shell the terminal actually runs (POSIX sh, PowerShell, or cmd).
 
-Returns `nothing` when the notebook has no Pluto-managed environment (it runs `Pkg.activate` itself,
-or nothing has been loaded yet) — there is nothing to open then.
+A notebook that activates a project itself (`Pkg.activate(...)` in a cell, the usual thing for the
+notebooks of a repository) has no Pluto-managed environment; its environment is that project, and
+its running process is asked which one it is. The menu item used to be greyed out for every such
+notebook, with no word why.
+
+Returns `nothing` when there is nothing to open: the notebook has not run yet, or its process does
+not answer in a moment (a cell that computes without a pause holds it).
 """
-function notebook_env_command(notebook::Notebook)::Union{Nothing,String}
-    ctx = notebook.nbpkg_ctx
-    ctx === nothing && return nothing
-    env_dir = try
-        PkgCompat.env_dir(ctx)
-    catch
-        return nothing
-    end
-    (env_dir === nothing || isempty(env_dir)) && return nothing
+function notebook_env_command(notebook::Notebook; session::Union{Nothing,ServerSession}=nothing)::Union{Nothing,String}
+    env_dir = notebook_env_dir(notebook; session)
+    env_dir === nothing && return nothing
     julia_path = joinpath(Sys.BINDIR, Base.julia_exename())
     on_path = Sys.which("julia")
     same = on_path !== nothing && try
@@ -306,7 +336,10 @@ function _get_or_create_terminal(session::ServerSession, tid::String; requested_
         # repeats it, since only a freshly spawned shell gets here.
         if run !== nothing
             try
-                pty_write(t.pty, Vector{UInt8}(codeunits(run * "\n")))
+                # (Enter is a carriage return. A Unix tty turns a line feed into the same thing; the
+                # Windows console hands it on as Ctrl+Enter, which PowerShell's line editor takes as
+                # "open a line above": the command sat typed at the prompt and never ran.)
+                pty_write(t.pty, Vector{UInt8}(codeunits(run * (Sys.iswindows() ? "\r" : "\n"))))
             catch e
                 @warn "terminal: could not type the initial command" error = sprint(showerror, e) # no backtrace: see PinCode.jl
             end
@@ -407,7 +440,7 @@ end
 """
 What a terminal is running in the foreground right now: the name of the program (`julia`, `claude`,
 `vim`), or `nothing` when the shell is at its prompt, when there is no such terminal, or when it
-cannot be told (Windows). So that closing a terminal can ask first when that would stop something.
+cannot be told. So that closing a terminal can ask first when that would stop something.
 
 It asks the terminal itself which process group has it (`tcgetpgrp`), as terminal programs do: the
 shell's own group means "at the prompt". Counting the shell's children instead would take a prompt
@@ -417,7 +450,15 @@ function terminal_running(tid::AbstractString)::Union{Nothing,String}
     t = lock(COLLAB_TERMINALS_LOCK) do
         get(COLLAB_TERMINALS, String(tid), nothing)
     end
-    (t === nothing || !Sys.isunix()) && return nothing
+    t === nothing && return nothing
+    @static if Sys.iswindows()
+        return try
+            pty_running_child(t.pty)
+        catch
+            nothing
+        end
+    end
+    Sys.isunix() || return nothing
     try
         shell = Int(t.pty.child_pid)
         shell > 0 || return nothing
@@ -494,7 +535,7 @@ function handle_terminal_websocket(ws, session::ServerSession, query::Dict{Strin
     if !isempty(nb_id)
         uuid = tryparse(UUID, nb_id)
         notebook = uuid === nothing ? nothing : get(session.notebooks, uuid, nothing)
-        run = notebook === nothing ? nothing : notebook_env_command(notebook)
+        run = notebook === nothing ? nothing : notebook_env_command(notebook; session)
         if run === nothing && uuid !== nothing
             # Under a hub the notebook lives in the workspace's child (Proxy.jl): ask it for the
             # command it would type — a loopback request, async, the same answer the page saw.

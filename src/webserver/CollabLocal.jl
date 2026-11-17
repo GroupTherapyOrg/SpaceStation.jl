@@ -87,9 +87,12 @@ function _scan_registry_now(matches::Function; pid::Union{Nothing,Integer}=nothi
         end
         node_m = match(r"\"node\": \"([^\"]+)\"", txt)
         node_m !== nothing && String(node_m.captures[1]) != me && continue
-        ws_m = match(r"\"workspace\": \"([^\"]+)\"", txt)
+        # (the path is JSON: `\\` is one backslash. Read as it stands, `C:\\Users` still came out right,
+        # because a doubled separator inside a path is dropped; `\\\\server\\share` did not, and a
+        # workspace on a network share "did not come up in time" while it was up.)
+        ws_m = match(r"\"workspace\": \"((?:[^\"\\]|\\.)*)\"", txt)
         ws_m === nothing && continue
-        ws_path = tamepath(String(ws_m.captures[1]))
+        ws_path = tamepath(_json_unescape(String(ws_m.captures[1])))
         matches(ws_path) || continue
         pid_m = match(r"\"pid\": (\d+)", txt)
         if pid_m !== nothing
@@ -347,11 +350,11 @@ function register_collab_local!(router, session::ServerSession)
     function serve_local_open(request::HTTP.Request)
         query = HTTP.queryparams(HTTP.URI(request.target))
         haskey(query, "path") || return _api_error(400, "pass ?path=/abs/folder", false)
-        path = tamepath(query["path"])
+        path = _typed_path(query["path"])
         isdir_answer = hub_isdir(path) # asked of a file helper in a hub: see FileHelper.jl
         isdir_answer === nothing && return _api_error(504, "the filesystem that holds $path is not answering; try again when it does", false)
         isdir_answer || return _api_error(400, "not a directory: $path", false)
-        s = open_local_session!(path)
+        s = open_local_session!(_one_spelling(path))
         HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], local_status_json(s))
     end
     HTTP.register!(router, "POST", "/api/v1/local/open", serve_local_open)

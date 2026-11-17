@@ -296,6 +296,65 @@ function _path_crumbs(path::String)
 end
 
 """
+A folder as somebody typed or pasted it. Explorer's "Copy as path" puts the path in quotes; `D:` is
+how a drive is named, and without its separator it means "wherever this process last was on D".
+"""
+function _typed_path(typed::AbstractString)::String
+    s = strip(typed)
+    length(s) >= 2 && first(s) == '"' && last(s) == '"' && (s = strip(s[nextind(s, 1):prevind(s, lastindex(s))]))
+    Sys.iswindows() && occursin(r"^[A-Za-z]:$", s) && (s = s * "\\")
+    tamepath(String(s))
+end
+
+"""
+One folder, one way to write it. Where names are found whatever their case (Windows, macOS), `c:\\users\\me\\Proj`
+and `C:\\Users\\me\\proj` are the same folder, but they were two workspaces: two ids, two servers
+running the same notebooks. Each part is written the way its folder lists it, and a trailing separator
+goes. Links are left as they are (resolving them would turn a mapped drive into its network path).
+"""
+function _one_spelling(path::String)::String
+    parts = splitpath(path)
+    isempty(parts) && return path
+    (Sys.iswindows() || Sys.isapple()) || return joinpath(parts...)
+    out = occursin(r"^[a-z]:", parts[1]) ? uppercasefirst(parts[1]) : parts[1]
+    for part in parts[2:end]
+        names = try
+            readdir(out)
+        catch
+            return joinpath(parts...)
+        end
+        i = something(findfirst(==(part), names), findfirst(n -> lowercase(n) == lowercase(part), names), 0)
+        out = joinpath(out, i == 0 ? part : names[i])
+    end
+    out
+end
+
+"The drives of this machine (`C:\\`, `D:\\`), where there are such things. Asked of Windows as a list: no drive is touched, so a network drive that is away costs nothing."
+function _drive_roots()::Vector{String}
+    Sys.iswindows() || return String[]
+    mask = try
+        ccall((:GetLogicalDrives, "kernel32"), UInt32, ())
+    catch
+        UInt32(0)
+    end
+    [string('A' + i, ":\\") for i in 0:25 if (mask >> i) & 1 == 1]
+end
+
+"""
+What is wrong with `name` as a file's or folder's name on this system, or `nothing`. On Windows a
+colon writes into a hidden stream of another file (`notes 10:30.md` makes an empty `notes 10`), `nul`
+and `con` are devices (creating one "works" and there is no file), and a dot or space at the end is
+dropped, so the tab that opens points at a file that is not there.
+"""
+function _name_complaint(name::AbstractString)::Union{Nothing,String}
+    Sys.iswindows() || return nothing
+    occursin(r"[<>:\"|?*\x00-\x1f]", name) && return "Windows does not take these in a name: < > : \" | ? *"
+    (endswith(name, ".") || endswith(name, " ")) && return "a name cannot end in a dot or a space on Windows"
+    occursin(r"^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\..*)?$"i, name) && return "$(name) is a name Windows keeps for a device"
+    nothing
+end
+
+"""
 Listing of a workspace folder as JSON-able pairs, depth- and entry-budgeted. Bulky tool directories
 (and `.git`) are skipped, but dotfiles are shown.
 
@@ -625,12 +684,18 @@ function register_collab_api!(router, session::ServerSession)
         query = HTTP.queryparams(HTTP.URI(request.target))
         notebook = _api_notebook_from_query(session, query)
         notebook === nothing && return _api_error(404, "notebook not found — is it open in this server? (pass ?path=/abs/path.jl or ?id=<uuid>)", false)
-        command = notebook_env_command(notebook)
-        env_dir = command === nothing ? nothing : PkgCompat.env_dir(notebook.nbpkg_ctx)
+        env_dir = notebook_env_dir(notebook; session)
+        command = env_dir === nothing ? nothing : notebook_env_command(notebook; session)
+        running = try
+            WorkspaceManager.get_workspace((session, notebook); allow_creation=false) !== nothing
+        catch
+            false
+        end
         body = _json(Pair[
-            "managed" => command !== nothing,
+            "managed" => notebook.nbpkg_ctx !== nothing && command !== nothing, # Pluto keeps it; else the notebook activated a project itself
             "env_dir" => env_dir,
             "command" => command,
+            "running" => running,
         ])
         HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], body * "\n")
     end
@@ -803,8 +868,9 @@ function register_collab_api!(router, session::ServerSession)
 
     function serve_api_browse(request::HTTP.Request)
         query = HTTP.queryparams(HTTP.URI(request.target))
-        path = haskey(query, "path") ? tamepath(query["path"]) : homedir()
+        path = haskey(query, "path") ? _typed_path(query["path"]) : homedir()
         isdir(path) || return _api_error(404, "not a directory: $path", false)
+        path = _one_spelling(path)
         dirs = String[]
         try
             for name in _in_name_order(readdir(path))
@@ -819,6 +885,7 @@ function register_collab_api!(router, session::ServerSession)
             "parent" => dirname(path),
             "entries" => [Pair["name" => name, "path" => joinpath(path, name)] for name in dirs],
             "crumbs" => _path_crumbs(path),
+            "drives" => _drive_roots(),
         ])
         HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], body * "\n")
     end
@@ -940,7 +1007,12 @@ function register_collab_api!(router, session::ServerSession)
         ])
         HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], body * "\n")
     end
-    HTTP.register!(router, "GET", "/api/v1/workspace", _offloaded(serve_api_workspace))
+    # A server with no workspace (a hub's own page, the launcher) says so itself, at once. Asked of a
+    # file helper it is the same answer later, and while the helpers are still starting it was "busy":
+    # for the first seconds after every cold start the launcher drew a workspace's sidebar under "the
+    # disk these files are on is not answering".
+    serve_api_workspace_here = _offloaded(serve_api_workspace)
+    HTTP.register!(router, "GET", "/api/v1/workspace", request -> _workspace_root(request) === nothing ? serve_api_workspace(request) : serve_api_workspace_here(request))
 
     # One folder's entries, nothing below it. This is what makes the sidebar's cost track what the
     # user has open rather than the size of the workspace: the hub asks for a folder when it is
@@ -988,13 +1060,26 @@ function register_collab_api!(router, session::ServerSession)
         if expected !== nothing && isfile(path) && mtime(path) != expected
             return _api_error(409, "the file changed on disk since it was opened", false)
         end
+        # atomic, like the notebook save path; unique tmp so concurrent saves of the same
+        # path can't interleave writes into one temp file
+        tmp = path * ".spacestation_tmp." * string(rand(UInt32), base=16)
         try
-            # atomic, like the notebook save path; unique tmp so concurrent saves of the same
-            # path can't interleave writes into one temp file
-            tmp = path * ".spacestation_tmp." * string(rand(UInt32), base=16)
             write(tmp, request.body)
-            mv(tmp, path; force=true)
+            # `rename` puts the new file in the old one's place in one step. (`mv(force=true)` removes
+            # the old one first on older Julia: a moment with no file, and on Windows, where a file
+            # another program has open cannot be replaced, the removal could succeed and the move fail.)
+            # A scanner or an indexer holds a file for an instant on Windows: try again before giving up.
+            for attempt in 1:(Sys.iswindows() ? 5 : 1)
+                try
+                    Base.Filesystem.rename(tmp, path)
+                    break
+                catch
+                    attempt == (Sys.iswindows() ? 5 : 1) && rethrow()
+                    sleep(0.1 * attempt)
+                end
+            end
         catch e
+            rm(tmp; force=true) # or it stays in the tree as `name.spacestation_tmp.1a2b`
             return _api_error(500, "could not save: $(sprint(showerror, e))", false)
         end
         HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], """{"ok": true, "mtime": $(mtime(path))}\n""")
@@ -1007,6 +1092,8 @@ function register_collab_api!(router, session::ServerSession)
         path = tamepath(query["path"])
         isfile(path) && return _api_error(409, "file already exists: $path", false)
         isdir(dirname(path)) || return _api_error(400, "no such directory: $(dirname(path))", false)
+        complaint = _name_complaint(basename(path))
+        complaint === nothing || return _api_error(400, complaint, false)
         try
             write(path, "")
         catch e
@@ -1023,10 +1110,18 @@ function register_collab_api!(router, session::ServerSession)
         (haskey(query, "path") && haskey(query, "newpath")) || return _api_error(400, "pass ?path=/abs/old&newpath=/abs/new", false)
         path = tamepath(query["path"]); newpath = tamepath(query["newpath"])
         ispath(path) || return _api_error(404, "no such file or folder: $path", false)
-        ispath(newpath) && return _api_error(409, "$(basename(newpath)) already exists", false)
+        # `foo.jl` to `Foo.jl`: where case is not told apart the new name "exists", and it is this file
+        only_case = ispath(newpath) && path != newpath && lowercase(path) == lowercase(newpath) && try
+            Base.Filesystem.samefile(path, newpath)
+        catch
+            false
+        end
+        ispath(newpath) && !only_case && return _api_error(409, "$(basename(newpath)) already exists", false)
         isdir(dirname(newpath)) || return _api_error(400, "no such directory: $(dirname(newpath))", false)
+        complaint = _name_complaint(basename(newpath))
+        complaint === nothing || return _api_error(400, complaint, false)
         try
-            mv(path, newpath)
+            only_case ? Base.Filesystem.rename(path, newpath) : mv(path, newpath)
             sidecar = path * OUTPUT_CACHE_SUFFIX
             isfile(sidecar) && !ispath(newpath * OUTPUT_CACHE_SUFFIX) && mv(sidecar, newpath * OUTPUT_CACHE_SUFFIX)
         catch e
@@ -1042,6 +1137,8 @@ function register_collab_api!(router, session::ServerSession)
         path = tamepath(query["path"])
         ispath(path) && return _api_error(409, "$(basename(path)) already exists", false)
         isdir(dirname(path)) || return _api_error(400, "no such directory: $(dirname(path))", false)
+        complaint = _name_complaint(basename(path))
+        complaint === nothing || return _api_error(400, complaint, false)
         try
             mkdir(path)
         catch e

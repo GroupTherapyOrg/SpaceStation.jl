@@ -389,6 +389,64 @@ end # testset
     end
 end
 
+@testset "A folder as it is typed, and one way to write it" begin
+    mktempdir() do tmp
+        dir = joinpath(realpath(tmp), "My Project")
+        mkpath(joinpath(dir, "Sub Folder"))
+        # pasted from a file manager: in quotes, with a separator at the end
+        @test Pluto._typed_path("\"$(dir)\"") == dir
+        @test Pluto._typed_path("  $(dir)  ") == dir
+        @test Pluto._one_spelling(joinpath(dir, "Sub Folder", "")) == joinpath(dir, "Sub Folder")
+        @test Pluto._one_spelling(dir) == dir
+        if Sys.iswindows() || Sys.isapple()
+            # the same folder, written in another case, is the same workspace
+            other = joinpath(dir, "sub folder")
+            if isdir(other) # (a volume can be set up to tell case apart)
+                @test Pluto._one_spelling(other) == joinpath(dir, "Sub Folder")
+                @test Pluto.workspace_id(Pluto._one_spelling(other)) == Pluto.workspace_id(joinpath(dir, "Sub Folder"))
+            end
+        end
+        if Sys.iswindows()
+            drive = dir[1:2]
+            @test Pluto._typed_path(drive) == drive * "\\"
+            @test Pluto._one_spelling(lowercase(dir)) == dir
+            @test (drive * "\\") in Pluto._drive_roots()
+            for bad in ["con", "NUL.txt", "notes 10:30.md", "what?.jl", "ends.", "ends ", "a<b"]
+                @test Pluto._name_complaint(bad) isa String
+            end
+            for fine in ["notes.txt", "My File (2).jl", "console.log", "com10.txt", ".gitignore"]
+                @test Pluto._name_complaint(fine) === nothing
+            end
+        else
+            @test isempty(Pluto._drive_roots())
+            @test Pluto._name_complaint("notes 10:30.md") === nothing # a fine name here
+        end
+    end
+end
+
+Sys.isunix() && @testset "Ctrl+C reaches the program a terminal runs" begin
+    # This server keeps SIGINT blocked in its threads; a shell that inherits that hands it to every
+    # program it starts, and Ctrl+C prints ^C and stops nothing. bash keeps the mask it is given.
+    shell = something(Sys.which("bash"), "/bin/sh")
+    pty = Pluto.pty_spawn(["/bin/sh", "-c", "exec $(shell)"])
+    got = UInt8[]
+    reader = @async for data in pty.output
+        append!(got, data)
+    end
+    seen(text) = occursin(text, String(copy(got)))
+    try
+        sleep(2)
+        Pluto.pty_write(pty, "sleep 60\n")
+        sleep(1.5)
+        Pluto.pty_write(pty, "\x03")
+        sleep(1)
+        Pluto.pty_write(pty, "echo after-\$((40+2))\n")
+        @test timedwait(() -> seen("after-42"), 15.0) == :ok
+    finally
+        Pluto.pty_close!(pty)
+    end
+end
+
 Sys.isunix() && @testset "What a terminal is running" begin
     port = 13000 + rand(1:999)
     options = Pluto.Configuration.from_flat_kwargs(; port, launch_browser=false, require_secret_for_access=false, require_secret_for_open_links=false, workspace_use_distributed=false, workspace=mktempdir())

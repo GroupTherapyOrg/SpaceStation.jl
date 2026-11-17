@@ -978,6 +978,10 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
     // Built by the server: splitting a path on "/" here turned a Windows one into a single bogus
     // crumb, and joining one back together means knowing about drives and backslashes.
     const crumbs = listing?.crumbs ?? []
+    // A path is drawn with the separator of the system it is on: `C: \ Users \ me`, `/ home / me`.
+    // (The root's own name carries one on Windows, `C:\`; drawn as it is, the row read `C:\ Users / me`.)
+    const crumb_sep = /^[A-Za-z]:|^\\\\/.test(crumbs[0]?.name ?? "") ? "\\" : "/"
+    const crumb_name = (c, i) => (i === 0 && crumb_sep === "\\" ? c.name.replace(/\\+$/, "") : c.name)
 
     // A link to something that is ready, opened in a new tab (which keeps its opener: the way home).
     const open_link = (url, title, body, classname = "ws-open") => html`<a class=${classname} href=${open_href(url)} target=${`spacestation-${url}`} title=${`Open ${title}`}>${body}</a>`
@@ -1111,10 +1115,26 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                                   <nav class="breadcrumbs" aria-label="Folder path">
                                       ${crumbs.map(
                                           (c, i) => html`<button class="crumb ${i === crumbs.length - 1 ? "current" : ""}" onClick=${() => browse(c.path)} title=${c.path}>
-                                                  ${c.name}</button
-                                              >${i > 0 && i < crumbs.length - 1 ? html`<span class="crumb-sep">/</span>` : null}`
+                                                  ${crumb_name(c, i)}</button
+                                              >${(i > 0 || crumb_sep === "\\") && i < crumbs.length - 1 ? html`<span class="crumb-sep">${crumb_sep}</span>` : null}`
                                       )}
                                   </nav>
+                                  ${
+                                      // Windows: the other drives. Nothing above `C:\` lists them, and a path on D: could only be typed.
+                                      (listing.drives ?? []).length > 1
+                                          ? html`<span class="drives" role="group" aria-label="Drives">
+                                                ${listing.drives.map(
+                                                    (d) => html`<button
+                                                        class="crumb drive ${crumbs[0]?.path?.toUpperCase() === d.toUpperCase() ? "current" : ""}"
+                                                        onClick=${() => browse(d)}
+                                                        title=${`Go to drive ${d}`}
+                                                    >
+                                                        ${d.replace(/[\\/]+$/, "")}
+                                                    </button>`
+                                                )}
+                                            </span>`
+                                          : null
+                                  }
                               </div>
                               <form
                                   class="paste-path"
@@ -1734,8 +1754,11 @@ const FileEditorPane = ({ path, label, visible, on_dirty }) => {
     const [status, set_status] = useState("Loading…")
     const [failed, set_failed] = useState(false)
 
-    // what is on disk as far as this editor knows: the text, and when it was written
-    const saved_ref = useRef({ text: "", mtime: /** @type {string?} */ (null) })
+    // What is on disk as far as this editor knows: the text, how its lines end, and when it was written.
+    // The editor holds every line break as "\n", whatever the file has. A file whose lines end in
+    // "\r\n" (most text made on Windows) is given back that way: saved with "\n" it shows up in git
+    // as changed on every line, and some Windows programs read it as one long line.
+    const saved_ref = useRef({ text: "", mtime: /** @type {string?} */ (null), eol: "\n" })
     const mark_dirty = useCallback(
         (now_dirty) => {
             if (file_dirty.get(path) === now_dirty) return
@@ -1749,7 +1772,8 @@ const FileEditorPane = ({ path, label, visible, on_dirty }) => {
         async ({ overwrite = false } = {}) => {
             const view = view_ref.current
             if (view == null) return
-            const text = view.state.doc.toString()
+            const shown = view.state.doc.toString()
+            const text = saved_ref.current.eol === "\n" ? shown : shown.replace(/\n/g, saved_ref.current.eol)
             const condition = !overwrite && saved_ref.current.mtime != null ? `&if_mtime=${encodeURIComponent(saved_ref.current.mtime)}` : ""
             try {
                 const r = await fetch(`./api/v1/file/save?path=${encodeURIComponent(path)}${condition}`, { method: "POST", body: text })
@@ -1766,8 +1790,8 @@ const FileEditorPane = ({ path, label, visible, on_dirty }) => {
                 }
                 if (!r.ok) throw new Error(await failure_text(r))
                 const answer = await r.json().catch(() => ({}))
-                saved_ref.current = { text, mtime: answer.mtime != null ? String(answer.mtime) : null }
-                mark_dirty(view.state.doc.toString() !== text)
+                saved_ref.current = { ...saved_ref.current, text: shown, mtime: answer.mtime != null ? String(answer.mtime) : null }
+                mark_dirty(view.state.doc.toString() !== shown)
                 set_failed(false)
                 set_status("Saved")
                 setTimeout(() => set_status(""), 1500)
@@ -1796,7 +1820,9 @@ const FileEditorPane = ({ path, label, visible, on_dirty }) => {
                 const response = await fetch(`./api/v1/file?path=${encodeURIComponent(path)}`)
                 if (!response.ok) throw new Error(await failure_text(response))
                 const content = await response.text()
-                saved_ref.current = { text: content, mtime: response.headers.get("X-File-Mtime") }
+                const breaks = (content.match(/\n/g) ?? []).length
+                const crlf = (content.match(/\r\n/g) ?? []).length
+                saved_ref.current = { text: content.replace(/\r\n?/g, "\n"), mtime: response.headers.get("X-File-Mtime"), eol: crlf > 0 && crlf * 2 >= breaks ? "\r\n" : "\n" }
                 const v = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim()
                 const pluto_colors = cm.HighlightStyle.define(
                     [
@@ -2044,7 +2070,10 @@ const Land = () => {
         }
         let move = 0
         let jump = -1
-        if (e.ctrlKey && !e.metaKey && !e.altKey && e.key === "Tab") move = e.shiftKey ? -1 : 1
+        // Off macOS a browser keeps Ctrl+Tab and Ctrl+PageUp/PageDown for its own tabs: in an ordinary
+        // tab they never get here (they do in an installed-app window). Alt+[ and Alt+] are nobody's.
+        if (!mac && e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && (e.code === "BracketLeft" || e.code === "BracketRight")) move = e.code === "BracketLeft" ? -1 : 1
+        else if (e.ctrlKey && !e.metaKey && !e.altKey && e.key === "Tab") move = e.shiftKey ? -1 : 1
         else if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && (e.key === "PageUp" || e.key === "PageDown")) move = e.key === "PageUp" ? -1 : 1
         else if (mac && e.metaKey && e.shiftKey && !e.altKey && !e.ctrlKey && (e.code === "BracketLeft" || e.code === "BracketRight")) move = e.code === "BracketLeft" ? -1 : 1
         else if (mac && e.metaKey && e.altKey && !e.shiftKey && !e.ctrlKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) move = e.key === "ArrowLeft" ? -1 : 1
@@ -3145,8 +3174,11 @@ const Land = () => {
                 {
                     label: tab == null ? "Open notebook environment in terminal" : `Open the environment of ${basename(tab.path)} in a terminal`,
                     icon: "i-terminal",
-                    // no Pluto-managed environment: it has not run yet, or it activates its own with Pkg.activate
-                    disabled: env?.managed !== true,
+                    // Greyed out only when the server SAYS there is no environment to open, and then with the
+                    // reason beside it. (No answer in time, as over a slow link to another machine, is not a no:
+                    // the server works the command out again when the terminal starts.)
+                    disabled: env != null && env.command == null,
+                    keys: env != null && env.command == null ? (env.running === false ? "run the notebook first" : "its process is busy") : undefined,
                     run: () => tab && new_terminal({ label: `env: ${basename(tab.path)}`, notebook_env: tab.id }),
                 },
                 "-",

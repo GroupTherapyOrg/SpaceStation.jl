@@ -73,6 +73,20 @@ function ensure_pluto_collab_installed()
     try
         bindir = apps_bin_dir()
         isdir(bindir) || mkpath(bindir)
+        if Sys.iswindows()
+            # The script is bash and curl. On Windows the same command is a `.cmd` that runs the
+            # built-in form (collab_cli.jl) with this very Julia and environment, so the name every
+            # banner, AGENTS.md and agent uses works in PowerShell and cmd. The bash file is NOT put
+            # beside it: a file without an extension on PATH is what PowerShell finds first, and it
+            # answers with "How do you want to open this file?".
+            rm(joinpath(bindir, "pluto-collab"); force=true)
+            dest = joinpath(bindir, "pluto-collab.cmd")
+            julia = joinpath(Sys.BINDIR, "julia.exe")
+            project = something(Base.active_project(), "")
+            shim = "@echo off\r\n\"$(julia)\" --startup-file=no --history-file=no --project=\"$(dirname(project))\" -e \"import SpaceStation; exit(SpaceStation.collab_cli_main(String.(ARGS), pwd()))\" -- %*\r\n"
+            (isfile(dest) && read(dest, String) == shim) || write(dest, shim)
+            return dest
+        end
         dest = joinpath(bindir, "pluto-collab")
         if !isfile(dest) || read(dest, String) != PLUTO_COLLAB_SCRIPT
             write(dest, PLUTO_COLLAB_SCRIPT)
