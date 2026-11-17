@@ -311,7 +311,8 @@ function run!(session::ServerSession)
     pluto_router = http_router_for(session)
     store_session_middleware = create_session_context_middleware(session)
     store_binder_token_middleware = create_binder_token_middleware(session)
-    app = pluto_router |> auth_middleware |> store_session_middleware |> store_binder_token_middleware |> internal_error_middleware |> default_headers_middleware
+    # remote_host_middleware sits inside the auth gate: a launcher request for another machine (`?host=`) is relayed only once it is this hub's own, authenticated request
+    app = pluto_router |> remote_host_middleware |> auth_middleware |> store_session_middleware |> store_binder_token_middleware |> internal_error_middleware |> default_headers_middleware
     # `HTTP.streamhandler` reads the request body, calls `app`, and writes the response.
     streamed_app = HTTP.streamhandler(app)
 
@@ -350,6 +351,7 @@ function run!(session::ServerSession)
     session.options.server.hub && !helper && start_file_helpers!()
     # before the secret is written anywhere or printed: a hub takes up the sign-in it had (Authentication.jl)
     session.options.server.hub && !helper && keep_sign_in!(session, port)
+    session.options.server.hub && !helper && register_dev_remote_hosts!() # test seam: RemoteHosts.jl
     # The copy for older clients goes into the shared home: a hub with helpers has a helper write it.
     registry_file = helper ? "" : write_collab_registry_file(session, port; announce_legacy=!file_helpers_active())
     file_helpers_active() && announce_legacy_via_helper(registry_file)
@@ -412,6 +414,23 @@ function run!(session::ServerSession)
             http.message.body = read(http)
             _write_response!(http, HTTP.Response(404, ["Content-Type" => "text/plain"], "not served by a file helper\n"))
             return
+        end
+        if session.options.server.hub
+            # Another machine's notebooks, on that host's own origin (`<label>.localhost`): routed by
+            # `Host` before anything else, so that origin reaches nothing of this hub's (RemoteHosts.jl).
+            let label = content_origin_label(http.message)
+                if label !== nothing
+                    handle_content_request(http, session, label)
+                    return
+                end
+            end
+            # A workspace on another machine: `/h/<host>/w/<id>/…`, this hub's page over that machine's hub.
+            let hs = split_host_target(http.message.target; base_url=session.options.server.base_url)
+                if hs !== nothing
+                    handle_workspace_request(http, session, app, hs.wid, hs.rest; remote=hs.host)
+                    return
+                end
+            end
         end
         let ws = split_workspace_target(http.message.target; base_url=session.options.server.base_url)
             if ws !== nothing

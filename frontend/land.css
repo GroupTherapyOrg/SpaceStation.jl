@@ -420,8 +420,19 @@ body.resizing-v .terminal-host {
     overflow: hidden;
     text-overflow: ellipsis;
 }
-.side-where .where-branch {
+.side-where .where-branch,
+.side-where .where-host {
     gap: 6px;
+}
+.side-where .where-host {
+    color: var(--land-accent);
+    font-weight: 600;
+}
+.side-where .where-host .ico {
+    width: 13px;
+    height: 13px;
+    flex-shrink: 0;
+    margin-left: -19px;
 }
 .side-where .where-branch .ico {
     width: 13px;
@@ -1607,6 +1618,16 @@ dialog.land-dialog .buttons .text-button {
     color: var(--land-muted);
     direction: ltr;
 }
+/* a workspace on another machine: which one, between its name and its path */
+.ws-card .ws-host {
+    max-width: 100%;
+    color: var(--land-accent);
+    font-size: 11.5px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
 .ws-card .ws-state {
     margin-top: 9px;
 }
@@ -1770,6 +1791,43 @@ dialog.land-dialog .buttons .text-button {
 /* the folder browser */
 .browse-panel {
     display: block;
+}
+/* whose folders the browser shows: this computer, or a machine this hub is connected to */
+.place-switch {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 8px calc(var(--land-pad) - 5px);
+    border-bottom: 1px solid var(--land-border);
+}
+.place-switch button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 26px;
+    padding: 0 11px 0 9px;
+    border: none;
+    border-radius: 999px;
+    background: none;
+    color: var(--land-muted);
+    font-size: 12.5px;
+    transition: background-color 0.12s ease-out, color 0.12s ease-out;
+}
+.place-switch button:hover:not(:disabled) {
+    color: var(--land-fg);
+    background-color: var(--land-hover);
+}
+.place-switch button.active {
+    color: var(--land-fg);
+    background-color: var(--land-accent-tint);
+    box-shadow: var(--land-ring);
+}
+.place-switch button:disabled {
+    opacity: 0.5;
+}
+.place-switch .ico {
+    width: 14px;
+    height: 14px;
 }
 .browse-bar {
     display: flex;
