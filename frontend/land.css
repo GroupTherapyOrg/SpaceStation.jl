@@ -581,8 +581,8 @@ body.resizing-v .terminal-host {
     opacity: 1;
 }
 #land > aside h2 .icon-button {
-    width: 22px;
-    height: 22px;
+    width: 24px;
+    height: 24px;
 }
 #land > aside h2 .count {
     font-weight: 600;
@@ -714,8 +714,8 @@ body.resizing-v .terminal-host {
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
-    width: 22px;
-    height: 22px;
+    width: 24px;
+    height: 24px;
     padding: 0;
     border: none;
     border-radius: 6px;
@@ -897,9 +897,10 @@ body.moving-tab #frames iframe {
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
-    width: 20px;
-    height: 20px;
-    margin: 0 5px 0 1px;
+    /* 24px: the smallest thing a finger or an unsteady pointer can be asked to hit */
+    width: 24px;
+    height: 24px;
+    margin: 0 2px 0 0;
     padding: 0;
     border: none;
     border-radius: 6px;
@@ -1078,7 +1079,7 @@ body.moving-tab #frames iframe {
     color: var(--land-danger);
 }
 .file-toolbar .file-save {
-    height: 22px;
+    height: 24px;
 }
 
 .file-editor {
@@ -1487,8 +1488,8 @@ dialog.land-dialog .buttons .text-button {
     flex: 1;
 }
 .opener-section > h2 .icon-button {
-    width: 22px;
-    height: 22px;
+    width: 24px;
+    height: 24px;
 }
 .opener-section > h2 .icon-button .ico {
     width: 13px;
@@ -1777,6 +1778,8 @@ dialog.land-dialog .buttons .text-button {
     font-size: 12px;
 }
 .breadcrumbs .crumb {
+    min-height: 24px;
+    min-width: 24px;
     padding: 2px 5px;
     border: none;
     border-radius: 4px;
@@ -1886,7 +1889,7 @@ dialog.land-dialog .buttons .text-button {
 }
 .ssh-timeout input {
     width: 44px;
-    height: 22px;
+    height: 24px;
     padding: 0 4px;
     box-sizing: border-box;
     border: 1px solid var(--land-border-strong);
