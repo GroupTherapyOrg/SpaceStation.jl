@@ -1719,6 +1719,7 @@ const Land = () => {
     const [error, set_error] = useState(/** @type {String?} */ (null))
     // what the background poll could not do; it clears itself when the poll works again
     const [poll_error, set_poll_error] = useState(/** @type {String?} */ (null))
+    const [signed_out, set_signed_out] = useState(false)
     const [sidebar_width, set_sidebar_width] = useState(() => Number(store.get("spacestation sidebar width")) || SIDEBAR_WIDTH)
     const [sidebar_hidden, set_sidebar_hidden] = useState(() => store.get("spacestation sidebar hidden") === "true")
     const [terminal_open, set_terminal_open] = useState(() => store.get("spacestation terminal open") === "true")
@@ -2067,6 +2068,14 @@ const Land = () => {
         try {
             const ws_response = await fetch("./api/v1/workspace", { signal })
             unreachable.current = 0
+            // 403: this page's sign-in is no longer good. The server makes a new secret each time it
+            // starts, so every page left open across a restart ends up here; say so, instead of a
+            // toast reading "403" over a page that has quietly stopped working.
+            if (ws_response.status === 403) {
+                set_signed_out(true)
+                return
+            }
+            set_signed_out(false)
             if (ws_response.status === 404) {
                 set_files_status(null)
                 set_no_workspace(true)
@@ -2611,6 +2620,20 @@ const Land = () => {
     // The opener is "homebase": it shows on first launch (no workspace) and on demand (the "open another
     // workspace" button). Picking a folder spawns a child server in a new tab — it never takes over this
     // tab — so the launcher persists as the place you see and manage every running workspace.
+    if (signed_out) {
+        return html`<div class="signed-out">
+            <div class="island signed-out-card" role="alert">
+                <img class="land-logo" src=${logo_url} alt="" />
+                <h1>This page is signed out</h1>
+                <p>
+                    SpaceStation was restarted since this page was opened, and each start has a new sign-in link. Nothing is lost: notebooks and files are
+                    where they were.
+                </p>
+                <p>Open the link that <code>spacestation</code> printed when it started, or run it again.</p>
+                <button class="text-button primary" onClick=${() => window.location.reload()}>Try again</button>
+            </div>
+        </div>`
+    }
     if (no_workspace || show_opener) {
         return html`<${WorkspaceOpener} on_cancel=${no_workspace ? null : () => set_show_opener(false)} tunneled=${tunneled} />`
     }
