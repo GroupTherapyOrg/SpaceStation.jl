@@ -940,8 +940,15 @@ function _mark_remote_ready!(r::RemoteSession, local_port::Integer, remote_port:
         _write_private_file(path, """{"pid": $(getpid()), "host": "127.0.0.1", "port": $(local_port), "node": $(_json_string(gethostname())), "secret": $(_json_string(remote.secret)), "remote_ssh_host": $(_json_string(r.host)), "spacestation_version": $(_json_string(PLUTO_VERSION_STR)), "pluto_version": $(_json_string(PLUTO_VERSION_STR)), "started_at": $(time())}\n""")
     catch end
     _set_active_remote!(r.host, true) # so a hub restart can put this tunnel back by itself
+    # From here its workspaces are pages of THIS hub (RemoteHosts.jl). Before the state says ready:
+    # the launcher asks for the table as soon as it does.
+    hosted = try
+        host_connected!(r.host, local_port, remote.secret)
+    catch
+        false
+    end
     r.state = "ready"
-    r.detail = "connected — the workspace runs on $(r.host)"
+    r.detail = hosted ? "connected — its workspaces open here" : "connected — the workspace runs on $(r.host)"
     # remembered for the next connect: see "the server we used last time". (A reconnect through this
     # path checks the node's clone in the background: see _update_remote_clone_later.)
     # Only a server that says who it is on /ping can be reconnected to (an older one cannot, and
@@ -1338,6 +1345,7 @@ function cancel_remote_session!(host::String)
         get(REMOTE_SESSIONS, host, nothing)
     end
     _set_active_remote!(host, false) # an explicit disconnect must not come back on the next start
+    host_disconnected!(host)
     if r !== nothing
         r.cancelled = true
         _kill_tunnel!(r) # and wait for it: a Connect right after ✕ must find the port free, not moving
@@ -1521,6 +1529,8 @@ function register_collab_remote!(router, session::ServerSession)
             "state" => r.state,
             "detail" => r.detail,
             "url" => r.state == "ready" ? _remote_url(r) : nothing,
+            # its workspaces are pages of this hub (/h/<host>/w/<id>/): the launcher browses it, and does not go to `url`
+            "hosted" => r.state == "ready" && remote_host(r.host) !== nothing,
         ]) * "\n"
     end
 
@@ -1557,6 +1567,7 @@ function register_collab_remote!(router, session::ServerSession)
                     "host" => r.host,
                     "state" => r.state,
                     "url" => r.state == "ready" ? _remote_url(r) : nothing,
+                    "hosted" => r.state == "ready" && remote_host(r.host) !== nothing,
                 ]
                 for r in values(REMOTE_SESSIONS)
             ]

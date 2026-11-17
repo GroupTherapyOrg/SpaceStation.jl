@@ -93,6 +93,38 @@ end
 remote_host(name::AbstractString) = lock(() -> get(REMOTE_HOSTS, name, nothing), REMOTE_HOSTS_LOCK)
 remote_hosts() = lock(() -> sort!(collect(values(REMOTE_HOSTS)); by=h -> h.name), REMOTE_HOSTS_LOCK)
 
+# --- a machine reached over SSH -------------------------------------------------------------------
+#
+# CollabRemote.jl gets a hub running on the machine and a forward to it on a loopback port of this
+# one. That is everything the table needs: when a connect is done the machine is registered here, and
+# from then on its workspaces are pages of this hub, like those of any other machine in the table.
+# The forward's own address (`http://localhost:<port>/`, the machine's own copy of the interface)
+# still answers; nothing here sends anybody there.
+
+"`SPACESTATION_ONE_ADDRESS=0`: a connected machine is not put in the table, and opens at its own address as before."
+one_address_enabled() = get(ENV, "SPACESTATION_ONE_ADDRESS", "1") != "0"
+
+"Is the server answering on this loopback port, with this secret, a hub? (Only a hub has workspaces at `/w/<id>/` to relay to; a server of one folder does not.)"
+function _is_hub_at(port::Integer, secret::AbstractString)::Bool
+    try
+        r = HTTP.get("http://127.0.0.1:$(port)/api/v1/config?secret=$(HTTP.escapeuri(secret))";
+            connect_timeout=2, readtimeout=4, retry=false, redirect=false, status_exception=false, cookies=false)
+        r.status == 200 && occursin(r"\"hub\":\s*true", String(r.body))
+    catch
+        false
+    end
+end
+
+"A connect to `name` is done: its hub answers on loopback `port`. Put it in the table, if it is a hub and one address is on."
+function host_connected!(name::AbstractString, port::Integer, secret::AbstractString)::Bool
+    (one_address_enabled() && valid_host_name(name) && _is_hub_at(port, secret)) || return false
+    register_remote_host!(name; port, secret)
+    true
+end
+
+"`name` was disconnected on purpose: it leaves the table, and its notebooks' addresses stop working."
+host_disconnected!(name::AbstractString) = (remote_host(name) === nothing || unregister_remote_host!(name); nothing)
+
 # --- TEST SEAM -----------------------------------------------------------------------------------
 #
 # SPACESTATION_DEV_REMOTE_HOSTS="name=/path[,name=/path…]": each path is a hub's connection file, or
@@ -161,7 +193,9 @@ end
 # On the way out: no cookie and no Origin (as for a child), and nothing that names this hub's own
 # address. `Referer` would: the launcher is often opened as `/?secret=…`, and a Referer of that
 # page would hand this hub's secret to the remote machine.
-const _REMOTE_HOP_REQUEST_HEADERS = union(_HOP_REQUEST_HEADERS, Set{String}(["referer", "x-forwarded-for", "forwarded"]))
+# Nor what the browser said about where its request came from (`Sec-Fetch-*`): that is about its
+# request to THIS hub, which judged it; the remote would judge its own cookie by it (Authentication.jl).
+const _REMOTE_HOP_REQUEST_HEADERS = union(_HOP_REQUEST_HEADERS, Set{String}(["referer", "x-forwarded-for", "forwarded", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "sec-fetch-user"]))
 
 upstream_port(u::RemoteUpstream) = u.host.port
 "The remote-side target: under the workspace's prefix there, without the `secret` the browser may have sent (this hub's)."

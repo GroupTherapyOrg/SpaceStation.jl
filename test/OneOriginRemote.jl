@@ -338,6 +338,39 @@ answer = 123456 + 654321
                 end
             end
 
+            # What an SSH connect ends with: a hub on the machine, answering on a loopback port of this
+            # one (CollabRemote.jl). Here that port is the stand-in hub's own; no SSH is involved.
+            @testset "a machine connected over SSH enters the table when its connect is done" begin
+                r = Pluto.RemoteSession("ssh-node", "tunneling", "", 0, "", "", nothing, nothing, false)
+                lock(() -> (Pluto.REMOTE_SESSIONS["ssh-node"] = r), Pluto.REMOTE_SESSIONS_LOCK)
+                try
+                    Pluto._mark_remote_ready!(r, remote_port, remote_port, remote_secret)
+                    @test r.state == "ready" && Pluto.remote_host("ssh-node") !== nothing
+                    @test occursin("\"host\":\"ssh-node\"", body(hget(signed("/api/v1/hosts"))))
+                    @test occursin("\"hosted\":true", body(hget(signed("/api/v1/remote/status?host=ssh-node"))))
+                    # its workspaces are this hub's pages, at this hub's address
+                    @test occursin("\"url\":\"/h/ssh-node/w/$(wid)/\"", body(hget(signed("/api/v1/local/list?host=ssh-node"))))
+                    files = hget(signed("/h/ssh-node/w/$wid/api/v1/workspace"))
+                    @test files.status == 200 && occursin("notes.txt", body(files))
+                    # a server of one folder is not a hub: it has nothing at /w/<id>/ to relay to, and stays out
+                    @test !Pluto.host_connected!("leaf-node", child_session.options.server.port, child_session.secret)
+                    @test Pluto.remote_host("leaf-node") === nothing
+                    @test !Pluto.host_connected!("gone-node", oor_free_port(), "whatever")
+                    withenv("SPACESTATION_ONE_ADDRESS" => "0") do                        # turned off: as before this existed
+                        @test !Pluto.host_connected!("off-node", remote_port, remote_secret)
+                    end
+                    @test Pluto.remote_host("off-node") === nothing
+                    # a disconnect takes it out, and its addresses with it
+                    Pluto.cancel_remote_session!("ssh-node")
+                    @test Pluto.remote_host("ssh-node") === nothing
+                    @test hget(signed("/h/ssh-node/w/$wid/api/v1/workspace")).status == 404
+                    @test !occursin("ssh-node", body(hget(signed("/api/v1/hosts"))))
+                finally
+                    lock(() -> delete!(Pluto.REMOTE_SESSIONS, "ssh-node"), Pluto.REMOTE_SESSIONS_LOCK)
+                    Pluto.unregister_remote_host!("ssh-node")
+                end
+            end
+
             @testset "the remote goes away: an answer at once, and the rest keeps working" begin
                 HTTP.post("http://127.0.0.1:$(remote_port)/api/v1/shutdown", ["Authorization" => "Bearer $remote_secret"]; retry=false, status_exception=false, cookies=false, readtimeout=10)
                 @test oor_wait_for(() -> process_exited(remote_proc); timeout=40) == true

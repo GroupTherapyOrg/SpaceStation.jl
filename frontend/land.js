@@ -707,7 +707,11 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                 status = await get_json(`./api/v1/remote/status?host=${encodeURIComponent(host)}`)
                 set_remote_states((s) => ({ ...s, [host]: status }))
             }
-            if (status.state === "ready" && status.url != null) {
+            if (status.state === "ready" && status.hosted) {
+                // its workspaces are pages of this hub: show its folders here, and go nowhere
+                set_hosts(await get_json("./api/v1/hosts").catch(() => []))
+                browse_on_ref.current?.(host)
+            } else if (status.state === "ready" && status.url != null) {
                 window.open(open_href(status.url), `spacestation-${status.url}`) // may be blocked: the pill stays a clickable link either way
             }
         } catch (e) {
@@ -715,6 +719,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
             set_remote_states((s) => ({ ...s, [host]: { state: "error", detail: String(e), url: null } }))
         }
     }, [])
+    const browse_on_ref = useRef(/** @type {((host: String) => void)?} */ (null))
 
     // Cancel / dismiss / disconnect a remote: stop polling, tell the server to bail + drop it, clear the UI.
     const cancel_remote = useCallback(async (host) => {
@@ -728,7 +733,11 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
             return c
         })
         set_running((rs) => rs.filter((w) => !(w.kind === "remote" && w.host === host)))
+        // it has left the table with its tunnel: its tiles and its row go with it
+        set_hosts((hs) => hs.filter((h) => h.host !== host))
+        if (browsed_host.current === host) void browse_ref.current?.(null, { host: null })
     }, [])
+    const browse_ref = useRef(/** @type {Function?} */ (null))
 
     // Local twin of connect_remote: spawn (or reattach to) the child server for this folder, then open it
     // in a new tab. The homebase tab stays put, so you can launch as many workspaces as you like.
@@ -945,7 +954,10 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
         const listed = running.find((w) => w.kind === "remote" && w.host === h)
         return remote_states[h] ?? (listed == null ? null : { state: listed.state, detail: "", url: listed.url })
     }
-    const connected_hosts = ssh_hosts.map((host) => ({ host, st: remote_state(host) })).filter(({ st }) => st?.state === "ready" && st.url != null)
+    // a machine whose workspaces are pages of this hub has those as its tiles, not one tile that leads to its own copy of the interface
+    const connected_hosts = ssh_hosts
+        .map((host) => ({ host, st: remote_state(host) }))
+        .filter(({ host, st }) => st?.state === "ready" && st.url != null && !hosts.some((h) => h.host === host))
     const anything_busy = local_rows.some((r) => is_busy(r.st)) || ssh_hosts.some((h) => is_busy(remote_state(h)))
     useEffect(() => {
         if (!anything_busy) return
@@ -960,6 +972,8 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
         void browse(null, { host })
         document.querySelector(".workspace-opener .browse-panel")?.scrollIntoView({ block: "nearest", behavior: "smooth" })
     }
+    browse_on_ref.current = browse_on
+    browse_ref.current = browse
 
     // Built by the server: splitting a path on "/" here turned a Windows one into a single bogus
     // crumb, and joining one back together means knowing about drives and backslashes.
@@ -1167,7 +1181,17 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                                             <span class="ws-state"><span class="dot ok"></span>Connected</span>
                                             <button class="text-button" onClick=${() => browse_on(h.host)}>Open a folder</button>`
                                       : html`<div class="ws-open inert"><svg class="ico" aria-hidden="true"><use href="#i-server" /></svg><span class="ws-name">${h.host}</span></div>
-                                            <span class="ws-state"><span class="dot bad"></span>Not answering</span>`}
+                                            <span class="ws-state"><span class="dot bad"></span>Not answering</span>
+                                            ${ssh_hosts.includes(h.host) ? html`<button class="text-button" onClick=${() => connect_remote(h.host)}>Reconnect</button>` : null}`}
+                                  ${ssh_hosts.includes(h.host)
+                                      ? html`<button
+                                            class="text-button"
+                                            title=${`Close the connection to ${h.host}. Its workspaces and whatever runs in them keep going there.`}
+                                            onClick=${() => cancel_remote(h.host)}
+                                        >
+                                            Disconnect
+                                        </button>`
+                                      : null}
                               </li>`
                           )}
                           ${ssh_hosts_to_connect.map((h) => {
