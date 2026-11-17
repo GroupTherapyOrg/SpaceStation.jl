@@ -1,28 +1,37 @@
 /* SpaceStation shell: the workspace (sidebar, tabs, terminal) and the launcher.
 
-   The look is floating islands: every pane is a rounded card with a glass edge, set on a canvas
-   with the same gap all round. It is Pluto's own idiom (the welcome page's cards and pills, the
-   cream paper, Julia's three colours) built so the pieces line up: one gap, one radius per kind
-   of thing, one edge treatment, and each island painted in a single colour all the way to its
-   corners. A terminal is its island, not a dark box inside a light one.
+   Three parents. From an Apple TV home screen: calm, a lot of room, one tray of uniform tiles, a
+   focus you cannot miss, few controls. From the islands editor themes: every pane a rounded island
+   with a glass edge, floating on a canvas with one gap. From Pluto: cream paper, the heavy sans
+   wordmark, the pill with a coloured ring, Julia's three colours meaning what they mean.
 
-   Colours are the `--land-*` tokens in themes/light.css and themes/dark.css. Icons are Ionicons
-   drawn as masks, so they take the colour of the text around them. */
+   One system for both pages, four levels:
+     canvas   the page                               --land-canvas (+ a faint wash of colour)
+     island   a pane, a tray, a panel: `.island`     one surface, one radius, one glass edge
+     raised   a tile, the open tab, a button         --land-raised-bg + --land-raised-shadow
+     floating menus, dialogs, notices                --land-shadow
+   and one way to say "this one": a 2px ring in the accent colour (the open tab, the focused tile,
+   the main button, keyboard focus).
+
+   Colours are the `--land-*` tokens in themes/light.css and themes/dark.css. */
 
 @import url("./fonts/juliamono.css");
-@import url("./fonts/vollkorn.css");
 
 :root {
     /* editor.css defines this for notebooks; this page does not load editor.css */
     --julia-mono-font-stack: JuliaMono, ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
     --land-ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
-    --land-display-font: Vollkorn, Palatino, Georgia, serif; /* Pluto's own headline face */
-    --land-row: 28px; /* a row in the tree, a list, a menu */
-    --land-strip: 44px; /* the tab strip, the sidebar's header */
+    /* spacing: multiples of 4 */
     --land-gap: 8px; /* between islands, and between them and the window */
-    --land-island-radius: 16px;
-    --land-widget-radius: 12px; /* menus, notices */
-    --land-radius: 8px; /* rows, tabs, inputs */
+    --land-pad: 12px; /* an island's inner edge: where its labels and icons start */
+    --land-row: 28px; /* a row in the tree, a list, a menu */
+    --land-strip: 44px; /* the tab strip */
+    /* radii, one per level */
+    --land-island-radius: 22px;
+    --land-tile-radius: 14px; /* raised tiles, floating menus, dialogs */
+    --land-radius: 9px; /* rows, tabs, inputs */
+    --land-ring: inset 0 0 0 2px var(--land-accent-soft);
+    --land-ease: cubic-bezier(0.3, 1.3, 0.5, 1); /* a small overshoot, as Pluto's own popups have */
 }
 
 html,
@@ -34,6 +43,8 @@ body {
     font-size: 13px;
     line-height: 1.4;
     background-color: var(--land-canvas);
+    background-image: var(--land-canvas-glow);
+    background-attachment: fixed;
     color: var(--land-fg);
     -webkit-font-smoothing: antialiased;
     scrollbar-color: var(--land-border-strong) transparent;
@@ -61,6 +72,7 @@ button {
 :focus-visible {
     outline: 2px solid var(--land-accent);
     outline-offset: -2px;
+    border-radius: var(--land-radius);
 }
 
 /* ---- icons ---- */
@@ -232,29 +244,30 @@ button {
 .text-button {
     flex-shrink: 0;
     height: 28px;
-    padding: 0 12px;
+    padding: 0 13px;
     border: none;
     border-radius: 999px;
     background-color: var(--land-hover);
     color: var(--land-fg);
-    font-weight: 550;
+    font-weight: 600;
     white-space: nowrap;
     text-decoration: none;
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    transition: background-color 0.12s ease-out, box-shadow 0.12s ease-out, transform 0.12s ease-out;
+    transition: background-color 0.12s ease-out, box-shadow 0.12s ease-out, transform 0.16s var(--land-ease);
 }
 .text-button:hover {
     background-color: var(--land-active);
 }
 .text-button.primary {
-    background-color: var(--land-accent);
-    color: var(--land-accent-fg);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18), 0 3px 8px -3px var(--land-accent);
+    background-color: var(--land-raised-bg);
+    color: var(--land-fg);
+    box-shadow: var(--land-raised-shadow), var(--land-ring);
 }
 .text-button.primary:hover {
-    background-color: var(--land-accent-hover);
+    background-color: var(--land-raised-bg);
+    box-shadow: var(--land-raised-shadow), inset 0 0 0 2px var(--land-accent);
     transform: translateY(-1px);
 }
 .text-button.danger {
@@ -319,7 +332,6 @@ button {
     display: flex;
     padding: var(--land-gap);
     box-sizing: border-box;
-    background-color: var(--land-canvas);
 }
 /* An island: one surface, one radius, a glass edge. Its children are clipped to its corners, so
    whatever fills it (a notebook, a terminal) is the island's own shape. */
@@ -328,6 +340,28 @@ button {
     border-radius: var(--land-island-radius);
     box-shadow: var(--land-glass);
     overflow: hidden;
+}
+/* The one label style: what a group of things is. Small, spaced capitals, as on a tv home screen. */
+.section-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0;
+    font-size: 10.5px;
+    font-weight: 650;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--land-muted);
+}
+
+/* The wordmark, as Pluto writes its own name: heavy sans, the second half stepping back. */
+.wordmark {
+    font-weight: 800;
+    letter-spacing: -0.015em;
+    white-space: nowrap;
+}
+.wordmark .land-accent {
+    opacity: 0.5;
 }
 
 #land > aside {
@@ -398,87 +432,69 @@ body.resizing-v .terminal-host {
 
 /* ---- sidebar ---- */
 
-/* Which workspace this is: the mark and the name on one row, then, under both, the folder's path
-   and the branch it is on. */
+/* Which workspace this is. Two edges, shared with everything below it in the sidebar: the logo,
+   section labels and tree icons start at --land-pad; the wordmark, the workspace's name, its path
+   and its branch all start on the line the tree's names start on. */
 .side-head {
     position: relative;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
+    display: grid;
+    grid-template-columns: 28px minmax(0, 1fr) auto;
+    column-gap: 10px;
+    align-items: center;
     flex-shrink: 0;
-    padding: 12px 10px 10px 12px;
+    padding: 14px 8px 12px var(--land-pad);
     box-sizing: border-box;
 }
-.side-brand {
+.side-head .head-buttons {
     display: flex;
-    align-items: center;
-    gap: 9px;
+    gap: 0;
 }
-.side-brand .menu-button {
-    margin-left: auto;
+/* quiet until the sidebar is in use */
+.side-head .head-buttons .icon-button {
+    opacity: 0.55;
+    transition: opacity 0.2s ease-out, background-color 0.12s ease-out, color 0.12s ease-out;
 }
-.side-brand .icon-button + .icon-button {
-    margin-left: -7px;
+#land > aside:hover .head-buttons .icon-button,
+.side-head .head-buttons .icon-button:focus-visible {
+    opacity: 1;
 }
-
-.land-logo {
-    display: block;
-    flex-shrink: 0;
-    width: 30px;
-    height: 30px;
+.side-head .wordmark {
+    font-size: 16px;
+    line-height: 28px;
 }
-
-/* the logo is the way back to the launcher */
-.land-logo-button {
-    display: inline-flex;
-    flex-shrink: 0;
-    margin: 0;
-    padding: 3px;
-    border: none;
-    border-radius: var(--land-radius);
-    background: none;
-}
-.land-logo-button:hover {
-    background-color: var(--land-hover);
-}
-.land-logo-button {
-    transition: transform 0.15s cubic-bezier(0.3, 1.6, 0.5, 1);
-}
-.land-logo-button:hover {
-    transform: translateY(-1px) rotate(-6deg);
-}
-
-.side-brand .wordmark {
+.side-where {
+    grid-column: 2 / -1;
     min-width: 0;
-    font-family: var(--land-display-font);
-    font-size: 19px;
-    font-weight: 700;
-    line-height: 1.1;
-    letter-spacing: -0.005em;
+    margin-top: 6px;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+}
+.side-where .workspace-name {
+    max-width: 100%;
+    font-size: 13px;
+    font-weight: 650;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
-.side-brand .wordmark .land-accent {
-    color: var(--land-muted);
-    font-weight: 500;
-}
-.side-where {
+.side-where .where-line {
     display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 1px;
-    min-width: 0;
-    padding-left: 2px;
+    align-items: center;
+    gap: 5px;
+    max-width: 100%;
     color: var(--land-muted);
     font-family: var(--julia-mono-font-stack);
     font-size: 11px;
-    line-height: 1.4;
+    line-height: 16px;
 }
-.side-where .ico {
+/* the branch mark hangs in the icon column, so the branch's name starts on the text edge */
+.side-where .where-line .ico {
     width: 12px;
     height: 12px;
     flex-shrink: 0;
+    margin-left: -17px;
 }
 .side-where .where-text {
     min-width: 0;
@@ -486,34 +502,17 @@ body.resizing-v .terminal-host {
     overflow: hidden;
     text-overflow: ellipsis;
 }
-.side-where .workspace-path,
-.side-where .git-branch {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    max-width: 100%;
-    box-sizing: border-box;
-    padding: 2px 6px 2px 4px;
-    margin-left: -4px;
-    border-radius: 6px;
-}
-.side-where .workspace-path {
+.side-where button.where-line {
+    margin: 0 0 0 -5px;
+    padding: 0 5px;
     border: none;
+    border-radius: 5px;
     background: none;
-    color: inherit;
-    font: inherit;
     text-align: left;
 }
-/* the path keeps its end, the folder's own name; the start gives way */
-.side-where .workspace-path .where-text {
-    direction: rtl;
-}
-.side-where .workspace-path:hover {
+.side-where button.where-line:hover {
     background-color: var(--land-hover);
     color: var(--land-fg);
-}
-.side-where .git-branch .ico {
-    color: var(--land-julia-green);
 }
 .git-detached {
     flex-shrink: 0;
@@ -524,6 +523,31 @@ body.resizing-v .terminal-host {
     font-family: var(--land-ui-font);
     font-size: 10.5px;
 }
+
+.land-logo {
+    display: block;
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+}
+
+/* the logo is the way back to the launcher */
+.land-logo-button {
+    display: inline-flex;
+    flex-shrink: 0;
+    margin: 0;
+    padding: 0;
+    border: none;
+    border-radius: var(--land-radius);
+    background: none;
+}
+.land-logo-button {
+    transition: transform 0.18s var(--land-ease);
+}
+.land-logo-button:hover {
+    transform: translateY(-1px) rotate(-6deg);
+}
+
 
 .header-menu {
     display: inline-flex;
@@ -539,7 +563,7 @@ body.resizing-v .terminal-host {
     display: flex;
     flex-direction: column;
     background-color: var(--land-raised-bg);
-    border-radius: var(--land-widget-radius);
+    border-radius: var(--land-tile-radius);
     box-shadow: var(--land-shadow);
     animation: land-pop 0.12s ease-out;
 }
@@ -615,22 +639,15 @@ body.resizing-v .terminal-host {
 #land > aside section.running {
     flex-shrink: 0;
     max-height: 34%;
+    margin-top: 4px;
+    padding-top: 4px;
     border-top: 1px solid var(--land-border);
 }
 
 #land > aside h2 {
-    display: flex;
-    align-items: center;
-    gap: 6px;
     flex-shrink: 0;
     height: 28px;
-    margin: 0;
-    padding: 0 8px 0 14px;
-    font-size: 11px;
-    font-weight: 650;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--land-faint);
+    padding: 0 8px 0 var(--land-pad);
 }
 #land > aside h2 .section-actions {
     display: flex;
@@ -679,8 +696,7 @@ body.resizing-v .terminal-host {
     background-color: var(--land-hover);
 }
 #land li.current > .entry-row {
-    background: var(--land-selected);
-    box-shadow: inset 0 0 0 1px var(--land-selected-ring);
+    background-color: var(--land-selected);
 }
 
 .entry {
@@ -690,7 +706,7 @@ body.resizing-v .terminal-host {
     align-items: center;
     gap: 6px;
     height: 100%;
-    padding: 0 4px 0 calc(6px + var(--depth, 0) * 13px);
+    padding: 0 4px 0 calc(6px + var(--depth, 0) * 14px);
     border: none;
     background: none;
     text-align: left;
@@ -709,16 +725,15 @@ body.resizing-v .terminal-host {
 .entry .ico.i-chevron {
     width: 11px;
     height: 11px;
-    margin: 0 -1px;
     color: var(--land-faint);
-    transition: transform 0.1s ease-out;
+    transition: transform 0.12s ease-out;
 }
 #land li.dir.open > .entry-row .i-chevron {
     transform: rotate(90deg);
 }
 /* a file has no chevron: leave its width, so names line up under the folder's */
 .entry .no-chevron {
-    width: 9px;
+    width: 11px;
     flex-shrink: 0;
 }
 #land li.notebook > .entry-row .entry .ico {
@@ -877,11 +892,11 @@ body.resizing-v .terminal-host {
     background-color: var(--land-hover);
     color: var(--land-fg);
 }
-/* the open tab is a pill lifted off the strip, like the buttons on Pluto's welcome page */
+/* the open tab is raised, with the ring: Pluto's pill */
 .tab.active {
     background-color: var(--land-raised-bg);
     color: var(--land-fg);
-    box-shadow: var(--land-pill-shadow);
+    box-shadow: var(--land-raised-shadow), var(--land-ring);
 }
 .tab .title {
     display: flex;
@@ -966,7 +981,7 @@ body.resizing-v .terminal-host {
 .terminal-toggle.active {
     background-color: var(--land-raised-bg);
     color: var(--land-fg);
-    box-shadow: var(--land-pill-shadow);
+    box-shadow: var(--land-raised-shadow);
 }
 
 #frames {
@@ -1014,9 +1029,9 @@ body.resizing-v .terminal-host {
     max-width: 34em;
 }
 #frames .empty-state .lede {
-    font-family: var(--land-display-font);
-    font-size: 22px;
-    font-weight: 600;
+    font-size: 17px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
     color: var(--land-fg);
 }
 #frames .empty-state .empty-actions {
@@ -1152,6 +1167,12 @@ body.resizing-v .terminal-host {
     --term-active: rgba(20, 25, 35, 0.1);
     --term-ring: rgba(20, 25, 35, 0.08);
 }
+.terminal-surface.island {
+    box-shadow: var(--land-glass-on-dark);
+}
+.terminal-surface.scheme-light.island {
+    box-shadow: var(--land-glass-on-light);
+}
 
 #terminal-panel {
     flex-shrink: 0;
@@ -1272,7 +1293,7 @@ body.resizing-v .terminal-host {
     align-items: center;
     gap: 8px;
     padding: 5px 7px 5px 11px;
-    border-radius: var(--land-widget-radius);
+    border-radius: var(--land-tile-radius);
     background-color: var(--land-raised-bg);
     box-shadow: var(--land-shadow);
     color: var(--land-fg);
@@ -1296,7 +1317,7 @@ body.resizing-v .terminal-host {
     align-items: flex-start;
     gap: 8px;
     padding: 9px 7px 9px 11px;
-    border-radius: var(--land-widget-radius);
+    border-radius: var(--land-tile-radius);
     background-color: var(--land-raised-bg);
     box-shadow: var(--land-shadow);
     animation: land-pop 0.14s ease-out;
@@ -1332,7 +1353,7 @@ body.resizing-v .terminal-host {
     gap: 10px;
     max-width: 420px;
     padding: 11px 15px;
-    border-radius: var(--land-widget-radius);
+    border-radius: var(--land-tile-radius);
     background-color: var(--land-raised-bg);
     box-shadow: var(--land-shadow);
 }
@@ -1348,23 +1369,23 @@ body.resizing-v .terminal-host {
 
 dialog.land-dialog {
     width: min(420px, calc(100vw - 32px));
-    padding: 18px;
+    padding: 20px;
     box-sizing: border-box;
     border: none;
     border-radius: var(--land-island-radius);
     background-color: var(--land-raised-bg);
     color: var(--land-fg);
     box-shadow: var(--land-shadow);
-    animation: land-pop 0.14s ease-out;
+    animation: land-pop 0.16s var(--land-ease);
 }
 dialog.land-dialog::backdrop {
     background-color: var(--land-backdrop);
 }
 dialog.land-dialog h3 {
     margin: 0 0 6px;
-    font-family: var(--land-display-font);
-    font-size: 18px;
-    font-weight: 600;
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: -0.005em;
 }
 dialog.land-dialog p {
     margin: 0 0 14px;
@@ -1414,61 +1435,54 @@ dialog.land-dialog .buttons .text-button {
     height: 100%;
     overflow-y: auto;
     box-sizing: border-box;
-    background-color: var(--land-canvas);
 }
 .opener-page {
-    width: min(720px, calc(100vw - 32px));
+    width: min(820px, calc(100vw - 32px));
     margin: 0 auto;
-    padding: 40px 0 64px;
+    padding: 56px 0 72px;
 }
 
 .opener-head {
     display: flex;
     align-items: center;
-    gap: 12px;
-    margin-bottom: 8px;
+    gap: 16px;
+    margin-bottom: 12px;
 }
 .opener-head .opener-logo {
-    width: 44px;
-    height: 44px;
+    width: 52px;
+    height: 52px;
+}
+.opener-head .opener-title {
+    flex: 1;
+    min-width: 0;
 }
 .opener-head h1 {
-    flex: 1;
-    margin: 0;
-    font-family: var(--land-display-font);
-    font-size: 30px;
-    font-weight: 700;
-    letter-spacing: -0.01em;
-    line-height: 1.1;
-}
-.opener-head h1 .land-accent {
-    color: var(--land-muted);
-    font-weight: 500;
+    margin: 2px 0 0;
+    font-size: 34px;
+    line-height: 1.05;
 }
 .opener-head .opener-head-actions {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 6px;
 }
-.opener-page > .subtitle {
-    margin: 0 0 8px;
-    color: var(--land-muted);
+/* a pill on the canvas: raised, like a tile */
+.opener-head .text-button {
+    height: 32px;
+    background-color: var(--land-raised-bg);
+    box-shadow: var(--land-raised-shadow);
+}
+.opener-head .text-button .ico {
+    width: 15px;
+    height: 15px;
 }
 
 .opener-section {
-    margin-top: 28px;
+    margin-top: 32px;
 }
 .opener-section > h2 {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    min-height: 26px;
-    margin: 0 0 6px 4px;
-    font-size: 11px;
-    font-weight: 650;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--land-muted);
+    min-height: 24px;
+    margin: 0 0 8px var(--land-pad);
 }
 .opener-section > h2 .spacer {
     flex: 1;
@@ -1485,31 +1499,36 @@ dialog.land-dialog .buttons .text-button {
     animation: land-spin 0.8s linear infinite;
 }
 .opener-section .section-note {
-    margin: -2px 0 8px;
+    margin: -2px 0 10px var(--land-pad);
     color: var(--land-muted);
     font-size: 12px;
 }
 
-/* Workspaces that are open, and recent ones: a card each, the way Pluto's welcome page shows
-   notebooks. A card is a small island; it lifts under the pointer. */
-.ws-grid {
+/* Workspaces that are open, and recent ones: uniform tiles in a tray. The tray is an island; a tile
+   is a raised thing on it, as the open tab is in the workspace. Under the pointer or the keyboard a
+   tile grows a little and takes the ring. */
+.tray {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
-    gap: 10px;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: var(--land-gap);
+    padding: var(--land-gap);
+    overflow: visible;
 }
 .ws-card {
     position: relative;
     display: flex;
     flex-direction: column;
     min-width: 0;
-    border-radius: var(--land-island-radius);
-    background-color: var(--land-sidebar-bg);
-    box-shadow: var(--land-glass);
-    transition: transform 0.16s cubic-bezier(0.3, 1.4, 0.5, 1), box-shadow 0.16s ease-out;
+    border-radius: var(--land-tile-radius);
+    background-color: var(--land-raised-bg);
+    box-shadow: var(--land-raised-shadow);
+    transition: transform 0.2s var(--land-ease), box-shadow 0.16s ease-out;
 }
-.ws-card:has(.ws-card-open:not(.inert):hover) {
-    transform: translateY(-2px);
-    box-shadow: var(--land-glass), 0 10px 22px -12px rgba(0, 0, 0, 0.35);
+.ws-card:has(.ws-card-open:not(.inert):hover),
+.ws-card:has(.ws-card-open:focus-visible) {
+    transform: scale(1.035);
+    box-shadow: var(--land-raised-shadow), var(--land-ring), 0 14px 28px -14px rgba(0, 0, 0, 0.45);
+    z-index: 1;
 }
 .ws-card-open {
     display: flex;
@@ -1525,6 +1544,9 @@ dialog.land-dialog .buttons .text-button {
     text-align: left;
     text-decoration: none;
 }
+.ws-card-open:focus-visible {
+    outline: none;
+}
 .ws-card-open.inert {
     cursor: default;
 }
@@ -1534,14 +1556,10 @@ dialog.land-dialog .buttons .text-button {
     justify-content: center;
     width: 34px;
     height: 34px;
-    margin-bottom: 9px;
-    border-radius: 11px;
-    background-color: color-mix(in srgb, var(--land-julia-purple) 15%, transparent);
-    color: var(--land-julia-purple);
-}
-.ws-card-icon.remote {
-    background-color: color-mix(in srgb, var(--land-julia-green) 15%, transparent);
-    color: var(--land-julia-green);
+    margin-bottom: 10px;
+    border-radius: 10px;
+    background-color: var(--land-accent-tint);
+    color: var(--land-accent);
 }
 .ws-card-icon.quiet {
     background-color: var(--land-hover);
@@ -1558,16 +1576,18 @@ dialog.land-dialog .buttons .text-button {
 }
 .ws-card .ws-path {
     flex: none;
-    max-width: 100%;
     width: 100%;
+    max-width: 100%;
+    color: var(--land-muted);
+    direction: ltr;
 }
 .ws-card .ws-state {
-    margin-top: 8px;
+    margin-top: 9px;
 }
 .ws-card-corner {
     position: absolute;
-    top: 10px;
-    right: 10px;
+    top: 9px;
+    right: 9px;
 }
 .ws-card-corner.on-hover {
     opacity: 0;
@@ -1600,10 +1620,6 @@ dialog.land-dialog .buttons .text-button {
     list-style: none;
     margin: 0;
     padding: 0;
-    border-radius: var(--land-island-radius);
-    background-color: var(--land-sidebar-bg);
-    box-shadow: var(--land-glass);
-    overflow: hidden;
 }
 .ws-row {
     display: flex;
@@ -1624,7 +1640,7 @@ dialog.land-dialog .buttons .text-button {
     align-items: center;
     gap: 10px;
     min-height: 44px;
-    padding: 0 6px 0 16px;
+    padding: 0 6px 0 var(--land-pad);
     border: none;
     background: none;
     text-align: left;
@@ -1683,7 +1699,7 @@ dialog.land-dialog .buttons .text-button {
 /* what a connect is doing, or why it failed: on the row it belongs to, where it can be read */
 .ws-detail {
     flex-basis: 100%;
-    margin: -4px 0 12px 42px;
+    margin: -4px 0 12px calc(var(--land-pad) + 26px);
     padding-right: 4px;
     color: var(--land-muted);
     font-size: 12px;
@@ -1706,17 +1722,14 @@ dialog.land-dialog .buttons .text-button {
 
 /* the folder browser */
 .browse-panel {
-    border-radius: var(--land-island-radius);
-    background-color: var(--land-sidebar-bg);
-    box-shadow: var(--land-glass);
-    overflow: hidden;
+    display: block;
 }
 .browse-bar {
     display: flex;
     align-items: center;
     gap: 8px;
-    min-height: 36px;
-    padding: 4px 8px;
+    min-height: 40px;
+    padding: 4px 8px 4px calc(var(--land-pad) - 5px);
     box-sizing: border-box;
     border-bottom: 1px solid var(--land-border);
 }
@@ -1754,8 +1767,8 @@ dialog.land-dialog .buttons .text-button {
 .paste-path input {
     flex: 1;
     min-width: 0;
-    height: 32px;
-    padding: 0 12px;
+    height: 34px;
+    padding: 0 var(--land-pad);
     border: none;
     background: none;
     font-family: var(--julia-mono-font-stack);
@@ -1809,7 +1822,7 @@ dialog.land-dialog .buttons .text-button {
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 8px;
+    padding: 10px var(--land-pad);
     border-top: 1px solid var(--land-border);
 }
 .opener-actions .open-this-folder {
@@ -1879,4 +1892,22 @@ dialog.land-dialog .buttons .text-button {
 }
 .main-split.right > #terminal-panel {
     max-width: calc(100% - 280px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .ws-card,
+    .text-button,
+    .land-logo-button,
+    .land-menu,
+    dialog.land-dialog,
+    .land-toast {
+        transition: none;
+        animation: none;
+    }
+    .ws-card:has(.ws-card-open:not(.inert):hover),
+    .ws-card:has(.ws-card-open:focus-visible),
+    .text-button.primary:hover,
+    .land-logo-button:hover {
+        transform: none;
+    }
 }

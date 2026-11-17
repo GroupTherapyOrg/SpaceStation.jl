@@ -235,16 +235,16 @@ const with_homebase = (url) => (url == null ? url : `${url}#homebase=${encodeURI
 const AppSchemeToggle = ({ classname }) => {
     const [scheme, set_scheme] = useState(get_color_scheme())
     return html`<button
-        class="icon-button app-scheme-toggle ${classname ?? ""}"
-        title=${scheme === "system" ? "Appearance: follow the system — switch to light" : scheme === "light" ? "Appearance: light — switch to dark" : "Appearance: dark — follow the system"}
-        aria-label="Toggle light/dark appearance"
+        class="text-button app-scheme-toggle ${classname ?? ""}"
+        title=${scheme === "system" ? "Appearance follows the system. Switch to light" : scheme === "light" ? "Appearance: light. Switch to dark" : "Appearance: dark. Switch to follow the system"}
         onClick=${() => {
             set_scheme(cycle_color_scheme())
         }}
     >
-        <span class="ico ${scheme === "system" ? "i-auto" : scheme === "light" ? "i-sun" : "i-moon"}"></span>
+        <span class="ico ${scheme === "system" ? "i-auto" : scheme === "light" ? "i-sun" : "i-moon"}"></span>${scheme === "system" ? "Auto" : scheme === "light" ? "Light" : "Dark"}
     </button>`
 }
+
 // `new URL(..., import.meta.url)` works unbundled in the browser AND gets rewritten by
 // the bundler — a string src would 404 in frontend-dist where filenames are hashed.
 const logo_url = new URL("img/spacestation.svg", import.meta.url).href
@@ -336,6 +336,17 @@ const clamp_ssh_timeout = (v) => Math.max(3, Math.min(180, Math.round(Number(v) 
 const get_ssh_timeout = () => {
     const v = Number(localStorage.getItem(SSH_TIMEOUT_KEY))
     return Number.isFinite(v) && v >= 3 ? clamp_ssh_timeout(v) : SSH_TIMEOUT_DEFAULT
+}
+
+/** A long path, shortened at folder boundaries: its last two folders, never a fragment of a name. */
+const short_path = (path) => {
+    const sep = path.includes("\\") && !path.includes("/") ? "\\" : "/"
+    const parts = path.split(sep).filter((x) => x !== "")
+    return parts.length <= 3 ? path : `…${sep}${parts.slice(-2).join(sep)}`
+}
+const greeting = () => {
+    const h = new Date().getHours()
+    return h < 5 ? "Good night" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening"
 }
 
 const CODE_EXTENSIONS = new Set(["jl", "py", "js", "mjs", "ts", "tsx", "jsx", "c", "h", "cpp", "hpp", "rs", "go", "r", "sh", "bash", "zsh", "html", "css", "json", "toml", "yaml", "yml", "xml", "sql", "tex", "m"])
@@ -701,28 +712,30 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
         <div class="opener-page">
             <header class="opener-head">
                 <img class="land-logo opener-logo" src=${logo_url} alt="" />
-                <h1>Space<span class="land-accent">Station</span></h1>
+                <div class="opener-title">
+                    <p class="section-label">${greeting()}</p>
+                    <h1 class="wordmark">Space<span class="land-accent">Station</span></h1>
+                </div>
                 <div class="opener-head-actions">
                     <${AppSchemeToggle} />
                     ${on_cancel == null
                         ? null
-                        : html`<button class="icon-button opener-cancel" title="Back to your workspace" aria-label="Back to your workspace" onClick=${on_cancel}>
-                              <span class="ico i-close"></span>
+                        : html`<button class="text-button opener-cancel" title="Back to your workspace" onClick=${on_cancel}>
+                              <span class="ico i-close"></span>Back
                           </button>`}
                 </div>
             </header>
-            <p class="subtitle">Open a folder as a workspace: its notebooks open as tabs, beside a terminal and the files.</p>
 
             ${!tunneled && (local_rows.length > 0 || connected_hosts.length > 0)
                 ? html`<section class="opener-section">
-                      <h2>Open workspaces</h2>
-                      <div class="ws-grid">
+                      <h2 class="section-label">Open workspaces</h2>
+                      <div class="island tray">
                           ${local_rows.map(({ path, st }) => {
                               const name = basename(path) || path
                               const time = elapsed(`local:${path}`, st)
                               const body = html`<span class="ws-card-icon"><span class="ico i-folder"></span></span>
                                   <span class="ws-name">${name}</span>
-                                  <span class="ws-path" title=${path}>${"‎" + path}</span>
+                                  <span class="ws-path" title=${path}>${short_path(path)}</span>
                                   ${st.state === "ready"
                                       ? html`<span class="ws-state"><span class="dot ok"></span>Running</span>`
                                       : st.state === "error"
@@ -744,7 +757,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                               </div>`
                           })}
                           ${connected_hosts.map(({ host, st }) => {
-                              const body = html`<span class="ws-card-icon remote"><span class="ico i-server"></span></span>
+                              const body = html`<span class="ws-card-icon"><span class="ico i-server"></span></span>
                                   <span class="ws-name">${host}</span>
                                   <span class="ws-path">over SSH</span>
                                   <span class="ws-state"><span class="dot ok"></span>Connected</span>`
@@ -766,14 +779,14 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
 
             ${recent.length > 0
                 ? html`<section class="opener-section">
-                      <h2>Recent</h2>
-                      <div class="ws-grid">
+                      <h2 class="section-label">Recent</h2>
+                      <div class="island tray">
                           ${recent.map(
                               (p) => html`<div class="ws-card" key=${p}>
                                   <button class="ws-card-open" title=${`Open ${p}`} onClick=${() => open_workspace(p)}>
                                       <span class="ws-card-icon quiet"><span class="ico i-folder"></span></span>
                                       <span class="ws-name">${basename(p) || p}</span>
-                                      <span class="ws-path">${"‎" + p}</span>
+                                      <span class="ws-path" title=${p}>${short_path(p)}</span>
                                   </button>
                                   <button
                                       class="icon-button ws-card-corner on-hover"
@@ -793,8 +806,8 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                 : null}
 
             <section class="opener-section">
-                <h2>Open a folder <span class="spacer"></span>${refresh_button}</h2>
-                <div class="browse-panel">
+                <h2 class="section-label">Open a folder <span class="spacer"></span>${refresh_button}</h2>
+                <div class="island browse-panel">
                     ${listing == null
                         ? html`<p class="ws-empty">${error == null ? "Reading…" : "This folder could not be read."}</p>`
                         : html`
@@ -840,7 +853,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
 
             ${!tunneled && ssh_hosts.length > 0
                 ? html`<section class="opener-section">
-                      <h2>
+                      <h2 class="section-label">
                           Remote hosts
                           <span class="spacer"></span>
                           <label class="ssh-timeout" title="How long to wait for an SSH connection, including the banner of a slow login node in between, before giving up.">
@@ -854,7 +867,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                           From <code>~/.ssh/config</code>. The files, notebooks and terminal all run on that machine, over an SSH tunnel. The first connection installs
                           SpaceStation there; after that it reconnects at once.
                       </p>
-                      <ul class="ws-list">
+                      <ul class="island ws-list">
                           ${ssh_hosts.map((h) => {
                               const st = remote_state(h)
                               const time = elapsed(`remote:${h}`, st)
@@ -2463,24 +2476,25 @@ const Land = () => {
                 : null}
             ${sidebar_hidden
                 ? null
-                : html`<aside class="island" style=${`width: ${sidebar_width}px`}>
+                : html`<aside class="island" aria-label="Workspace" style=${`width: ${sidebar_width}px`}>
                       <header class="side-head">
-                          <div class="side-brand">
-                              <button class="land-logo-button" title="Launcher: open and manage workspaces" aria-label="Launcher" onClick=${go_home}>
-                                  <img class="land-logo" src=${logo_url} alt="" />
-                              </button>
-                              <span class="wordmark">Space<span class="land-accent">Station</span></span>
+                          <button class="land-logo-button" title="Launcher: open and manage workspaces" aria-label="Launcher" onClick=${go_home}>
+                              <img class="land-logo" src=${logo_url} alt="" />
+                          </button>
+                          <span class="wordmark">Space<span class="land-accent">Station</span></span>
+                          <span class="head-buttons">
                               <button class="icon-button menu-button" title="More" aria-label="More" aria-haspopup="menu" onClick=${(e) => open_header_menu(e.currentTarget)}>
                                   <span class="ico i-more"></span>
                               </button>
                               <button class="icon-button collapse-button" title="Hide the sidebar" aria-label="Hide the sidebar" onClick=${() => set_sidebar_hidden(true)}>
                                   <span class="ico i-sidebar"></span>
                               </button>
-                          </div>
+                          </span>
                           ${workspace?.root
                               ? html`<div class="side-where">
+                                    <span class="workspace-name">${basename(workspace.root) || workspace.root}</span>
                                     <button
-                                        class="workspace-path"
+                                        class="where-line"
                                         title=${`${workspace.root}\nClick to copy the path`}
                                         aria-label=${`Workspace folder ${workspace.root}. Copy the path`}
                                         onClick=${() => {
@@ -2489,12 +2503,12 @@ const Land = () => {
                                             setTimeout(() => set_path_copied(false), 1200)
                                         }}
                                     >
-                                        <span class="ico i-folder"></span><span class="where-text">${path_copied ? "Copied" : "\u200e" + workspace.root}</span>
+                                        <span class="where-text">${path_copied ? "Path copied" : short_path(workspace.root)}</span>
                                     </button>
                                     ${workspace.git == null
                                         ? null
-                                        : html`<span class="git-branch" title=${workspace.git.detached ? `Detached HEAD at ${workspace.git.branch}` : `On branch ${workspace.git.branch}`}>
-                                              <span class="ico i-branch"></span><span class="where-text git-branch-name">${workspace.git.branch}</span>${workspace.git.detached
+                                        : html`<span class="where-line" title=${workspace.git.detached ? `Detached HEAD at ${workspace.git.branch}` : `On branch ${workspace.git.branch}`}>
+                                              <span class="ico i-branch"></span><span class="where-text">${workspace.git.branch}</span>${workspace.git.detached
                                                   ? html`<span class="git-detached">detached</span>`
                                                   : null}
                                           </span>`}
@@ -2502,7 +2516,7 @@ const Land = () => {
                               : null}
                       </header>
                       <section class="files">
-                          <h2>
+                          <h2 class="section-label">
                               Files
                               ${workspace == null
                                   ? null
@@ -2526,7 +2540,7 @@ const Land = () => {
                       ${running.length === 0
                           ? null
                           : html`<section class="running">
-                                <h2>Running <span class="count">${running.length}</span></h2>
+                                <h2 class="section-label">Running <span class="count">${running.length}</span></h2>
                                 <ul>
                                     ${running.map(
                                         (nb) => html`<li class=${tree.current_path === nb.path ? "current" : ""} key=${nb.notebook_id}>
