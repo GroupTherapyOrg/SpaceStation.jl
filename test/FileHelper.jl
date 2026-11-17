@@ -125,6 +125,20 @@ import SpaceStation as Pluto
             @test !Pluto.file_helpers_active()
         end
     end
+    # A helper goes when its hub does, and it does not linger. One was found at 100% of a core after
+    # its hub had been stopped: its stdin ended and a SIGTERM arrived in the same moment, and the two
+    # exits deadlocked. It now leaves without Julia's exit, and a hub never sends SIGTERM behind the close.
+    withenv("SPACESTATION_FILE_HELPER" => "1") do
+        for ending in (h -> close(h.lifeline.in), h -> Pluto._end_helpers([h]; grace=5.0))
+            h = Pluto._spawn_file_helper()
+            @test h !== nothing
+            h === nothing && continue
+            @test !process_exited(h.proc)
+            ending(h)
+            @test timedwait(() -> process_exited(h.proc), 20) == :ok
+            @test h.proc.termsignal == 0                    # it left by itself: nothing had to kill it
+        end
+    end
     # A hub whose connection files live on the node also announces itself where older clients look (the
     # shared home), and does not write there itself: a helper does, and removes it again at shutdown.
     shared = mktempdir(); node = mktempdir()

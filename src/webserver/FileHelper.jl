@@ -132,7 +132,7 @@ function _spawn_file_helper(; timeout::Real=180)::Union{FileHelper,Nothing}
     timedwait(() -> port[] != 0 || process_exited(proc), timeout; pollint=0.1)
     if port[] == 0
         try close(lifeline.in) catch end
-        try kill(proc) catch end
+        try kill(proc, Base.SIGKILL) catch end # it never came up: there is nothing in it to let finish
         return nothing
     end
     FileHelper(proc, port[], secret, lifeline)
@@ -163,16 +163,34 @@ function start_file_helpers!(; count::Integer=FILE_HELPER_COUNT[], wait::Bool=fa
     nothing
 end
 
+"""
+End helpers. Closing a helper's lifeline is the request: it reads its stdin to the end and goes. What
+follows is for one that does not, and it is never a SIGTERM behind the close. A Julia process asked
+to stop twice at once (its stdin ending, and the signal) can deadlock inside its own exit and then
+spins a core for ever, with its hub gone and nothing left that would stop it. That happened: a hub
+that was stopped left a helper at 100% of a core. So: close, give them a moment, then SIGKILL, which
+is not handled by the process and so cannot be half-handled.
+"""
+function _end_helpers(helpers; grace::Real=2.0)
+    for h in helpers
+        try close(h.lifeline.in) catch end
+    end
+    procs = [h.proc for h in helpers if h.proc !== nothing]
+    isempty(procs) && return
+    try timedwait(() -> all(process_exited, procs), grace; pollint=0.05) catch end
+    for p in procs
+        try process_exited(p) || kill(p, Base.SIGKILL) catch end
+    end
+end
+
 "A helper that came up joins, unless the hub stopped in the meantime: then it goes at once."
 function _admit_helper!(h::FileHelper)
-    lock(FILE_HELPERS_LOCK) do
-        if FILE_HELPER_MODE[]
-            push!(FILE_HELPERS, h)
-        else
-            try close(h.lifeline.in) catch end
-            try kill(h.proc) catch end
-        end
+    joined = lock(FILE_HELPERS_LOCK) do
+        FILE_HELPER_MODE[] && push!(FILE_HELPERS, h)
+        FILE_HELPER_MODE[]
     end
+    joined || _end_helpers([h])
+    nothing
 end
 
 function stop_file_helpers!()
@@ -180,10 +198,7 @@ function stop_file_helpers!()
         FILE_HELPER_MODE[] = false
         hs = copy(FILE_HELPERS); empty!(FILE_HELPERS); empty!(HUNG_ROOTS); empty!(SUSPECT_ROOTS); hs
     end
-    for h in helpers
-        try close(h.lifeline.in) catch end
-        try h.proc === nothing || kill(h.proc) catch end
-    end
+    _end_helpers(helpers)
 end
 
 "The process a helper runs: a hub-mode server nobody but its hub can talk to, that exits when its hub goes away."
@@ -193,8 +208,15 @@ function file_helper_main()
     run!(session)
     println(stdout, "SPACESTATION_FILE_HELPER_READY $(session.options.server.port)"); flush(stdout)
     try read(stdin) catch end # until the hub closes it, or dies
-    exit(0)
+    _leave_now()
 end
+
+"""
+Leave without Julia's own exit. Its hooks and finalizers have nothing to do for a helper (it owns no
+file to finish and no child to stop), and they are where a process that is asked to stop a second
+time while it is already stopping hangs: see `_end_helpers`.
+"""
+_leave_now() = Sys.iswindows() ? exit(0) : ccall(:_exit, Cvoid, (Cint,), 0)
 
 "Replace helpers that have exited: one start at a time, a pause between starts, and never while a root is hung (a start can wait on the same filesystem)."
 function _replace_exited_helpers!()
