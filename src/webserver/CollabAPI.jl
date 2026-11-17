@@ -1112,4 +1112,13 @@ function register_collab_api!(router, session::ServerSession)
         HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], _json(Pair["ok" => true, "closed" => closed]) * "\n")
     end
     HTTP.register!(router, "POST", "/api/v1/terminal/close", serve_api_terminal_close)
+
+    # What a terminal is running, so that its × can ask before stopping it. `{"running": null}` at a prompt.
+    function serve_api_terminal_running(request::HTTP.Request)
+        query = HTTP.queryparams(HTTP.URI(request.target))
+        tid = get(query, "tid", "")
+        isempty(tid) && return _api_error(400, "pass ?tid=<terminal-id>", false)
+        HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], _json(Pair["running" => terminal_running(tid)]) * "\n")
+    end
+    HTTP.register!(router, "GET", "/api/v1/terminal/running", _offloaded(serve_api_terminal_running))
 end

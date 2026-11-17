@@ -2432,6 +2432,21 @@ const Land = () => {
 
     // the terminals UI (a tab strip of terminals + their bodies); rendered either in the docked
     // panel or inside the editor "Terminal" tab. `shown` gates which shell is live/painted.
+    // The ×, and a middle click: ask first when that would stop something that is running in it.
+    // (A terminal at its prompt just closes. No answer within a second and a half is not a yes.)
+    const ask_close_terminal = useCallback(
+        async (t) => {
+            const running = await Promise.race([
+                get_json(`./api/v1/terminal/running?tid=${encodeURIComponent(t.tid)}`)
+                    .then((r) => (typeof r?.running === "string" ? r.running : null))
+                    .catch(() => null),
+                new Promise((r) => setTimeout(() => r(null), 1500)),
+            ])
+            if (running != null && !(await ask_confirm(`Close ${t.label}?\n\n${running} is running in it and will be stopped.`, { action: "Close and stop it", danger: true }))) return
+            close_terminal(t.tid)
+        },
+        [close_terminal]
+    )
     const shown_terminals = terminals_workspace.current === workspace?.root ? terminals : []
     const hide_terminal = () => {
         set_terminal_open(false)
@@ -2452,12 +2467,12 @@ const Land = () => {
                     (t) => html`<div
                         class="tab terminal-tab ${t.tid === active_terminal ? "active" : ""}"
                         key=${t.tid}
-                        onAuxClick=${(e) => e.button === 1 && close_terminal(t.tid)}
+                        onAuxClick=${(e) => e.button === 1 && ask_close_terminal(t)}
                     >
                         <button class="title" role="tab" aria-selected=${t.tid === active_terminal} title=${t.label} onClick=${() => set_active_terminal(t.tid)}>
                             <svg class="ico" aria-hidden="true"><use href="#i-terminal" /></svg><span class="tab-name">${t.label}</span>
                         </button>
-                        <button class="close" title="Close this terminal and end its shell" aria-label=${`Close ${t.label}`} onClick=${() => close_terminal(t.tid)}>
+                        <button class="close" title="Close this terminal and end its shell" aria-label=${`Close ${t.label}`} onClick=${() => ask_close_terminal(t)}>
                             <svg class="ico" aria-hidden="true"><use href="#i-close" /></svg>
                         </button>
                     </div>`

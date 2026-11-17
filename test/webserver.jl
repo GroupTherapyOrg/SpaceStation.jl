@@ -370,3 +370,28 @@ end
 sleep(2)
 
 end # testset
+
+# Closing a terminal asks first when that would stop something: for that the server can say what a
+# terminal's shell is running. At its prompt: nothing. With a program started from it: its name.
+Sys.isunix() && @testset "What a terminal is running" begin
+    port = 13000 + rand(1:999)
+    options = Pluto.Configuration.from_flat_kwargs(; port, launch_browser=false, require_secret_for_access=false, require_secret_for_open_links=false, workspace_use_distributed=false, workspace=mktempdir())
+    session = Pluto.ServerSession(; options)
+    server = Pluto.run!(session)
+    try
+        @test Pluto.terminal_running("no-such-terminal") === nothing
+        asked(tid) = String(HTTP.get("http://127.0.0.1:$port/api/v1/terminal/running?tid=$tid"; retry=false).body)
+        HTTP.WebSockets.open("ws://127.0.0.1:$port/terminal?tid=busy-test&rows=24&cols=80"; headers=["Origin" => "http://127.0.0.1:$port"]) do ws
+            @test timedwait(() -> haskey(Pluto.COLLAB_TERMINALS, "busy-test"), 20) == :ok
+            @test timedwait(() -> Pluto.terminal_running("busy-test") === nothing, 20) == :ok   # a shell at its prompt
+            @test occursin("null", asked("busy-test"))
+            HTTP.WebSockets.send(ws, "0:sleep 30\n")
+            @test timedwait(() -> Pluto.terminal_running("busy-test") == "sleep", 20) == :ok
+            @test occursin("\"sleep\"", asked("busy-test"))
+        end
+        @test Pluto.close_terminal!("busy-test")
+        @test Pluto.terminal_running("busy-test") === nothing
+    finally
+        close(server)
+    end
+end
