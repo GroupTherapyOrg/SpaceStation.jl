@@ -1148,6 +1148,13 @@ function register_collab_api!(router, session::ServerSession)
     end
     HTTP.register!(router, "POST", "/api/v1/terminal/close", serve_api_terminal_close)
 
+    # Which terminals exist (in this workspace: `?root=`). Answered by the process that owns them.
+    function serve_api_terminals(request::HTTP.Request)
+        query = HTTP.queryparams(HTTP.URI(request.target))
+        HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], _json(Pair["terminals" => list_terminals(get(query, "root", nothing))]) * "\n")
+    end
+    HTTP.register!(router, "GET", "/api/v1/terminals", serve_api_terminals)
+
     # What a terminal is running, so that its × can ask before stopping it. `{"running": null}` at a prompt.
     function serve_api_terminal_running(request::HTTP.Request)
         query = HTTP.queryparams(HTTP.URI(request.target))

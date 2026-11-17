@@ -37,6 +37,8 @@ mutable struct CollabTerminal
     pump::Task
     cwd::String   # the folder this shell was started in — so we can tell when the workspace changed under it
     paste_dir::String   # per-terminal temp dir for pasted images (created lazily, removed when the shell exits)
+    root::String   # the workspace it was opened from ("" when the page did not say) — whose list it is in
+    started::Float64   # when, so that a list of them is in the order they were opened
 end
 
 const COLLAB_TERMINALS = Dict{String,CollabTerminal}()
@@ -216,20 +218,25 @@ function _spawn_workspace_shell(session::ServerSession, dir::String; rows::Int=2
         end
     else
         shell = get(ENV, "SHELL", Sys.isapple() ? "/bin/zsh" : "/bin/bash")
-        exports = join([
-            "export SPACESTATION=1",
-            "export SPACESTATION_PORT=$(_shquote(port === nothing ? "" : string(port)))",
-            "export SPACESTATION_SECRET=$(_shquote(secret))",
-            "export SPACESTATION_WORKSPACE=$(_shquote(dir))",
-            "export PLUTOSPACE=1",
-            "export PLUTOSPACE_PORT=$(_shquote(port === nothing ? "" : string(port)))",
-            "export PLUTOSPACE_SECRET=$(_shquote(secret))",
-            "export PLUTOSPACE_WORKSPACE=$(_shquote(dir))",
-            "export PATH=$(_shquote(apps_bin_dir())):\"\$PATH\"",
-        ], "; ")
-        # a login shell, already cd'ed into the workspace, with the agent surface exported + a banner
-        cmd = "cd $(_shquote(dir)) && $(exports); printf %s $(_shquote(banner)); exec $(_shquote(shell)) -l"
-        pty_spawn(["/bin/sh", "-c", cmd]; rows=rows, cols=cols)
+        # The agent surface goes into the shell's ENVIRONMENT, as on Windows above, and never onto a
+        # command line: it used to be `sh -c "… export SPACESTATION_SECRET='…'; …"`, and a command
+        # line can be read by every other user of the machine (`ps`) for as long as it runs. On a
+        # shared compute node that is the secret of the workspace's server, shown to the node.
+        env = Dict{String,String}(
+            "SPACESTATION" => "1",
+            "SPACESTATION_PORT" => (port === nothing ? "" : string(port)),
+            "SPACESTATION_SECRET" => secret,
+            "SPACESTATION_WORKSPACE" => dir,
+            # Pre-release aliases retained so existing agent scripts keep working.
+            "PLUTOSPACE" => "1",
+            "PLUTOSPACE_PORT" => (port === nothing ? "" : string(port)),
+            "PLUTOSPACE_SECRET" => secret,
+            "PLUTOSPACE_WORKSPACE" => dir,
+            "PATH" => string(apps_bin_dir(), ":", get(user_env(), "PATH", get(ENV, "PATH", ""))),
+        )
+        # a login shell, already cd'ed into the workspace, with a banner
+        cmd = "cd $(_shquote(dir)) && printf %s $(_shquote(banner)); exec $(_shquote(shell)) -l"
+        pty_spawn(["/bin/sh", "-c", cmd]; rows=rows, cols=cols, env=env)
     end
 end
 
@@ -275,7 +282,7 @@ function notebook_env_command(notebook::Notebook)::Union{Nothing,String}
 end
 
 "Get the live terminal for this id, or (re)create one. The pump task forwards PTY output to every attached socket and maintains the scrollback ring."
-function _get_or_create_terminal(session::ServerSession, tid::String; requested_cwd::Union{Nothing,AbstractString}=nothing, rows::Int=24, cols::Int=80, run::Union{Nothing,String}=nothing)::CollabTerminal
+function _get_or_create_terminal(session::ServerSession, tid::String; requested_cwd::Union{Nothing,AbstractString}=nothing, rows::Int=24, cols::Int=80, run::Union{Nothing,String}=nothing, root::AbstractString="")::CollabTerminal
     lock(COLLAB_TERMINALS_LOCK) do
         target = _resolve_terminal_cwd(session, requested_cwd)
         existing = get(COLLAB_TERMINALS, tid, nothing)
@@ -292,7 +299,7 @@ function _get_or_create_terminal(session::ServerSession, tid::String; requested_
         # shell and starts a new one with the same tid, and we must not let the retired shell's teardown
         # delete the new shell's pasted files.
         paste_dir = joinpath(tempdir(), "spacestation-paste-$(_safe_tid(tid))-$(time_ns())")
-        t = CollabTerminal(_spawn_workspace_shell(session, target; rows=rows, cols=cols), UInt8[], false, Set{Any}(), ReentrantLock(), @async(nothing), target, paste_dir)
+        t = CollabTerminal(_spawn_workspace_shell(session, target; rows=rows, cols=cols), UInt8[], false, Set{Any}(), ReentrantLock(), @async(nothing), target, paste_dir, _terminal_root(root), time())
         # A command to run in the NEW shell, typed ahead as keystrokes: the tty queues it until the
         # shell reads, so it lands as if the user had typed it — visible in the scrollback, editable
         # in history, and gone when they exit it — and reattaching (reload, another view) never
@@ -367,6 +374,34 @@ function _get_or_create_terminal(session::ServerSession, tid::String; requested_
         COLLAB_TERMINALS[tid] = t
         return t
     end
+end
+
+_terminal_root(root::AbstractString)::String = String(rstrip(String(root), ['/', '\\']))
+
+"""
+The terminals that are alive, for a page to show: each one's id and the folder it was started in,
+in the order they were opened. With `root`, only that workspace's own: the ones opened from it, and
+(for one whose page did not say where it was opened from) the ones started in that folder or below.
+
+The server is the one that knows which terminals exist. A page used to keep the list in its own
+browser storage: a second browser, or another tab, showed none of them (they ran unseen), and a tab
+that outlived a restart brought every remembered one back as a new shell.
+
+A terminal belongs to the workspace it was opened from, not to wherever its folder is: with a
+workspace open on a folder and another on a folder inside it, one hub holds the terminals of both,
+and each must list only its own.
+"""
+function list_terminals(root::Union{Nothing,AbstractString}=nothing)::Vector{Vector{Pair{String,String}}}
+    all_of_them = lock(COLLAB_TERMINALS_LOCK) do
+        [(t.started, String(tid), t.cwd, t.root) for (tid, t) in COLLAB_TERMINALS]
+    end
+    asked = root === nothing || isempty(root) ? nothing : _terminal_root(root)
+    mine = filter(all_of_them) do (_, _, cwd, opened_from)
+        asked === nothing && return true
+        isempty(opened_from) || return opened_from == asked
+        cwd == asked || startswith(cwd, asked * "/") || startswith(cwd, asked * "\\")
+    end
+    [["tid" => tid, "cwd" => cwd] for (_, tid, cwd, _) in sort(mine)]
 end
 
 """
@@ -466,9 +501,24 @@ function handle_terminal_websocket(ws, session::ServerSession, query::Dict{Strin
             run = _child_notebook_env_command(session, cwd, string(uuid))
         end
     end
+    # `attach=1`: the page is coming back to a terminal it takes to exist (after a reload, a dropped
+    # connection, or because the list above named it). When it does not, say that it ended. Starting
+    # a shell under its name would bring back, in every page that still showed its tab, a terminal
+    # that was closed in another one.
+    if get(query, "attach", "") == "1"
+        there = lock(COLLAB_TERMINALS_LOCK) do
+            existing = get(COLLAB_TERMINALS, tid, nothing)
+            existing !== nothing && pty_alive(existing.pty)
+        end
+        if !there
+            try HTTP.WebSockets.send(ws, """{"exited":true}""") catch end
+            return
+        end
+    end
     t = try
         _get_or_create_terminal(session, tid; requested_cwd=(isempty(cwd) ? nothing : cwd),
-                                rows=(sane ? q_rows : 24), cols=(sane ? q_cols : 80), run=run)
+                                rows=(sane ? q_rows : 24), cols=(sane ? q_cols : 80), run=run,
+                                root=get(query, "root", ""))
     catch e
         # Spawn failed (e.g. Windows older than 10 1809 has no ConPTY). Say so plainly instead
         # of letting the socket close into the frontend's "reload to reattach" message.
