@@ -222,6 +222,11 @@ const _WORKSPACE_SKIPLIST = (
 const _TreeNode = Vector{Pair}
 const _TreeListing = Vector{_TreeNode}
 
+# The order names are listed in, everywhere a folder is shown: by letter, not by case. Plain `sort`
+# compares code units, which puts every capital before every small letter (`README.md` above
+# `fatou.jl`). Names that differ only in case keep a fixed order between them.
+_in_name_order(names) = sort(names; by=name -> (lowercase(name), name))
+
 """
 List one folder's own entries as JSON-able pairs — directories first, then files, like every file
 browser — without recursing. Each directory node gets an empty `children` listing; the returned
@@ -232,7 +237,7 @@ function _list_dir_shallow(dir::String, budget::Ref{Int})
     entries = _TreeListing()
     subdirs = Tuple{_TreeListing,String}[]
     names = try
-        sort(readdir(dir))
+        _in_name_order(readdir(dir))
     catch
         return (entries, subdirs, false)
     end
@@ -802,7 +807,7 @@ function register_collab_api!(router, session::ServerSession)
         isdir(path) || return _api_error(404, "not a directory: $path", false)
         dirs = String[]
         try
-            for name in sort(readdir(path))
+            for name in _in_name_order(readdir(path))
                 startswith(name, ".") && continue
                 isdir(joinpath(path, name)) && push!(dirs, name)
             end
