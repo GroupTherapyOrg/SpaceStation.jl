@@ -466,10 +466,19 @@ const FileEntry = ({ entry, listings, expanded, tree, depth }) => {
         const children = listings[entry.path]
         return html`<li class="dir ${open ? "open" : ""}">
             <div class="entry-row" onContextMenu=${(e) => tree.on_menu(e, entry)}>
-                <button class="entry" style=${row_style} title=${entry.path} aria-expanded=${open} onClick=${(e) => e.detail > 1 || tree.on_toggle(entry.path)}>
+                <button
+                    class="entry"
+                    style=${row_style}
+                    title=${entry.path}
+                    data-path=${entry.path}
+                    tabindex=${tree.focus_path === entry.path ? 0 : -1}
+                    onFocus=${() => tree.on_focus(entry)}
+                    aria-expanded=${open}
+                    onClick=${(e) => e.detail > 1 || tree.on_toggle(entry.path)}
+                >
                     <svg class="ico chevron" aria-hidden="true"><use href="#i-chevron" /></svg><${Ico} name=${open ? "i-folder-open" : "i-folder"} /><span class="entry-name">${entry.name}</span>
                 </button>
-                <button class="row-action" title="New notebook or file in ${entry.name}" aria-label="New notebook or file in ${entry.name}" onClick=${(e) => tree.on_create_menu(e.currentTarget, entry.path)}>
+                <button class="row-action" tabindex="-1" title="New notebook, file or folder in ${entry.name}" aria-label="New notebook, file or folder in ${entry.name}" onClick=${(e) => tree.on_create_menu(e.currentTarget, entry.path)}>
                     <svg class="ico" aria-hidden="true"><use href="#i-add" /></svg>
                 </button>
             </div>
@@ -514,6 +523,9 @@ const FileEntry = ({ entry, listings, expanded, tree, depth }) => {
                 class="entry"
                 style=${row_style}
                 title=${entry.path}
+                data-path=${entry.path}
+                tabindex=${tree.focus_path === entry.path ? 0 : -1}
+                onFocus=${() => tree.on_focus(entry)}
                 aria-current=${tree.current_path === entry.path ? "page" : undefined}
                 onClick=${() => (is_notebook ? tree.on_open_notebook(entry.path) : tree.on_open_file(entry.path))}
             >
@@ -1477,25 +1489,62 @@ const FileEditorPane = ({ path, label, visible, on_dirty }) => {
     const view_ref = useRef(null)
     const started = useRef(false)
     const [dirty, set_dirty] = useState(false)
+    const escaped = useRef(false)
     const [status, set_status] = useState("Loading…")
     const [failed, set_failed] = useState(false)
 
-    const save = useCallback(async () => {
-        const view = view_ref.current
-        if (view == null) return
-        try {
-            await get_json(`./api/v1/file/save?path=${encodeURIComponent(path)}`, { method: "POST", body: view.state.doc.toString() })
-            file_dirty.set(path, false)
-            set_dirty(false)
-            on_dirty?.(path, false)
-            set_failed(false)
-            set_status("Saved")
-            setTimeout(() => set_status(""), 1500)
-        } catch (e) {
-            set_failed(true)
-            set_status(`Not saved: ${e?.message ?? e}`)
-        }
-    }, [path])
+    // what is on disk as far as this editor knows: the text, and when it was written
+    const saved_ref = useRef({ text: "", mtime: /** @type {string?} */ (null) })
+    const mark_dirty = useCallback(
+        (now_dirty) => {
+            if (file_dirty.get(path) === now_dirty) return
+            file_dirty.set(path, now_dirty)
+            set_dirty(now_dirty)
+            on_dirty?.(path, now_dirty)
+        },
+        [path, on_dirty]
+    )
+    const save = useCallback(
+        async ({ overwrite = false } = {}) => {
+            const view = view_ref.current
+            if (view == null) return
+            const text = view.state.doc.toString()
+            const condition = !overwrite && saved_ref.current.mtime != null ? `&if_mtime=${encodeURIComponent(saved_ref.current.mtime)}` : ""
+            try {
+                const r = await fetch(`./api/v1/file/save?path=${encodeURIComponent(path)}${condition}`, { method: "POST", body: text })
+                if (r.status === 409) {
+                    // somebody else (an agent, a terminal) wrote the file since it was opened here
+                    const keep_mine = await ask_confirm(`${basename(path)} changed on disk since you opened it.\n\nSave your version over it, or cancel and keep both as they are? (Close and reopen the tab to load the one on disk.)`, {
+                        action: "Save mine over it",
+                        danger: true,
+                    })
+                    if (keep_mine) return save({ overwrite: true })
+                    set_failed(true)
+                    set_status("Not saved: it changed on disk")
+                    return
+                }
+                if (!r.ok) throw new Error(await failure_text(r))
+                const answer = await r.json().catch(() => ({}))
+                saved_ref.current = { text, mtime: answer.mtime != null ? String(answer.mtime) : null }
+                mark_dirty(view.state.doc.toString() !== text)
+                set_failed(false)
+                set_status("Saved")
+                setTimeout(() => set_status(""), 1500)
+            } catch (e) {
+                set_failed(true)
+                set_status(`Not saved: ${e?.message ?? e}`)
+            }
+        },
+        [path, mark_dirty]
+    )
+    // ⌘S / Ctrl+S from anywhere in the shell saves the file in front (see handle_tab_keys)
+    useEffect(() => {
+        if (!visible) return
+        const on_save = () => void save()
+        window.addEventListener("spacestation:save-file", on_save)
+        return () => window.removeEventListener("spacestation:save-file", on_save)
+    }, [visible, save])
+
 
     useEffect(() => {
         if (!visible || started.current || node_ref.current == null) return
@@ -1503,7 +1552,10 @@ const FileEditorPane = ({ path, label, visible, on_dirty }) => {
         ;(async () => {
             try {
                 const cm = await import("./imports/CodemirrorPlutoSetup.js")
-                const content = await get_text(`./api/v1/file?path=${encodeURIComponent(path)}`)
+                const response = await fetch(`./api/v1/file?path=${encodeURIComponent(path)}`)
+                if (!response.ok) throw new Error(await failure_text(response))
+                const content = await response.text()
+                saved_ref.current = { text: content, mtime: response.headers.get("X-File-Mtime") }
                 const v = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim()
                 const pluto_colors = cm.HighlightStyle.define(
                     [
@@ -1554,17 +1606,23 @@ const FileEditorPane = ({ path, label, visible, on_dirty }) => {
                             cm.highlightActiveLine(),
                             cm.syntaxHighlighting(pluto_colors),
                             ...language,
+                            cm.highlightSelectionMatches(),
                             cm.keymap.of([
                                 { key: "Mod-s", run: () => (save(), true) },
+                                // Tab indents, as in any editor; Escape then Tab moves on, for the keyboard
+                                {
+                                    key: "Tab",
+                                    run: (view) => (escaped.current ? ((escaped.current = false), false) : cm.indentMore(view)),
+                                    shift: (view) => (escaped.current ? ((escaped.current = false), false) : cm.indentLess(view)),
+                                },
+                                { key: "Escape", run: () => ((escaped.current = true), false) },
+                                ...cm.searchKeymap, // ⌘F / Ctrl+F: find in this file, not the browser's find
                                 ...cm.defaultKeymap,
                                 ...cm.historyKeymap,
                             ]),
                             cm.EditorView.updateListener.of((update) => {
-                                if (update.docChanged && !file_dirty.get(path)) {
-                                    file_dirty.set(path, true)
-                                    set_dirty(true)
-                                    on_dirty?.(path, true)
-                                }
+                                // unsaved means "differs from what is on disk": undoing back to it is saved again
+                                if (update.docChanged) mark_dirty(update.state.doc.toString() !== saved_ref.current.text)
                             }),
                             cm.EditorView.theme({}, { dark: prefers_dark() }),
                         ],
@@ -1581,6 +1639,8 @@ const FileEditorPane = ({ path, label, visible, on_dirty }) => {
                 }
                 view_ref.current = view
                 set_status("")
+                // it has only now come into being: if its tab is still the one in front, it gets the keyboard
+                if (node_ref.current.closest(".pane.active") != null && document.querySelector("dialog[open], .land-menu.context") == null) view.focus()
             } catch (e) {
                 set_failed(true)
                 set_status(`Could not be opened: ${e?.message ?? e}`)
@@ -1671,6 +1731,7 @@ const Land = () => {
     const [error, set_error] = useState(/** @type {String?} */ (null))
     // what the background poll could not do; it clears itself when the poll works again
     const [poll_error, set_poll_error] = useState(/** @type {String?} */ (null))
+    const [signed_out, set_signed_out] = useState(false)
     const [sidebar_width, set_sidebar_width] = useState(() => Number(store.get("spacestation sidebar width")) || SIDEBAR_WIDTH)
     const [sidebar_hidden, set_sidebar_hidden] = useState(() => store.get("spacestation sidebar hidden") === "true")
     const [terminal_open, set_terminal_open] = useState(() => store.get("spacestation terminal open") === "true")
@@ -1691,6 +1752,17 @@ const Land = () => {
     if (terminal_open) terminal_ever_opened.current = true
     const [show_opener, set_show_opener] = useState(false)
     const [path_copied, set_path_copied] = useState(false)
+    // which row of the tree the keyboard is on: the tree is one stop for Tab, arrows move inside it
+    const [tree_focus, set_tree_focus] = useState(/** @type {String?} */ (null))
+    const tree_entries = useRef(/** @type {Map<String, any>} */ (new Map()))
+    // the row the keyboard was on can vanish (its folder closed, it was deleted): the tree stays reachable
+    useEffect(() => {
+        const list = document.querySelector("#land aside ul.tree")
+        if (list != null && list.querySelector('button.entry[tabindex="0"]') == null) {
+            const first = list.querySelector("button.entry")
+            if (first instanceof HTMLElement && first.dataset.path) set_tree_focus(first.dataset.path)
+        }
+    })
     // which file tabs have unsaved changes (the panes report it; the strip marks them)
     const [dirty_tabs, set_dirty_tabs] = useState(/** @type {Set<String>} */ (new Set()))
     const set_tab_dirty = useCallback((path, dirty) => {
@@ -1724,6 +1796,11 @@ const Land = () => {
         }
         const mac = is_mac
         const mod = mac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey
+        if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "s" && e.view === window && !(e.target instanceof Element && e.target.closest(".cm-editor"))) {
+            e.preventDefault()
+            if (tab_keys_ref.current.active?.startsWith("file:")) window.dispatchEvent(new Event("spacestation:save-file"))
+            return
+        }
         let move = 0
         let jump = -1
         if (e.ctrlKey && !e.metaKey && !e.altKey && e.key === "Tab") move = e.shiftKey ? -1 : 1
@@ -2014,6 +2091,14 @@ const Land = () => {
         try {
             const ws_response = await fetch("./api/v1/workspace", { signal })
             unreachable.current = 0
+            // 403: this page's sign-in is no longer good. The server makes a new secret each time it
+            // starts, so every page left open across a restart ends up here; say so, instead of a
+            // toast reading "403" over a page that has quietly stopped working.
+            if (ws_response.status === 403) {
+                set_signed_out(true)
+                return
+            }
+            set_signed_out(false)
             if (ws_response.status === 404) {
                 set_files_status(null)
                 set_no_workspace(true)
@@ -2291,15 +2376,69 @@ const Land = () => {
         },
         [add_tab, open_file, refresh, toggle_dir, load_listing, workspace, has_notebook_extension, names_in, listings]
     )
+    const new_folder = useCallback(
+        async (dir) => {
+            let taken = names_in(dir)
+            const typed = await ask_text({
+                title: `New folder in ${basename(dir) || dir}`,
+                check: (v) => (/[\\/]/.test(v) ? "A name, not a path." : taken.has(v) ? `${v} already exists here.` : null),
+            })
+            if (typed == null) return
+            const sep = dir.includes("\\") && !dir.includes("/") ? "\\" : "/"
+            try {
+                await get_json(`./api/v1/file/mkdir?path=${encodeURIComponent(`${dir}${dir.endsWith(sep) ? "" : sep}${typed}`)}`, { method: "POST" })
+                if (workspace != null && dir !== workspace.root && !expanded_ref.current.has(dir)) toggle_dir(dir)
+                else load_listing(dir)
+                refresh()
+            } catch (e) {
+                set_error(`${typed} could not be made: ${e?.message ?? e}`)
+            }
+        },
+        [names_in, workspace, toggle_dir, load_listing, refresh]
+    )
+    /** Give a file, a notebook or a folder another name, in the folder it is in. */
+    const rename_entry = useCallback(
+        async (entry) => {
+            const dir = entry.path.slice(0, entry.path.length - entry.name.length - 1)
+            const sep = entry.path.charAt(dir.length) || "/"
+            if (entry.type !== "dir" && file_dirty.get(entry.path)) return set_error(`Save ${entry.name} before renaming it.`)
+            const taken = names_in(dir)
+            const typed = await ask_text({
+                title: `Rename ${entry.name}`,
+                value: entry.name,
+                action: "Rename",
+                select_to: entry.type !== "dir" && entry.name.lastIndexOf(".") > 0 ? entry.name.lastIndexOf(".") : null,
+                check: (v) => (/[\\/]/.test(v) ? "A name, not a path." : v !== entry.name && taken.has(v) ? `${v} already exists here.` : null),
+            })
+            if (typed == null || typed === entry.name) return
+            const newpath = `${dir}${sep}${typed}`
+            try {
+                // a notebook that is running is moved through its session, which follows it
+                const nb = entry.type === "notebook" ? running.find((n) => n.path === entry.path) : null
+                if (nb != null) await get_text(`./move?id=${encodeURIComponent(nb.notebook_id)}&newpath=${encodeURIComponent(newpath)}`, { method: "POST" })
+                else await get_json(`./api/v1/file/rename?path=${encodeURIComponent(entry.path)}&newpath=${encodeURIComponent(newpath)}`, { method: "POST" })
+                // a tab that shows it follows it
+                set_tabs((tabs) => tabs.map((t) => (t.path === entry.path ? { ...t, path: newpath, id: t.kind === "file" ? `file:${newpath}` : t.id } : t)))
+                set_active((a) => (a === `file:${entry.path}` ? `file:${newpath}` : a))
+                set_tree_focus(newpath)
+                if (workspace != null && dir !== workspace.root) load_listing(dir)
+                refresh()
+            } catch (e) {
+                set_error(`${entry.name} could not be renamed: ${e?.message ?? e}`)
+            }
+        },
+        [names_in, running, workspace, load_listing, refresh]
+    )
     const create_menu = useCallback(
         (anchor, dir) => {
             const box = anchor.getBoundingClientRect()
             open_menu(box.left, box.bottom + 2, [
                 { label: "New notebook…", icon: "i-notebook", run: () => create_in(dir, "notebook") },
                 { label: "New file…", icon: "i-file", run: () => create_in(dir, "file") },
+                { label: "New folder…", icon: "i-folder", run: () => new_folder(dir) },
             ])
         },
-        [create_in]
+        [create_in, new_folder]
     )
 
     const delete_entry = useCallback(
@@ -2370,6 +2509,21 @@ const Land = () => {
 
     // the terminals UI (a tab strip of terminals + their bodies); rendered either in the docked
     // panel or inside the editor "Terminal" tab. `shown` gates which shell is live/painted.
+    // The ×, and a middle click: ask first when that would stop something that is running in it.
+    // (A terminal at its prompt just closes. No answer within a second and a half is not a yes.)
+    const ask_close_terminal = useCallback(
+        async (t) => {
+            const running = await Promise.race([
+                get_json(`./api/v1/terminal/running?tid=${encodeURIComponent(t.tid)}`)
+                    .then((r) => (typeof r?.running === "string" ? r.running : null))
+                    .catch(() => null),
+                new Promise((r) => setTimeout(() => r(null), 1500)),
+            ])
+            if (running != null && !(await ask_confirm(`Close ${t.label}?\n\n${running} is running in it and will be stopped.`, { action: "Close and stop it", danger: true }))) return
+            close_terminal(t.tid)
+        },
+        [close_terminal]
+    )
     const shown_terminals = terminals_workspace.current === workspace?.root ? terminals : []
     const hide_terminal = () => {
         set_terminal_open(false)
@@ -2390,12 +2544,12 @@ const Land = () => {
                     (t) => html`<div
                         class="tab terminal-tab ${t.tid === active_terminal ? "active" : ""}"
                         key=${t.tid}
-                        onAuxClick=${(e) => e.button === 1 && close_terminal(t.tid)}
+                        onAuxClick=${(e) => e.button === 1 && ask_close_terminal(t)}
                     >
                         <button class="title" role="tab" aria-selected=${t.tid === active_terminal} title=${t.label} onClick=${() => set_active_terminal(t.tid)}>
                             <svg class="ico" aria-hidden="true"><use href="#i-terminal" /></svg><span class="tab-name">${t.label}</span>
                         </button>
-                        <button class="close" title="Close this terminal and end its shell" aria-label=${`Close ${t.label}`} onClick=${() => close_terminal(t.tid)}>
+                        <button class="close" title="Close this terminal and end its shell" aria-label=${`Close ${t.label}`} onClick=${() => ask_close_terminal(t)}>
                             <svg class="ico" aria-hidden="true"><use href="#i-close" /></svg>
                         </button>
                     </div>`
@@ -2538,26 +2692,43 @@ const Land = () => {
                     ? [
                           { label: "New notebook…", icon: "i-notebook", run: () => create_in(entry.path, "notebook") },
                           { label: "New file…", icon: "i-file", run: () => create_in(entry.path, "file") },
+                          { label: "New folder…", icon: "i-folder", run: () => new_folder(entry.path) },
                           { label: "Open in terminal", icon: "i-terminal", run: () => new_terminal({ label: entry.name, cwd: entry.path }) },
                           "-",
+                          ...(entry.path === workspace?.root ? [] : [{ label: "Rename…", keys: "F2", run: () => rename_entry(entry) }, "-"]),
                           ...copy_items,
                       ]
                     : [
                           { label: "Open", icon: "i-arrow", run: () => (entry.type === "notebook" ? open_notebook(entry.path) : open_file(entry.path)) },
                           ...(nb == null ? [] : [{ label: "Shut down", icon: "i-stop", run: () => shutdown_notebook(nb.notebook_id) }]),
                           "-",
+                          { label: "Rename…", keys: "F2", run: () => rename_entry(entry) },
                           ...copy_items,
                           "-",
                           { label: "Delete…", icon: "i-trash", danger: true, run: () => delete_entry(entry) },
                       ]
             )
         },
-        [running, workspace?.root, create_in, new_terminal, open_notebook, open_file, shutdown_notebook, delete_entry]
+        [running, workspace?.root, create_in, new_folder, rename_entry, new_terminal, open_notebook, open_file, shutdown_notebook, delete_entry]
     )
 
     // The opener is "homebase": it shows on first launch (no workspace) and on demand (the "open another
     // workspace" button). Picking a folder spawns a child server in a new tab — it never takes over this
     // tab — so the launcher persists as the place you see and manage every running workspace.
+    if (signed_out) {
+        return html`<div class="signed-out">
+            <div class="island signed-out-card" role="alert">
+                <img class="land-logo" src=${logo_url} alt="" />
+                <h1>This page is signed out</h1>
+                <p>
+                    SpaceStation was restarted since this page was opened, and each start has a new sign-in link. Nothing is lost: notebooks and files are
+                    where they were.
+                </p>
+                <p>Open the link that <code>spacestation</code> printed when it started, or run it again.</p>
+                <button class="text-button primary" onClick=${() => window.location.reload()}>Try again</button>
+            </div>
+        </div>`
+    }
     if (no_workspace || show_opener) {
         return html`<${WorkspaceOpener} on_cancel=${no_workspace ? null : () => set_show_opener(false)} tunneled=${tunneled} />`
     }
@@ -2568,10 +2739,42 @@ const Land = () => {
         on_open_notebook: open_notebook,
         on_open_file: open_file,
         on_create_menu: create_menu,
+        on_focus: (entry) => {
+            tree_entries.current.set(entry.path, entry)
+            set_tree_focus(entry.path)
+        },
+        focus_path: tree_focus ?? active_tab?.path ?? workspace?.entries[0]?.path ?? null,
         on_delete: delete_entry,
         on_menu: entry_menu,
         current_path: active_tab?.path ?? null,
         running_paths: new Set(running.map((nb) => nb.path)),
+    }
+    // Arrows in the tree, as in any file list: up and down between rows, right opens a folder (or steps
+    // into it), left closes it (or goes to its folder); Home and End; F2 renames; the menu key opens the menu.
+    const on_tree_key = (e) => {
+        const rows = [...e.currentTarget.querySelectorAll("button.entry")]
+        const at = rows.indexOf(document.activeElement)
+        if (at < 0 || e.altKey || e.ctrlKey || e.metaKey) return
+        const row = rows[at]
+        const li = row.closest("li")
+        const go = (el) => {
+            e.preventDefault()
+            el?.focus()
+        }
+        if (e.key === "ArrowDown") go(rows[at + 1])
+        else if (e.key === "ArrowUp") go(rows[at - 1])
+        else if (e.key === "Home") go(rows[0])
+        else if (e.key === "End") go(rows[rows.length - 1])
+        else if (e.key === "ArrowRight" && li.classList.contains("dir")) li.classList.contains("open") ? go(rows[at + 1]) : (e.preventDefault(), tree.on_toggle(row.dataset.path))
+        else if (e.key === "ArrowLeft") {
+            if (li.classList.contains("dir") && li.classList.contains("open")) (e.preventDefault(), tree.on_toggle(row.dataset.path))
+            else go(li.parentElement?.closest("li.dir")?.querySelector(":scope > .entry-row > button.entry"))
+        } else if (e.key === "F2" && tree_entries.current.has(row.dataset.path)) (e.preventDefault(), rename_entry(tree_entries.current.get(row.dataset.path)))
+        else if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
+            const box = row.getBoundingClientRect()
+            e.preventDefault()
+            row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: box.left + 48, clientY: box.bottom }))
+        }
     }
     const seconds_since = (t) => Math.max(1, Math.round((Date.now() - t) / 1000))
 
@@ -2644,7 +2847,7 @@ const Land = () => {
                                         </button>
                                     </span>`}
                           </h2>
-                          <ul class="tree" onContextMenu=${(e) => workspace != null && e.target === e.currentTarget && entry_menu(e, { type: "dir", path: workspace.root, name: basename(workspace.root) })}>
+                          <ul class="tree" role="tree" aria-label="Files" onKeyDown=${on_tree_key} onContextMenu=${(e) => workspace != null && e.target === e.currentTarget && entry_menu(e, { type: "dir", path: workspace.root, name: basename(workspace.root) })}>
                               ${workspace == null
                                   ? null
                                   : workspace.entries.length === 0

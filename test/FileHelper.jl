@@ -39,6 +39,32 @@ import SpaceStation as Pluto
             @test String(get("$base/api/v1/file?path=$(HTTP.escapeuri(joinpath(ws, "a.jl")))").body) == "x = 1\n"
             saved = HTTP.post("$base/api/v1/file/save?path=$(HTTP.escapeuri(joinpath(ws, "b.txt")))", [], "y = 2"; retry=false, status_exception=false, cookies=false)
             @test saved.status == 200 && read(joinpath(ws, "b.txt"), String) == "y = 2"
+            # A save can be made conditional on the file still being as the editor read it: the read says
+            # when it was written, and a save carrying another time is refused, not written over what
+            # somebody else (an agent, a terminal) wrote in between. Through the hub's relay, header and all.
+            b_url = "$base/api/v1/file/save?path=$(HTTP.escapeuri(joinpath(ws, "b.txt")))"
+            stamp = HTTP.header(get("$base/api/v1/file?path=$(HTTP.escapeuri(joinpath(ws, "b.txt")))"), "X-File-Mtime")
+            @test tryparse(Float64, stamp) !== nothing
+            sleep(0.05)
+            in_time = HTTP.post("$b_url&if_mtime=$(HTTP.escapeuri(stamp))", [], "y = 3"; retry=false, status_exception=false, cookies=false)
+            @test in_time.status == 200 && occursin("\"mtime\"", String(in_time.body)) && read(joinpath(ws, "b.txt"), String) == "y = 3"
+            too_late = HTTP.post("$b_url&if_mtime=$(HTTP.escapeuri(stamp))", [], "y = 4"; retry=false, status_exception=false, cookies=false)
+            @test too_late.status == 409 && read(joinpath(ws, "b.txt"), String) == "y = 3"   # nothing was written
+            anyway = HTTP.post(b_url, [], "y = 5"; retry=false, status_exception=false, cookies=false)
+            @test anyway.status == 200 && read(joinpath(ws, "b.txt"), String) == "y = 5"      # unconditional, as before
+            # what a terminal is running is the hub's own answer (it owns the terminals), not a helper's
+            running = get("$base/api/v1/terminal/running?tid=no-such-terminal")
+            @test running.status == 200 && occursin("\"running\":null", String(running.body))
+            # rename and new folder, through the hub's relay: never onto something that exists
+            post(path) = HTTP.post("$base$path", [], ""; retry=false, status_exception=false, cookies=false)
+            esc(x) = HTTP.escapeuri(joinpath(ws, x))
+            @test post("/api/v1/file/mkdir?path=$(esc("made"))").status == 200 && isdir(joinpath(ws, "made"))
+            @test post("/api/v1/file/mkdir?path=$(esc("made"))").status == 409
+            @test post("/api/v1/file/rename?path=$(esc("b.txt"))&newpath=$(esc("made/c.txt"))").status == 200
+            @test !ispath(joinpath(ws, "b.txt")) && read(joinpath(ws, "made", "c.txt"), String) == "y = 5"
+            @test post("/api/v1/file/rename?path=$(esc("a.jl"))&newpath=$(esc("made/c.txt"))").status == 409 && isfile(joinpath(ws, "a.jl"))
+            @test post("/api/v1/file/rename?path=$(esc("nope"))&newpath=$(esc("x"))").status == 404
+            @test post("/api/v1/file/rename?path=$(esc("made"))&newpath=$(esc("renamed"))").status == 200 && isfile(joinpath(ws, "renamed", "c.txt"))
             @test Pluto.hub_isdir(ws) === true && Pluto.hub_isdir(joinpath(ws, "nope")) === false && Pluto.hub_isdir(joinpath(ws, "a.jl")) === false
 
             # the workspace a forwarded request is about travels in a header only a helper believes

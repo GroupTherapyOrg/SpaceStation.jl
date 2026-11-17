@@ -1,5 +1,9 @@
 // @ts-nocheck
-import { render, Component, h, cloneElement, createContext, createRef, hydrate } from "https://esm.sh/preact@10.29.2?target=es2020"
+// Preact, its hooks and htm are copies in ./vendor (the versions named there), not fetched from a
+// CDN: every page of the app starts with this file, and a page that cannot start until another
+// site answers is one that sometimes takes half a minute, and never starts on a machine without
+// internet (a cluster's compute node).
+import { render, Component, h, cloneElement, createContext, createRef, hydrate } from "./vendor/preact.js"
 import {
     //
     useEffect,
@@ -10,9 +14,9 @@ import {
     useCallback,
     useContext,
     useErrorBoundary,
-} from "https://esm.sh/preact@10.29.2/hooks?target=es2020"
+} from "./vendor/preact-hooks.js"
 
-import htm from "https://esm.sh/htm@3.1.1?target=es2020"
+import htm from "./vendor/htm.js"
 
 const html = htm.bind(h)
 

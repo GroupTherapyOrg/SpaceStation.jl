@@ -1937,3 +1937,78 @@ dialog.land-dialog,
         background-color: ButtonText;
     }
 }
+
+/* the file editor's find bar (⌘F / Ctrl+F), in the shell's own colours */
+.file-editor .cm-panels {
+    background-color: var(--land-sidebar-bg);
+    color: var(--land-fg);
+    border-top: 1px solid var(--land-border);
+    font-family: var(--land-ui-font);
+    font-size: 12px;
+}
+.file-editor .cm-search {
+    padding: 6px 10px;
+}
+.file-editor .cm-search input[type="text"],
+.file-editor .cm-search input:not([type]) {
+    height: 24px;
+    padding: 0 8px;
+    border: 1px solid var(--land-border-strong);
+    border-radius: var(--land-radius);
+    background-color: var(--land-bg);
+    color: inherit;
+    font: inherit;
+}
+.file-editor .cm-search .cm-button {
+    height: 24px;
+    padding: 0 10px;
+    border: none;
+    border-radius: 999px;
+    background: var(--land-hover);
+    color: inherit;
+    font: inherit;
+}
+.file-editor .cm-search label {
+    font-size: 12px;
+    color: var(--land-muted);
+}
+
+/* the page's sign-in is no longer good (the server was restarted): one plain notice */
+.signed-out {
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    box-sizing: border-box;
+}
+.signed-out-card {
+    width: min(440px, 100%);
+    padding: 28px;
+    box-sizing: border-box;
+}
+.signed-out-card .land-logo {
+    width: 40px;
+    height: 40px;
+    margin-bottom: 14px;
+}
+.signed-out-card h1 {
+    margin: 0 0 8px;
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+}
+.signed-out-card p {
+    margin: 0 0 10px;
+    color: var(--land-muted);
+}
+.signed-out-card code {
+    font-family: var(--julia-mono-font-stack);
+    font-size: 0.95em;
+    color: var(--land-fg);
+}
+.signed-out-card .text-button {
+    margin-top: 8px;
+    height: 32px;
+    padding: 0 16px;
+}

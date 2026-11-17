@@ -370,6 +370,32 @@ function _get_or_create_terminal(session::ServerSession, tid::String; requested_
 end
 
 """
+What a terminal is running in the foreground right now: the name of the program (`julia`, `claude`,
+`vim`), or `nothing` when the shell is at its prompt, when there is no such terminal, or when it
+cannot be told (Windows). So that closing a terminal can ask first when that would stop something.
+
+It asks the terminal itself which process group has it (`tcgetpgrp`), as terminal programs do: the
+shell's own group means "at the prompt". Counting the shell's children instead would take a prompt
+theme's background helper, or a shell that is still reading its profile, for a running job.
+"""
+function terminal_running(tid::AbstractString)::Union{Nothing,String}
+    t = lock(COLLAB_TERMINALS_LOCK) do
+        get(COLLAB_TERMINALS, String(tid), nothing)
+    end
+    (t === nothing || !Sys.isunix()) && return nothing
+    try
+        shell = Int(t.pty.child_pid)
+        shell > 0 || return nothing
+        foreground = Int(ccall(:tcgetpgrp, Cint, (Cint,), t.pty.master_fd))
+        (foreground <= 0 || foreground == shell) && return nothing
+        name = strip(readchomp(pipeline(ignorestatus(`ps -o comm= -p $foreground`); stderr=devnull)))
+        isempty(name) ? "a program" : String(basename(name))
+    catch
+        nothing
+    end
+end
+
+"""
 Explicitly end the terminal for `tid`: close its shell and free every resource. Used when the
 user CLOSES a terminal tab (the × button) — as opposed to just hiding the panel or reloading,
 which intentionally leave the shell running for reattach. Idempotent and safe to call for an

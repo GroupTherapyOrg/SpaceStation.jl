@@ -60,9 +60,9 @@ end
 const _HUB_NATIVE_PATHS = Set{String}([
     "", "/", "/land", "/edit", "/ping", "/auth-check", "/favicon.ico",
     "/api/v1/workspace", "/api/v1/workspace/listing",
-    "/api/v1/file", "/api/v1/file/save", "/api/v1/file/new", "/api/v1/file/delete",
+    "/api/v1/file", "/api/v1/file/save", "/api/v1/file/new", "/api/v1/file/delete", "/api/v1/file/rename", "/api/v1/file/mkdir",
     "/api/v1/browse", "/api/v1/config", "/api/v1/ssh_hosts",
-    "/api/v1/terminal/close",
+    "/api/v1/terminal/close", "/api/v1/terminal/running",
 ])
 const _HUB_NATIVE_PREFIXES = ("/api/v1/local/", "/api/v1/remote/")
 const _ASSET_EXTENSIONS = Set{String}([".ico", ".js", ".mjs", ".css", ".html", ".png", ".gif", ".svg", ".woff2", ".woff", ".ttf", ".eot", ".otf", ".json", ".map", ".wasm", ".txt", ".md"])
