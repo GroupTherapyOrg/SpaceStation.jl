@@ -131,6 +131,10 @@ terminal in that notebook's own package environment.
 <img src="assets/screenshots/terminal.webp" width="900" alt="A notebook in light mode with a dark terminal docked at its right, where a Julia script from the workspace has just been run">
 </div>
 
+<div align="center">
+<img src="assets/screenshots/terminal-tab.webp" width="900" alt="Dark mode, file tree hidden: the terminal as a tab beside a notebook and a script, with a Julia session running in it">
+</div>
+
 ### Workspaces on other machines
 
 Click a host from your `~/.ssh/config`. SpaceStation connects, installs itself there the first
@@ -139,7 +143,7 @@ same address on your computer, next to your local workspaces. The files, the not
 and the terminals are all on the remote machine.
 
 <div align="center">
-<img src="assets/screenshots/remote.webp" width="900" alt="A workspace on the host gpu-node-07, named at the top of the sidebar, with a notebook that plots a damped wave">
+<img src="assets/screenshots/remote.webp" width="900" alt="Dark mode: a workspace on the host gpu-node-07, named at the top of the sidebar, with a notebook that plots a damped wave and a terminal on that host docked below">
 </div>
 
 ```mermaid
@@ -170,7 +174,7 @@ agent in a terminal work on the same running notebook.
 second the cell turns amber in your browser, still showing its old output. Nothing has run.
 
 <div align="center">
-<img src="assets/screenshots/lazy-stale.webp" width="900" alt="Dark mode, file tree hidden, terminal at the right. A notebook cell is outlined in amber: its code says 26 and its output still says 20. In the terminal, pluto-collab status reports 1 stale cell">
+<img src="assets/screenshots/lazy-stale.webp" width="900" alt="Light mode with a light terminal at the right and the file tree hidden. A notebook cell is outlined in amber: its code says 26 and its output still says 20. In the terminal, pluto-collab status reports 1 stale cell">
 </div>
 
 **2. A run applies it.** `run --stale` runs the stale cells, and what depends on them follows
@@ -207,7 +211,7 @@ Cells that should never be reused (random numbers, the clock, files) opt out wit
 `always_stale = true`. The cache is plain TOML that any tool can read, and it is safe to delete.
 
 <div align="center">
-<img src="assets/screenshots/sidecar.webp" width="900" alt="A notebook's .pluto-cache.toml file open in a tab with the file tree hidden: for each cell an execution key, a result hash, the run time and the stored output">
+<img src="assets/screenshots/sidecar.webp" width="900" alt="Dark mode: a notebook's .pluto-cache.toml file open in a tab with the file tree hidden: for each cell an execution key, a result hash, the run time and the stored output">
 </div>
 
 ---
