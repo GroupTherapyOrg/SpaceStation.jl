@@ -1,0 +1,67 @@
+name: Shell walkthrough (Windows, Linux, macOS)
+
+# Starts a hub the way the `spacestation` command does and walks through it in a real browser on
+# each system: the launcher, the folder browser, a workspace's file tree and its menus, a text file
+# (typing, saving, copy and paste, line endings), a notebook that runs, a terminal (its shell, paste,
+# copy, Ctrl+C). The unit tests run on Windows already; this is the part of the app nobody saw there.
+# Screenshots and a report of what was seen (fonts drawn, scrollbars, how paths are written) are
+# uploaded from every run, passing or not.
+
+on:
+    push:
+        paths-ignore:
+            - "**.md"
+        branches:
+            - main
+    pull_request:
+        paths-ignore:
+            - "**.md"
+        branches-ignore:
+            - release
+    workflow_dispatch:
+
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+    walkthrough:
+        runs-on: ${{ matrix.os }}
+        timeout-minutes: 40
+        strategy:
+            fail-fast: false
+            matrix:
+                os: [windows-latest, ubuntu-latest, macos-latest]
+
+        steps:
+            - uses: actions/checkout@v7
+
+            - uses: julia-actions/setup-julia@v3
+              with:
+                  version: "1.12"
+
+            - uses: julia-actions/cache@v3
+
+            - name: Install SpaceStation.jl packages
+              run: julia --project=. -e "using Pkg; Pkg.instantiate()"
+
+            - uses: actions/setup-node@v6
+              with:
+                  node-version: "22.x"
+
+            - name: Install the browser driver
+              working-directory: ./test/frontend
+              run: npm install
+
+            - name: Walk through the shell
+              run: julia --project=. test/shell_walkthrough.jl
+              env:
+                  SPACESTATION_HUB: 1
+
+            - uses: actions/upload-artifact@v7
+              if: always()
+              with:
+                  name: walkthrough-${{ matrix.os }}
+                  path: |
+                      test/frontend/artifacts/walk-*.png
+                      test/frontend/artifacts/walk-*.json

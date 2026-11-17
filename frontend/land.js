@@ -1734,8 +1734,11 @@ const FileEditorPane = ({ path, label, visible, on_dirty }) => {
     const [status, set_status] = useState("Loading…")
     const [failed, set_failed] = useState(false)
 
-    // what is on disk as far as this editor knows: the text, and when it was written
-    const saved_ref = useRef({ text: "", mtime: /** @type {string?} */ (null) })
+    // What is on disk as far as this editor knows: the text, how its lines end, and when it was written.
+    // The editor holds every line break as "\n", whatever the file has. A file whose lines end in
+    // "\r\n" (most text made on Windows) is given back that way: saved with "\n" it shows up in git
+    // as changed on every line, and some Windows programs read it as one long line.
+    const saved_ref = useRef({ text: "", mtime: /** @type {string?} */ (null), eol: "\n" })
     const mark_dirty = useCallback(
         (now_dirty) => {
             if (file_dirty.get(path) === now_dirty) return
@@ -1749,7 +1752,8 @@ const FileEditorPane = ({ path, label, visible, on_dirty }) => {
         async ({ overwrite = false } = {}) => {
             const view = view_ref.current
             if (view == null) return
-            const text = view.state.doc.toString()
+            const shown = view.state.doc.toString()
+            const text = saved_ref.current.eol === "\n" ? shown : shown.replace(/\n/g, saved_ref.current.eol)
             const condition = !overwrite && saved_ref.current.mtime != null ? `&if_mtime=${encodeURIComponent(saved_ref.current.mtime)}` : ""
             try {
                 const r = await fetch(`./api/v1/file/save?path=${encodeURIComponent(path)}${condition}`, { method: "POST", body: text })
@@ -1766,8 +1770,8 @@ const FileEditorPane = ({ path, label, visible, on_dirty }) => {
                 }
                 if (!r.ok) throw new Error(await failure_text(r))
                 const answer = await r.json().catch(() => ({}))
-                saved_ref.current = { text, mtime: answer.mtime != null ? String(answer.mtime) : null }
-                mark_dirty(view.state.doc.toString() !== text)
+                saved_ref.current = { ...saved_ref.current, text: shown, mtime: answer.mtime != null ? String(answer.mtime) : null }
+                mark_dirty(view.state.doc.toString() !== shown)
                 set_failed(false)
                 set_status("Saved")
                 setTimeout(() => set_status(""), 1500)
@@ -1796,7 +1800,9 @@ const FileEditorPane = ({ path, label, visible, on_dirty }) => {
                 const response = await fetch(`./api/v1/file?path=${encodeURIComponent(path)}`)
                 if (!response.ok) throw new Error(await failure_text(response))
                 const content = await response.text()
-                saved_ref.current = { text: content, mtime: response.headers.get("X-File-Mtime") }
+                const breaks = (content.match(/\n/g) ?? []).length
+                const crlf = (content.match(/\r\n/g) ?? []).length
+                saved_ref.current = { text: content.replace(/\r\n?/g, "\n"), mtime: response.headers.get("X-File-Mtime"), eol: crlf > 0 && crlf * 2 >= breaks ? "\r\n" : "\n" }
                 const v = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim()
                 const pluto_colors = cm.HighlightStyle.define(
                     [
