@@ -14,10 +14,7 @@ session that a coding agent can share with you. The notebook editor is Pluto's, 
 
 <br>
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/hero-dark.webp">
-  <img src="assets/screenshots/hero-light.webp" width="920" alt="A SpaceStation workspace: the file tree on the left, a notebook with a slider and a plot open in a tab beside two other tabs, and a terminal docked below">
-</picture>
+<img src="assets/screenshots/hero.webp" width="920" alt="A SpaceStation workspace in light mode: the file tree on the left, a notebook with a slider and a plot open in a tab beside two other tabs, and a dark terminal docked below">
 
 </div>
 
@@ -95,12 +92,14 @@ running, lets you browse to a folder or paste a path, and lists the hosts in you
 Each workspace opens in its own browser tab, and the launcher stays where it is, so you can have
 several open at once: on this computer and on others.
 
-<div align="center">
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/launcher-dark.webp">
-  <img src="assets/screenshots/launcher-light.webp" width="640" alt="The launcher: two running workspaces, one on this computer and one on a remote host, a folder browser, and the list of remote hosts with one connected">
-</picture>
-</div>
+<table>
+<tr>
+<td width="50%"><img src="assets/screenshots/launcher-light.webp" alt="The launcher in light mode: two running workspaces, one on this computer and one on a remote host, a folder browser, and the list of remote hosts with one connected"></td>
+<td width="50%"><img src="assets/screenshots/launcher-dark.webp" alt="The same launcher in dark mode"></td>
+</tr>
+</table>
+
+Light and dark follow your system, or pick one with the switch at the top right.
 
 ### A folder is a workspace
 
@@ -109,18 +108,17 @@ open as tabs too, in a plain editor: Julia scripts, Markdown, CSV, TOML. From th
 files and folders, rename, delete and copy paths.
 
 Closing a tab does not stop a notebook. It stays in the **Running** list until you stop it there.
+The sidebar hides with one click when you want the whole window for the notebook.
 
 <div align="center">
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/files-dark.webp">
-  <img src="assets/screenshots/files-light.webp" width="900" alt="A Julia script open in an editor tab beside a notebook, a CSV file and a Markdown file, with the file tree's menu open: Open, Rename, Copy path, Copy relative path, Delete">
-</picture>
+<img src="assets/screenshots/files.webp" width="900" alt="Dark mode: a Julia script open in an editor tab beside a notebook, a CSV file and a Markdown file, with the file tree's menu open: Open, Rename, Copy path, Copy relative path, Delete">
 </div>
 
 ### A real terminal
 
 A shell on the machine the workspace runs on: your login shell on macOS and Linux, PowerShell on
-Windows. Open as many as you need, and put them at the bottom, at the right, or in a tab.
+Windows. Open as many as you need, and put them at the bottom, at the right, or in a tab. A
+terminal has its own light or dark setting, so a light page can keep a dark terminal.
 
 Terminals belong to the server, not to the page. Reload the page or close the browser and they
 keep running, with their scrollback, until you close them or stop SpaceStation.
@@ -130,10 +128,7 @@ agent started there works on your live notebooks with no setup. A notebook's men
 terminal in that notebook's own package environment.
 
 <div align="center">
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/terminal-dark.webp">
-  <img src="assets/screenshots/terminal-light.webp" width="900" alt="A notebook with a terminal docked at its right, where a Julia script from the workspace has just been run">
-</picture>
+<img src="assets/screenshots/terminal.webp" width="900" alt="A notebook in light mode with a dark terminal docked at its right, where a Julia script from the workspace has just been run">
 </div>
 
 ### Workspaces on other machines
@@ -144,10 +139,7 @@ same address on your computer, next to your local workspaces. The files, the not
 and the terminals are all on the remote machine.
 
 <div align="center">
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/remote-dark.webp">
-  <img src="assets/screenshots/remote-light.webp" width="900" alt="A workspace on the host gpu-node-07, named at the top of the sidebar, with a notebook that plots a damped wave">
-</picture>
+<img src="assets/screenshots/remote.webp" width="900" alt="A workspace on the host gpu-node-07, named at the top of the sidebar, with a notebook that plots a damped wave">
 </div>
 
 ```mermaid
@@ -178,20 +170,14 @@ agent in a terminal work on the same running notebook.
 second the cell turns amber in your browser, still showing its old output. Nothing has run.
 
 <div align="center">
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/lazy-stale-dark.webp">
-  <img src="assets/screenshots/lazy-stale-light.webp" width="900" alt="A notebook cell outlined in amber: its code says 26 and its output still says 20. In the terminal below, pluto-collab status reports 1 stale cell">
-</picture>
+<img src="assets/screenshots/lazy-stale.webp" width="900" alt="Dark mode, file tree hidden, terminal at the right. A notebook cell is outlined in amber: its code says 26 and its output still says 20. In the terminal, pluto-collab status reports 1 stale cell">
 </div>
 
 **2. A run applies it.** `run --stale` runs the stale cells, and what depends on them follows
 through Pluto's reactivity. You watch it happen in the browser.
 
 <div align="center">
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/lazy-ran-dark.webp">
-  <img src="assets/screenshots/lazy-ran-light.webp" width="900" alt="The same notebook after pluto-collab run --stale: the cell and the cells that depend on it show their new values, and the terminal reports the result">
-</picture>
+<img src="assets/screenshots/lazy-ran.webp" width="900" alt="The same view after pluto-collab run --stale: the cell and the cells that depend on it show their new values, and the terminal reports that it ran">
 </div>
 
 The whole agent side is one small command, with no MCP server and no plugin:
@@ -221,10 +207,7 @@ Cells that should never be reused (random numbers, the clock, files) opt out wit
 `always_stale = true`. The cache is plain TOML that any tool can read, and it is safe to delete.
 
 <div align="center">
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/sidecar-dark.webp">
-  <img src="assets/screenshots/sidecar-light.webp" width="900" alt="A notebook's .pluto-cache.toml file open in a tab: for each cell an execution key, a result hash, the run time and the stored output">
-</picture>
+<img src="assets/screenshots/sidecar.webp" width="900" alt="A notebook's .pluto-cache.toml file open in a tab with the file tree hidden: for each cell an execution key, a result hash, the run time and the stored output">
 </div>
 
 ---
@@ -234,7 +217,6 @@ Cells that should never be reused (random numbers, the clock, files) opt out wit
 - **Systems:** macOS, Linux and Windows. A browser walkthrough of the app runs on all three in CI.
 - **Browsers:** Chrome and other Chromium browsers, and Firefox. Safari has not been checked with
   a workspace on a remote host.
-- **Light and dark:** follows your system, or pick one in the launcher.
 
 ## Relationship to Pluto.jl
 
