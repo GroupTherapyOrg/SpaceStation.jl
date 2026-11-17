@@ -273,14 +273,33 @@ const open_menu = (x, y, items) => {
 // notebook frames) follow at once through storage events; a workspace link also carries the
 // choice as a ?scheme= seed (ColorScheme.js handles both ends). The terminal's own scheme toggle
 // is separate on purpose.
+/** The page's appearance, live: what was chosen ("system" | "light" | "dark") and whether that is
+ *  dark right now. One reading for everything that shows or follows it, kept current when the choice
+ *  is made here, in another tab, or by the system. */
+const use_scheme = () => {
+    const read = () => ({ choice: get_color_scheme(), dark: prefers_dark() })
+    const [scheme, set_scheme] = useState(read)
+    useEffect(() => {
+        const on_change = () => set_scheme(read())
+        const system = window.matchMedia("(prefers-color-scheme: dark)")
+        window.addEventListener("spacestation:scheme", on_change)
+        window.addEventListener("storage", on_change)
+        system.addEventListener("change", on_change)
+        return () => {
+            window.removeEventListener("spacestation:scheme", on_change)
+            window.removeEventListener("storage", on_change)
+            system.removeEventListener("change", on_change)
+        }
+    }, [])
+    return scheme
+}
+
 const AppSchemeToggle = ({ classname }) => {
-    const [scheme, set_scheme] = useState(get_color_scheme())
+    const scheme = use_scheme().choice
     return html`<button
         class="text-button app-scheme-toggle ${classname ?? ""}"
         title=${scheme === "system" ? "Appearance follows the system. Switch to light" : scheme === "light" ? "Appearance: light. Switch to dark" : "Appearance: dark. Switch to follow the system"}
-        onClick=${() => {
-            set_scheme(cycle_color_scheme())
-        }}
+        onClick=${() => void cycle_color_scheme()}
     >
         <${Ico} name=${scheme === "system" ? "i-auto" : scheme === "light" ? "i-sun" : "i-moon"} />${scheme === "system" ? "Auto" : scheme === "light" ? "Light" : "Dark"}
     </button>`
@@ -1655,7 +1674,11 @@ const Land = () => {
     })
     // The terminal's colours are its own preference, not the page theme's: plenty of people want a
     // light UI with a dark terminal. Defaults to dark, which is what the terminal has always been.
-    const [terminal_scheme, set_terminal_scheme] = useState(() => (store.get("spacestation terminal scheme") === "light" ? "light" : "dark"))
+    // The terminal is the page's colour, light or dark with it. Its own switch makes it the opposite
+    // (a dark terminal in a light page is a common wish), and it stays the opposite as the page changes.
+    const page_scheme = use_scheme()
+    const [terminal_inverted, set_terminal_inverted] = useState(() => store.get("spacestation terminal opposite") === "true")
+    const terminal_scheme = page_scheme.dark !== terminal_inverted ? "dark" : "light"
     const terminal_ever_opened = useRef(false)
     if (terminal_open) terminal_ever_opened.current = true
     const [show_opener, set_show_opener] = useState(false)
@@ -1827,10 +1850,10 @@ const Land = () => {
         store.set("spacestation sidebar hidden", String(sidebar_hidden))
         store.set("spacestation terminal open", String(terminal_open))
         store.set("spacestation terminal height", String(terminal_height))
-        store.set("spacestation terminal scheme", terminal_scheme)
+        store.set("spacestation terminal opposite", String(terminal_inverted))
         store.set("spacestation terminal width", String(terminal_width))
         store.set("spacestation terminal dock", terminal_dock)
-    }, [sidebar_width, sidebar_hidden, terminal_open, terminal_height, terminal_width, terminal_dock, terminal_scheme])
+    }, [sidebar_width, sidebar_hidden, terminal_open, terminal_height, terminal_width, terminal_dock, terminal_inverted])
 
     useEffect(() => {
         const root = workspace?.root ?? null
@@ -2376,9 +2399,9 @@ const Land = () => {
             <div class="panel-actions">
                 <button
                     class="icon-button terminal-scheme-toggle"
-                    title=${terminal_scheme === "light" ? "Terminal colours: light. Switch to dark" : "Terminal colours: dark. Switch to light"}
+                    title=${terminal_inverted ? "The terminal is the opposite of the page. Make it match" : `The terminal matches the page. Make it ${terminal_scheme === "light" ? "dark" : "light"}`}
                     aria-label="Switch the terminal between light and dark"
-                    onClick=${() => set_terminal_scheme((s) => (s === "light" ? "dark" : "light"))}
+                    onClick=${() => set_terminal_inverted((v) => !v)}
                 >
                     <${Ico} name=${terminal_scheme === "light" ? "i-sun" : "i-moon"} />
                 </button>
