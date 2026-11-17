@@ -69,7 +69,12 @@ button {
     outline: none;
 }
 
-:focus-visible {
+/* Never a frame: what has the keys inside a notebook shows that itself. Firefox matches
+   :focus-visible on a frame that got the keys from a key press or a script (Chrome never does),
+   and when the frame is on another origin, as a remote workspace's notebooks are, no click inside
+   it reaches this page to take the ring off again: it stayed around the notebook until a reload.
+   (:where keeps the rule's weight what it was.) */
+:focus-visible:where(:not(iframe)) {
     outline: 2px solid var(--land-accent);
     outline-offset: -2px;
     border-radius: var(--land-radius);
