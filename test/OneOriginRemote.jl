@@ -342,6 +342,10 @@ answer = 123456 + 654321
             # one (CollabRemote.jl). Here that port is the stand-in hub's own; no SSH is involved.
             @testset "a machine connected over SSH enters the table when its connect is done" begin
                 r = Pluto.RemoteSession("ssh-node", "tunneling", "", 0, "", "", nothing, nothing, false)
+                # (this session has no ssh process behind it: the watchdog, which looks every two seconds,
+                # would take that for a tunnel that died and put a real `ssh ssh-node` in its place)
+                watchdog_was = Pluto.TUNNEL_WATCHDOG_PAUSED[]
+                Pluto.TUNNEL_WATCHDOG_PAUSED[] = true
                 lock(() -> (Pluto.REMOTE_SESSIONS["ssh-node"] = r), Pluto.REMOTE_SESSIONS_LOCK)
                 try
                     Pluto._mark_remote_ready!(r, remote_port, remote_port, remote_secret)
@@ -368,6 +372,7 @@ answer = 123456 + 654321
                 finally
                     lock(() -> delete!(Pluto.REMOTE_SESSIONS, "ssh-node"), Pluto.REMOTE_SESSIONS_LOCK)
                     Pluto.unregister_remote_host!("ssh-node")
+                    Pluto.TUNNEL_WATCHDOG_PAUSED[] = watchdog_was
                 end
             end
 
