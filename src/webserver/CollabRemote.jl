@@ -430,7 +430,7 @@ silence says the far end is working.
 A raw socket rather than HTTP.jl on purpose: the verdict must not depend on which exception type a
 given HTTP.jl version wraps a timeout in.
 """
-function _probe_port(port::Integer; wait::Real=4.0)::Symbol
+function _probe_port(port::Integer; wait::Real=4.0, target::AbstractString="/ping")::Symbol
     sock = try
         Sockets.connect(Sockets.localhost, UInt16(port))
     catch
@@ -438,7 +438,7 @@ function _probe_port(port::Integer; wait::Real=4.0)::Symbol
     end
     try
         try
-            write(sock, "GET /ping HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+            write(sock, "GET $(target) HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
         catch
             return :dead
         end
@@ -452,7 +452,9 @@ function _probe_port(port::Integer; wait::Real=4.0)::Symbol
         istaskdone(reader) || return :busy
         line = status[]
         (line === nothing || isempty(line)) && return :dead
-        occursin(r"^HTTP/1\.[01] 200\b", line) ? :ok : :dead
+        occursin(r"^HTTP/1\.[01] 200\b", line) && return :ok
+        # asked for something only its owner may have, and refused: a server, but not the one meant
+        target != "/ping" && occursin(r"^HTTP/1\.[01] 40[13]\b", line) ? :denied : :dead
     finally
         try
             close(sock) # also unblocks the reader, if it is still waiting

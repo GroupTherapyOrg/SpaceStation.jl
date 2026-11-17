@@ -229,6 +229,13 @@ end
                     @test isfile(regfile)                                            # skipped, never deleted: the next server renames over this name
                     write(regfile, original)
                 end
+                # and only if the server that answers on its port is the one it describes: a live pid
+                # and an answering port can be somebody else's (both are reused)
+                write(regfile, replace(original, r"\"secret\": \"[^\"]+\"" => "\"secret\": \"not-this-servers\""))
+                @test Pluto._find_local_server(Pluto.tamepath(ws)) === nothing
+                @test Pluto._probe_port(child_port; target="/api/v1/config?secret=not-this-servers") == :denied
+                @test Pluto._probe_port(child_port) == :ok                           # it is a server all the same
+                write(regfile, original)
                 @test Pluto._find_local_server(Pluto.tamepath(ws); pid=getpid()) !== nothing
                 @test Pluto._find_local_server(Pluto.tamepath(ws); pid=1) === nothing # somebody else's file
 
