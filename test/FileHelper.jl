@@ -52,6 +52,19 @@ import SpaceStation as Pluto
             @test too_late.status == 409 && read(joinpath(ws, "b.txt"), String) == "y = 3"   # nothing was written
             anyway = HTTP.post(b_url, [], "y = 5"; retry=false, status_exception=false, cookies=false)
             @test anyway.status == 200 && read(joinpath(ws, "b.txt"), String) == "y = 5"      # unconditional, as before
+            # what a terminal is running is the hub's own answer (it owns the terminals), not a helper's
+            running = get("$base/api/v1/terminal/running?tid=no-such-terminal")
+            @test running.status == 200 && occursin("\"running\":null", String(running.body))
+            # rename and new folder, through the hub's relay: never onto something that exists
+            post(path) = HTTP.post("$base$path", [], ""; retry=false, status_exception=false, cookies=false)
+            esc(x) = HTTP.escapeuri(joinpath(ws, x))
+            @test post("/api/v1/file/mkdir?path=$(esc("made"))").status == 200 && isdir(joinpath(ws, "made"))
+            @test post("/api/v1/file/mkdir?path=$(esc("made"))").status == 409
+            @test post("/api/v1/file/rename?path=$(esc("b.txt"))&newpath=$(esc("made/c.txt"))").status == 200
+            @test !ispath(joinpath(ws, "b.txt")) && read(joinpath(ws, "made", "c.txt"), String) == "y = 5"
+            @test post("/api/v1/file/rename?path=$(esc("a.jl"))&newpath=$(esc("made/c.txt"))").status == 409 && isfile(joinpath(ws, "a.jl"))
+            @test post("/api/v1/file/rename?path=$(esc("nope"))&newpath=$(esc("x"))").status == 404
+            @test post("/api/v1/file/rename?path=$(esc("made"))&newpath=$(esc("renamed"))").status == 200 && isfile(joinpath(ws, "renamed", "c.txt"))
             @test Pluto.hub_isdir(ws) === true && Pluto.hub_isdir(joinpath(ws, "nope")) === false && Pluto.hub_isdir(joinpath(ws, "a.jl")) === false
 
             # the workspace a forwarded request is about travels in a header only a helper believes

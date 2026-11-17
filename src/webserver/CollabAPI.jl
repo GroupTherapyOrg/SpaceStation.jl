@@ -1007,6 +1007,41 @@ function register_collab_api!(router, session::ServerSession)
     end
     HTTP.register!(router, "POST", "/api/v1/file/new", _offloaded(serve_api_file_new))
 
+    # Rename or move a file or a folder. Never onto something that exists. A notebook's output cache
+    # goes with it. (A notebook that is RUNNING is moved with `/move?id=…`, which also tells its session.)
+    function serve_api_file_rename(request::HTTP.Request)
+        query = HTTP.queryparams(HTTP.URI(request.target))
+        (haskey(query, "path") && haskey(query, "newpath")) || return _api_error(400, "pass ?path=/abs/old&newpath=/abs/new", false)
+        path = tamepath(query["path"]); newpath = tamepath(query["newpath"])
+        ispath(path) || return _api_error(404, "no such file or folder: $path", false)
+        ispath(newpath) && return _api_error(409, "$(basename(newpath)) already exists", false)
+        isdir(dirname(newpath)) || return _api_error(400, "no such directory: $(dirname(newpath))", false)
+        try
+            mv(path, newpath)
+            sidecar = path * OUTPUT_CACHE_SUFFIX
+            isfile(sidecar) && !ispath(newpath * OUTPUT_CACHE_SUFFIX) && mv(sidecar, newpath * OUTPUT_CACHE_SUFFIX)
+        catch e
+            return _api_error(500, "could not rename: $(sprint(showerror, e))", false)
+        end
+        HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], """{"ok": true}\n""")
+    end
+    HTTP.register!(router, "POST", "/api/v1/file/rename", _offloaded(serve_api_file_rename))
+
+    function serve_api_file_mkdir(request::HTTP.Request)
+        query = HTTP.queryparams(HTTP.URI(request.target))
+        haskey(query, "path") || return _api_error(400, "pass ?path=/abs/folder", false)
+        path = tamepath(query["path"])
+        ispath(path) && return _api_error(409, "$(basename(path)) already exists", false)
+        isdir(dirname(path)) || return _api_error(400, "no such directory: $(dirname(path))", false)
+        try
+            mkdir(path)
+        catch e
+            return _api_error(500, "could not make the folder: $(sprint(showerror, e))", false)
+        end
+        HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], """{"ok": true}\n""")
+    end
+    HTTP.register!(router, "POST", "/api/v1/file/mkdir", _offloaded(serve_api_file_mkdir))
+
     function serve_api_file_delete(request::HTTP.Request)
         query = HTTP.queryparams(HTTP.URI(request.target))
         haskey(query, "path") || return _api_error(400, "pass ?path=/abs/file", false)
@@ -1120,5 +1155,6 @@ function register_collab_api!(router, session::ServerSession)
         isempty(tid) && return _api_error(400, "pass ?tid=<terminal-id>", false)
         HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], _json(Pair["running" => terminal_running(tid)]) * "\n")
     end
-    HTTP.register!(router, "GET", "/api/v1/terminal/running", _offloaded(serve_api_terminal_running))
+    # answered by the process that owns the terminals (in a hub: the hub itself), like `close` above
+    HTTP.register!(router, "GET", "/api/v1/terminal/running", serve_api_terminal_running)
 end

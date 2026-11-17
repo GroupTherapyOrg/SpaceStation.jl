@@ -466,10 +466,19 @@ const FileEntry = ({ entry, listings, expanded, tree, depth }) => {
         const children = listings[entry.path]
         return html`<li class="dir ${open ? "open" : ""}">
             <div class="entry-row" onContextMenu=${(e) => tree.on_menu(e, entry)}>
-                <button class="entry" style=${row_style} title=${entry.path} aria-expanded=${open} onClick=${(e) => e.detail > 1 || tree.on_toggle(entry.path)}>
+                <button
+                    class="entry"
+                    style=${row_style}
+                    title=${entry.path}
+                    data-path=${entry.path}
+                    tabindex=${tree.focus_path === entry.path ? 0 : -1}
+                    onFocus=${() => tree.on_focus(entry)}
+                    aria-expanded=${open}
+                    onClick=${(e) => e.detail > 1 || tree.on_toggle(entry.path)}
+                >
                     <svg class="ico chevron" aria-hidden="true"><use href="#i-chevron" /></svg><${Ico} name=${open ? "i-folder-open" : "i-folder"} /><span class="entry-name">${entry.name}</span>
                 </button>
-                <button class="row-action" title="New notebook or file in ${entry.name}" aria-label="New notebook or file in ${entry.name}" onClick=${(e) => tree.on_create_menu(e.currentTarget, entry.path)}>
+                <button class="row-action" tabindex="-1" title="New notebook, file or folder in ${entry.name}" aria-label="New notebook, file or folder in ${entry.name}" onClick=${(e) => tree.on_create_menu(e.currentTarget, entry.path)}>
                     <svg class="ico" aria-hidden="true"><use href="#i-add" /></svg>
                 </button>
             </div>
@@ -514,6 +523,9 @@ const FileEntry = ({ entry, listings, expanded, tree, depth }) => {
                 class="entry"
                 style=${row_style}
                 title=${entry.path}
+                data-path=${entry.path}
+                tabindex=${tree.focus_path === entry.path ? 0 : -1}
+                onFocus=${() => tree.on_focus(entry)}
                 aria-current=${tree.current_path === entry.path ? "page" : undefined}
                 onClick=${() => (is_notebook ? tree.on_open_notebook(entry.path) : tree.on_open_file(entry.path))}
             >
@@ -1740,6 +1752,17 @@ const Land = () => {
     if (terminal_open) terminal_ever_opened.current = true
     const [show_opener, set_show_opener] = useState(false)
     const [path_copied, set_path_copied] = useState(false)
+    // which row of the tree the keyboard is on: the tree is one stop for Tab, arrows move inside it
+    const [tree_focus, set_tree_focus] = useState(/** @type {String?} */ (null))
+    const tree_entries = useRef(/** @type {Map<String, any>} */ (new Map()))
+    // the row the keyboard was on can vanish (its folder closed, it was deleted): the tree stays reachable
+    useEffect(() => {
+        const list = document.querySelector("#land aside ul.tree")
+        if (list != null && list.querySelector('button.entry[tabindex="0"]') == null) {
+            const first = list.querySelector("button.entry")
+            if (first instanceof HTMLElement && first.dataset.path) set_tree_focus(first.dataset.path)
+        }
+    })
     // which file tabs have unsaved changes (the panes report it; the strip marks them)
     const [dirty_tabs, set_dirty_tabs] = useState(/** @type {Set<String>} */ (new Set()))
     const set_tab_dirty = useCallback((path, dirty) => {
@@ -2353,15 +2376,69 @@ const Land = () => {
         },
         [add_tab, open_file, refresh, toggle_dir, load_listing, workspace, has_notebook_extension, names_in, listings]
     )
+    const new_folder = useCallback(
+        async (dir) => {
+            let taken = names_in(dir)
+            const typed = await ask_text({
+                title: `New folder in ${basename(dir) || dir}`,
+                check: (v) => (/[\\/]/.test(v) ? "A name, not a path." : taken.has(v) ? `${v} already exists here.` : null),
+            })
+            if (typed == null) return
+            const sep = dir.includes("\\") && !dir.includes("/") ? "\\" : "/"
+            try {
+                await get_json(`./api/v1/file/mkdir?path=${encodeURIComponent(`${dir}${dir.endsWith(sep) ? "" : sep}${typed}`)}`, { method: "POST" })
+                if (workspace != null && dir !== workspace.root && !expanded_ref.current.has(dir)) toggle_dir(dir)
+                else load_listing(dir)
+                refresh()
+            } catch (e) {
+                set_error(`${typed} could not be made: ${e?.message ?? e}`)
+            }
+        },
+        [names_in, workspace, toggle_dir, load_listing, refresh]
+    )
+    /** Give a file, a notebook or a folder another name, in the folder it is in. */
+    const rename_entry = useCallback(
+        async (entry) => {
+            const dir = entry.path.slice(0, entry.path.length - entry.name.length - 1)
+            const sep = entry.path.charAt(dir.length) || "/"
+            if (entry.type !== "dir" && file_dirty.get(entry.path)) return set_error(`Save ${entry.name} before renaming it.`)
+            const taken = names_in(dir)
+            const typed = await ask_text({
+                title: `Rename ${entry.name}`,
+                value: entry.name,
+                action: "Rename",
+                select_to: entry.type !== "dir" && entry.name.lastIndexOf(".") > 0 ? entry.name.lastIndexOf(".") : null,
+                check: (v) => (/[\\/]/.test(v) ? "A name, not a path." : v !== entry.name && taken.has(v) ? `${v} already exists here.` : null),
+            })
+            if (typed == null || typed === entry.name) return
+            const newpath = `${dir}${sep}${typed}`
+            try {
+                // a notebook that is running is moved through its session, which follows it
+                const nb = entry.type === "notebook" ? running.find((n) => n.path === entry.path) : null
+                if (nb != null) await get_text(`./move?id=${encodeURIComponent(nb.notebook_id)}&newpath=${encodeURIComponent(newpath)}`, { method: "POST" })
+                else await get_json(`./api/v1/file/rename?path=${encodeURIComponent(entry.path)}&newpath=${encodeURIComponent(newpath)}`, { method: "POST" })
+                // a tab that shows it follows it
+                set_tabs((tabs) => tabs.map((t) => (t.path === entry.path ? { ...t, path: newpath, id: t.kind === "file" ? `file:${newpath}` : t.id } : t)))
+                set_active((a) => (a === `file:${entry.path}` ? `file:${newpath}` : a))
+                set_tree_focus(newpath)
+                if (workspace != null && dir !== workspace.root) load_listing(dir)
+                refresh()
+            } catch (e) {
+                set_error(`${entry.name} could not be renamed: ${e?.message ?? e}`)
+            }
+        },
+        [names_in, running, workspace, load_listing, refresh]
+    )
     const create_menu = useCallback(
         (anchor, dir) => {
             const box = anchor.getBoundingClientRect()
             open_menu(box.left, box.bottom + 2, [
                 { label: "New notebook…", icon: "i-notebook", run: () => create_in(dir, "notebook") },
                 { label: "New file…", icon: "i-file", run: () => create_in(dir, "file") },
+                { label: "New folder…", icon: "i-folder", run: () => new_folder(dir) },
             ])
         },
-        [create_in]
+        [create_in, new_folder]
     )
 
     const delete_entry = useCallback(
@@ -2615,21 +2692,24 @@ const Land = () => {
                     ? [
                           { label: "New notebook…", icon: "i-notebook", run: () => create_in(entry.path, "notebook") },
                           { label: "New file…", icon: "i-file", run: () => create_in(entry.path, "file") },
+                          { label: "New folder…", icon: "i-folder", run: () => new_folder(entry.path) },
                           { label: "Open in terminal", icon: "i-terminal", run: () => new_terminal({ label: entry.name, cwd: entry.path }) },
                           "-",
+                          ...(entry.path === workspace?.root ? [] : [{ label: "Rename…", keys: "F2", run: () => rename_entry(entry) }, "-"]),
                           ...copy_items,
                       ]
                     : [
                           { label: "Open", icon: "i-arrow", run: () => (entry.type === "notebook" ? open_notebook(entry.path) : open_file(entry.path)) },
                           ...(nb == null ? [] : [{ label: "Shut down", icon: "i-stop", run: () => shutdown_notebook(nb.notebook_id) }]),
                           "-",
+                          { label: "Rename…", keys: "F2", run: () => rename_entry(entry) },
                           ...copy_items,
                           "-",
                           { label: "Delete…", icon: "i-trash", danger: true, run: () => delete_entry(entry) },
                       ]
             )
         },
-        [running, workspace?.root, create_in, new_terminal, open_notebook, open_file, shutdown_notebook, delete_entry]
+        [running, workspace?.root, create_in, new_folder, rename_entry, new_terminal, open_notebook, open_file, shutdown_notebook, delete_entry]
     )
 
     // The opener is "homebase": it shows on first launch (no workspace) and on demand (the "open another
@@ -2659,10 +2739,42 @@ const Land = () => {
         on_open_notebook: open_notebook,
         on_open_file: open_file,
         on_create_menu: create_menu,
+        on_focus: (entry) => {
+            tree_entries.current.set(entry.path, entry)
+            set_tree_focus(entry.path)
+        },
+        focus_path: tree_focus ?? active_tab?.path ?? workspace?.entries[0]?.path ?? null,
         on_delete: delete_entry,
         on_menu: entry_menu,
         current_path: active_tab?.path ?? null,
         running_paths: new Set(running.map((nb) => nb.path)),
+    }
+    // Arrows in the tree, as in any file list: up and down between rows, right opens a folder (or steps
+    // into it), left closes it (or goes to its folder); Home and End; F2 renames; the menu key opens the menu.
+    const on_tree_key = (e) => {
+        const rows = [...e.currentTarget.querySelectorAll("button.entry")]
+        const at = rows.indexOf(document.activeElement)
+        if (at < 0 || e.altKey || e.ctrlKey || e.metaKey) return
+        const row = rows[at]
+        const li = row.closest("li")
+        const go = (el) => {
+            e.preventDefault()
+            el?.focus()
+        }
+        if (e.key === "ArrowDown") go(rows[at + 1])
+        else if (e.key === "ArrowUp") go(rows[at - 1])
+        else if (e.key === "Home") go(rows[0])
+        else if (e.key === "End") go(rows[rows.length - 1])
+        else if (e.key === "ArrowRight" && li.classList.contains("dir")) li.classList.contains("open") ? go(rows[at + 1]) : (e.preventDefault(), tree.on_toggle(row.dataset.path))
+        else if (e.key === "ArrowLeft") {
+            if (li.classList.contains("dir") && li.classList.contains("open")) (e.preventDefault(), tree.on_toggle(row.dataset.path))
+            else go(li.parentElement?.closest("li.dir")?.querySelector(":scope > .entry-row > button.entry"))
+        } else if (e.key === "F2" && tree_entries.current.has(row.dataset.path)) (e.preventDefault(), rename_entry(tree_entries.current.get(row.dataset.path)))
+        else if (e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) {
+            const box = row.getBoundingClientRect()
+            e.preventDefault()
+            row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: box.left + 48, clientY: box.bottom }))
+        }
     }
     const seconds_since = (t) => Math.max(1, Math.round((Date.now() - t) / 1000))
 
@@ -2735,7 +2847,7 @@ const Land = () => {
                                         </button>
                                     </span>`}
                           </h2>
-                          <ul class="tree" onContextMenu=${(e) => workspace != null && e.target === e.currentTarget && entry_menu(e, { type: "dir", path: workspace.root, name: basename(workspace.root) })}>
+                          <ul class="tree" role="tree" aria-label="Files" onKeyDown=${on_tree_key} onContextMenu=${(e) => workspace != null && e.target === e.currentTarget && entry_menu(e, { type: "dir", path: workspace.root, name: basename(workspace.root) })}>
                               ${workspace == null
                                   ? null
                                   : workspace.entries.length === 0

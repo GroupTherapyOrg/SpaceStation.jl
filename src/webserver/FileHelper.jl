@@ -74,7 +74,7 @@ const WORKSPACE_ROOT_HEADER = "X-SpaceStation-Workspace-Root"
 
 "What a helper answers, and nothing else: it is a whole server underneath, and none of the rest (terminals, workspaces, shutdown) is its business."
 const _FILE_HELPER_PATHS = Set(["/ping", "/api/v1/browse", "/api/v1/ssh_hosts", "/api/v1/workspace", "/api/v1/workspace/listing",
-    "/api/v1/file", "/api/v1/file/save", "/api/v1/file/new", "/api/v1/file/delete", "/api/v1/helper/stat", "/api/v1/helper/private_file"])
+    "/api/v1/file", "/api/v1/file/save", "/api/v1/file/new", "/api/v1/file/delete", "/api/v1/file/rename", "/api/v1/file/mkdir", "/api/v1/helper/stat", "/api/v1/helper/private_file"])
 file_helper_serves(path::AbstractString) = path in _FILE_HELPER_PATHS
 
 function _file_helper_command(secret::String)
