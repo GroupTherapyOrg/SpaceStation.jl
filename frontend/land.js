@@ -1477,25 +1477,62 @@ const FileEditorPane = ({ path, label, visible, on_dirty }) => {
     const view_ref = useRef(null)
     const started = useRef(false)
     const [dirty, set_dirty] = useState(false)
+    const escaped = useRef(false)
     const [status, set_status] = useState("Loading…")
     const [failed, set_failed] = useState(false)
 
-    const save = useCallback(async () => {
-        const view = view_ref.current
-        if (view == null) return
-        try {
-            await get_json(`./api/v1/file/save?path=${encodeURIComponent(path)}`, { method: "POST", body: view.state.doc.toString() })
-            file_dirty.set(path, false)
-            set_dirty(false)
-            on_dirty?.(path, false)
-            set_failed(false)
-            set_status("Saved")
-            setTimeout(() => set_status(""), 1500)
-        } catch (e) {
-            set_failed(true)
-            set_status(`Not saved: ${e?.message ?? e}`)
-        }
-    }, [path])
+    // what is on disk as far as this editor knows: the text, and when it was written
+    const saved_ref = useRef({ text: "", mtime: /** @type {string?} */ (null) })
+    const mark_dirty = useCallback(
+        (now_dirty) => {
+            if (file_dirty.get(path) === now_dirty) return
+            file_dirty.set(path, now_dirty)
+            set_dirty(now_dirty)
+            on_dirty?.(path, now_dirty)
+        },
+        [path, on_dirty]
+    )
+    const save = useCallback(
+        async ({ overwrite = false } = {}) => {
+            const view = view_ref.current
+            if (view == null) return
+            const text = view.state.doc.toString()
+            const condition = !overwrite && saved_ref.current.mtime != null ? `&if_mtime=${encodeURIComponent(saved_ref.current.mtime)}` : ""
+            try {
+                const r = await fetch(`./api/v1/file/save?path=${encodeURIComponent(path)}${condition}`, { method: "POST", body: text })
+                if (r.status === 409) {
+                    // somebody else (an agent, a terminal) wrote the file since it was opened here
+                    const keep_mine = await ask_confirm(`${basename(path)} changed on disk since you opened it.\n\nSave your version over it, or cancel and keep both as they are? (Close and reopen the tab to load the one on disk.)`, {
+                        action: "Save mine over it",
+                        danger: true,
+                    })
+                    if (keep_mine) return save({ overwrite: true })
+                    set_failed(true)
+                    set_status("Not saved: it changed on disk")
+                    return
+                }
+                if (!r.ok) throw new Error(await failure_text(r))
+                const answer = await r.json().catch(() => ({}))
+                saved_ref.current = { text, mtime: answer.mtime != null ? String(answer.mtime) : null }
+                mark_dirty(view.state.doc.toString() !== text)
+                set_failed(false)
+                set_status("Saved")
+                setTimeout(() => set_status(""), 1500)
+            } catch (e) {
+                set_failed(true)
+                set_status(`Not saved: ${e?.message ?? e}`)
+            }
+        },
+        [path, mark_dirty]
+    )
+    // ⌘S / Ctrl+S from anywhere in the shell saves the file in front (see handle_tab_keys)
+    useEffect(() => {
+        if (!visible) return
+        const on_save = () => void save()
+        window.addEventListener("spacestation:save-file", on_save)
+        return () => window.removeEventListener("spacestation:save-file", on_save)
+    }, [visible, save])
+
 
     useEffect(() => {
         if (!visible || started.current || node_ref.current == null) return
@@ -1503,7 +1540,10 @@ const FileEditorPane = ({ path, label, visible, on_dirty }) => {
         ;(async () => {
             try {
                 const cm = await import("./imports/CodemirrorPlutoSetup.js")
-                const content = await get_text(`./api/v1/file?path=${encodeURIComponent(path)}`)
+                const response = await fetch(`./api/v1/file?path=${encodeURIComponent(path)}`)
+                if (!response.ok) throw new Error(await failure_text(response))
+                const content = await response.text()
+                saved_ref.current = { text: content, mtime: response.headers.get("X-File-Mtime") }
                 const v = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim()
                 const pluto_colors = cm.HighlightStyle.define(
                     [
@@ -1554,17 +1594,23 @@ const FileEditorPane = ({ path, label, visible, on_dirty }) => {
                             cm.highlightActiveLine(),
                             cm.syntaxHighlighting(pluto_colors),
                             ...language,
+                            cm.highlightSelectionMatches(),
                             cm.keymap.of([
                                 { key: "Mod-s", run: () => (save(), true) },
+                                // Tab indents, as in any editor; Escape then Tab moves on, for the keyboard
+                                {
+                                    key: "Tab",
+                                    run: (view) => (escaped.current ? ((escaped.current = false), false) : cm.indentMore(view)),
+                                    shift: (view) => (escaped.current ? ((escaped.current = false), false) : cm.indentLess(view)),
+                                },
+                                { key: "Escape", run: () => ((escaped.current = true), false) },
+                                ...cm.searchKeymap, // ⌘F / Ctrl+F: find in this file, not the browser's find
                                 ...cm.defaultKeymap,
                                 ...cm.historyKeymap,
                             ]),
                             cm.EditorView.updateListener.of((update) => {
-                                if (update.docChanged && !file_dirty.get(path)) {
-                                    file_dirty.set(path, true)
-                                    set_dirty(true)
-                                    on_dirty?.(path, true)
-                                }
+                                // unsaved means "differs from what is on disk": undoing back to it is saved again
+                                if (update.docChanged) mark_dirty(update.state.doc.toString() !== saved_ref.current.text)
                             }),
                             cm.EditorView.theme({}, { dark: prefers_dark() }),
                         ],
@@ -1581,6 +1627,8 @@ const FileEditorPane = ({ path, label, visible, on_dirty }) => {
                 }
                 view_ref.current = view
                 set_status("")
+                // it has only now come into being: if its tab is still the one in front, it gets the keyboard
+                if (node_ref.current.closest(".pane.active") != null && document.querySelector("dialog[open], .land-menu.context") == null) view.focus()
             } catch (e) {
                 set_failed(true)
                 set_status(`Could not be opened: ${e?.message ?? e}`)
@@ -1724,6 +1772,11 @@ const Land = () => {
         }
         const mac = is_mac
         const mod = mac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey
+        if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "s" && e.view === window && !(e.target instanceof Element && e.target.closest(".cm-editor"))) {
+            e.preventDefault()
+            if (tab_keys_ref.current.active?.startsWith("file:")) window.dispatchEvent(new Event("spacestation:save-file"))
+            return
+        }
         let move = 0
         let jump = -1
         if (e.ctrlKey && !e.metaKey && !e.altKey && e.key === "Tab") move = e.shiftKey ? -1 : 1

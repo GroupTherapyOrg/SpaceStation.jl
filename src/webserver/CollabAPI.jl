@@ -963,7 +963,8 @@ function register_collab_api!(router, session::ServerSession)
             return _api_error(500, "could not read file", false)
         end
         isvalid(content) || return _api_error(415, "not a UTF-8 text file", false)
-        HTTP.Response(200, ["Content-Type" => "text/plain; charset=utf-8"], content)
+        # when it was last written, for a save that must not overwrite what somebody else wrote since
+        HTTP.Response(200, ["Content-Type" => "text/plain; charset=utf-8", "X-File-Mtime" => string(mtime(path))], content)
     end
     HTTP.register!(router, "GET", "/api/v1/file", _offloaded(serve_api_file_get))
 
@@ -972,6 +973,12 @@ function register_collab_api!(router, session::ServerSession)
         haskey(query, "path") || return _api_error(400, "pass ?path=/abs/file", false)
         path = tamepath(query["path"])
         isdir(dirname(path)) || return _api_error(400, "no such directory: $(dirname(path))", false)
+        # `if_mtime`: save only if the file is still as the editor read it. Here files are edited by
+        # people and by agents at once; without this, Save put an old copy over a newer one, silently.
+        expected = tryparse(Float64, get(query, "if_mtime", ""))
+        if expected !== nothing && isfile(path) && mtime(path) != expected
+            return _api_error(409, "the file changed on disk since it was opened", false)
+        end
         try
             # atomic, like the notebook save path; unique tmp so concurrent saves of the same
             # path can't interleave writes into one temp file
@@ -981,7 +988,7 @@ function register_collab_api!(router, session::ServerSession)
         catch e
             return _api_error(500, "could not save: $(sprint(showerror, e))", false)
         end
-        HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], """{"ok": true}\n""")
+        HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], """{"ok": true, "mtime": $(mtime(path))}\n""")
     end
     HTTP.register!(router, "POST", "/api/v1/file/save", _offloaded(serve_api_file_save))
 

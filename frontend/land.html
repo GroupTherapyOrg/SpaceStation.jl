@@ -17,10 +17,9 @@
 
     <link rel="stylesheet" href="themes/light.css">
     <link rel="stylesheet" href="themes/dark.css">
-    <!-- MUST match the @xterm/xterm version land.js imports from esm.sh: 6.0 rewrote the viewport
-         (VS Code-style scrollable element) and its styles moved with it — 5.5 CSS on a 6.0 DOM leaves
-         the scrollbar and selection layers unstyled. -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@6.0.0/css/xterm.min.css">
+    <!-- xterm's stylesheet is a local copy (xterm.css): a link to a CDN here held the whole page
+         back for as long as the CDN took to answer. -->
+    <link rel="stylesheet" href="xterm.css">
     <link rel="stylesheet" href="land.css">
 
     <script src="land.js" type="module" defer></script>

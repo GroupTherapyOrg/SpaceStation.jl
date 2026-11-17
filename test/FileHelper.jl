@@ -39,6 +39,19 @@ import SpaceStation as Pluto
             @test String(get("$base/api/v1/file?path=$(HTTP.escapeuri(joinpath(ws, "a.jl")))").body) == "x = 1\n"
             saved = HTTP.post("$base/api/v1/file/save?path=$(HTTP.escapeuri(joinpath(ws, "b.txt")))", [], "y = 2"; retry=false, status_exception=false, cookies=false)
             @test saved.status == 200 && read(joinpath(ws, "b.txt"), String) == "y = 2"
+            # A save can be made conditional on the file still being as the editor read it: the read says
+            # when it was written, and a save carrying another time is refused, not written over what
+            # somebody else (an agent, a terminal) wrote in between. Through the hub's relay, header and all.
+            b_url = "$base/api/v1/file/save?path=$(HTTP.escapeuri(joinpath(ws, "b.txt")))"
+            stamp = HTTP.header(get("$base/api/v1/file?path=$(HTTP.escapeuri(joinpath(ws, "b.txt")))"), "X-File-Mtime")
+            @test tryparse(Float64, stamp) !== nothing
+            sleep(0.05)
+            in_time = HTTP.post("$b_url&if_mtime=$(HTTP.escapeuri(stamp))", [], "y = 3"; retry=false, status_exception=false, cookies=false)
+            @test in_time.status == 200 && occursin("\"mtime\"", String(in_time.body)) && read(joinpath(ws, "b.txt"), String) == "y = 3"
+            too_late = HTTP.post("$b_url&if_mtime=$(HTTP.escapeuri(stamp))", [], "y = 4"; retry=false, status_exception=false, cookies=false)
+            @test too_late.status == 409 && read(joinpath(ws, "b.txt"), String) == "y = 3"   # nothing was written
+            anyway = HTTP.post(b_url, [], "y = 5"; retry=false, status_exception=false, cookies=false)
+            @test anyway.status == 200 && read(joinpath(ws, "b.txt"), String) == "y = 5"      # unconditional, as before
             @test Pluto.hub_isdir(ws) === true && Pluto.hub_isdir(joinpath(ws, "nope")) === false && Pluto.hub_isdir(joinpath(ws, "a.jl")) === false
 
             # the workspace a forwarded request is about travels in a header only a helper believes
