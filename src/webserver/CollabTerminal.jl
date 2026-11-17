@@ -216,20 +216,25 @@ function _spawn_workspace_shell(session::ServerSession, dir::String; rows::Int=2
         end
     else
         shell = get(ENV, "SHELL", Sys.isapple() ? "/bin/zsh" : "/bin/bash")
-        exports = join([
-            "export SPACESTATION=1",
-            "export SPACESTATION_PORT=$(_shquote(port === nothing ? "" : string(port)))",
-            "export SPACESTATION_SECRET=$(_shquote(secret))",
-            "export SPACESTATION_WORKSPACE=$(_shquote(dir))",
-            "export PLUTOSPACE=1",
-            "export PLUTOSPACE_PORT=$(_shquote(port === nothing ? "" : string(port)))",
-            "export PLUTOSPACE_SECRET=$(_shquote(secret))",
-            "export PLUTOSPACE_WORKSPACE=$(_shquote(dir))",
-            "export PATH=$(_shquote(apps_bin_dir())):\"\$PATH\"",
-        ], "; ")
-        # a login shell, already cd'ed into the workspace, with the agent surface exported + a banner
-        cmd = "cd $(_shquote(dir)) && $(exports); printf %s $(_shquote(banner)); exec $(_shquote(shell)) -l"
-        pty_spawn(["/bin/sh", "-c", cmd]; rows=rows, cols=cols)
+        # The agent surface goes into the shell's ENVIRONMENT, as on Windows above, and never onto a
+        # command line: it used to be `sh -c "… export SPACESTATION_SECRET='…'; …"`, and a command
+        # line can be read by every other user of the machine (`ps`) for as long as it runs. On a
+        # shared compute node that is the secret of the workspace's server, shown to the node.
+        env = Dict{String,String}(
+            "SPACESTATION" => "1",
+            "SPACESTATION_PORT" => (port === nothing ? "" : string(port)),
+            "SPACESTATION_SECRET" => secret,
+            "SPACESTATION_WORKSPACE" => dir,
+            # Pre-release aliases retained so existing agent scripts keep working.
+            "PLUTOSPACE" => "1",
+            "PLUTOSPACE_PORT" => (port === nothing ? "" : string(port)),
+            "PLUTOSPACE_SECRET" => secret,
+            "PLUTOSPACE_WORKSPACE" => dir,
+            "PATH" => string(apps_bin_dir(), ":", get(user_env(), "PATH", get(ENV, "PATH", ""))),
+        )
+        # a login shell, already cd'ed into the workspace, with a banner
+        cmd = "cd $(_shquote(dir)) && printf %s $(_shquote(banner)); exec $(_shquote(shell)) -l"
+        pty_spawn(["/bin/sh", "-c", cmd]; rows=rows, cols=cols, env=env)
     end
 end
 

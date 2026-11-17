@@ -385,6 +385,13 @@ Sys.isunix() && @testset "What a terminal is running" begin
             @test timedwait(() -> haskey(Pluto.COLLAB_TERMINALS, "busy-test"), 20) == :ok
             @test timedwait(() -> Pluto.terminal_running("busy-test") === nothing, 20) == :ok   # a shell at its prompt
             @test occursin("null", asked("busy-test"))
+            # the shell knows where its server is, from its environment; and the secret is on no command
+            # line (anybody on a shared machine can read those)
+            shell_pid = Int(Pluto.COLLAB_TERMINALS["busy-test"].pty.child_pid)
+            @test !occursin(session.secret, read(`ps -o args= -p $shell_pid`, String))
+            marker = joinpath(mktempdir(), "seen")
+            HTTP.WebSockets.send(ws, "0:printf %s \"\$SPACESTATION_SECRET\" > $marker\n")
+            @test timedwait(() -> isfile(marker) && read(marker, String) == session.secret, 20) == :ok
             HTTP.WebSockets.send(ws, "0:sleep 30\n")
             @test timedwait(() -> Pluto.terminal_running("busy-test") == "sleep", 20) == :ok
             @test occursin("\"sleep\"", asked("busy-test"))
