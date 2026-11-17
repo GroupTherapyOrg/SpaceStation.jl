@@ -88,6 +88,34 @@ function take_sign_in_code!(code::AbstractString)::Bool
     end
 end
 
+"A page of the shell or the editor, under a hub's workspace prefix or not: showing one changes nothing."
+function is_page_path(path::AbstractString)::Bool
+    m = match(r"^/w/[0-9a-f]{16}(/.*)?$", path)
+    rest = m === nothing ? path : something(m.captures[1], "")
+    rest ∈ ("", "/", "/land", "/edit")
+end
+
+"""
+May a request that is signed in only by its cookie be acted on? The cookie is ambient: the browser
+adds it by itself, and not only to requests this server's own pages make. `SameSite=Strict` keeps
+it off requests from other sites, but a browser's "site" has no port in it: a page on any other
+port of this machine (another program's, another user's on a shared machine through a forward) is
+the same site, gets the cookie added, and a plain link or image there to `/shutdown`, `/move` or
+`/open?path=…` was carried out. Those are GETs, which the Origin check for writes does not cover.
+
+Browsers say where a request comes from (`Sec-Fetch-Site`). One from this server's own pages
+(`same-origin`) or from the user (`none`: typed, a bookmark, a link in another program) passes. One
+from anywhere else passes only when it is the user being taken to a page. A client that sends no
+such header is not a browser of this decade, or not a browser: it is judged as before.
+"""
+function fetch_site_allows(request::HTTP.Request)::Bool
+    site = lowercase(HTTP.header(request, "Sec-Fetch-Site", ""))
+    (isempty(site) || site == "same-origin" || site == "none") && return true
+    uppercase(request.method) == "GET" || return false
+    (lowercase(HTTP.header(request, "Sec-Fetch-Mode", "")) == "navigate" && lowercase(HTTP.header(request, "Sec-Fetch-Dest", "")) == "document") || return false
+    is_page_path(HTTP.URI(request.target).path)
+end
+
 """
 Return whether the `request` was authenticated in one of these ways:
 1. the session's `secret` was included in the URL as a search parameter, or
@@ -111,7 +139,7 @@ function is_authenticated(session::ServerSession, request::HTTP.Request)
         secret_in_cookie = try
             cookies = HTTP.cookies(request)
             cookie_name = secret_cookie_name(session, request)
-            any(cookies) do cookie
+            fetch_site_allows(request) && any(cookies) do cookie
                 cookie.name == cookie_name && same_secret(cookie.value, session.secret)
             end
         catch e

@@ -242,6 +242,29 @@ end
                 r = hpost("$base/new?secret=$hub_secret"; headers=["Origin" => "http://evil.example"])
                 @test r.status == 403
                 @test length(child_session.notebooks) == 2               # nothing was relayed
+
+                # The cookie alone signs a request in only when the browser says it comes from this
+                # server's own pages or from the user. A page on another port of this machine is the
+                # "same site" to a browser, which adds the cookie to its requests: a link or an image
+                # there to /new, /shutdown or /move used to be carried out.
+                cookie = ["Cookie" => "pluto_secret_$(hub_port)=$hub_secret"]
+                from(site; mode="no-cors", dest="image") = vcat(cookie, ["Sec-Fetch-Site" => site, "Sec-Fetch-Mode" => mode, "Sec-Fetch-Dest" => dest])
+                @test hget("$base/api/v1/notebooks"; headers=cookie).status == 200                                   # not a browser: as before
+                @test hget("$base/api/v1/notebooks"; headers=from("same-origin"; mode="cors", dest="empty")).status == 200
+                @test hget("$base/new"; headers=from("none"; mode="navigate", dest="document")).status != 403         # the user typed it
+                for site in ("same-site", "cross-site")
+                    @test hget("$base/api/v1/notebooks"; headers=from(site)).status == 403
+                    @test hget("$base/api/v1/notebooks"; headers=from(site; mode="cors", dest="empty")).status == 403
+                    @test hget("$base/new"; headers=from(site; mode="navigate", dest="document")).status == 403       # a link that does something
+                    @test hget("$base/shutdown"; headers=from(site; mode="navigate", dest="document")).status == 403
+                    @test hget("$base/"; headers=from(site; mode="navigate", dest="document")).status == 200          # a link to the page
+                    @test hget("$base/"; headers=from(site; mode="navigate", dest="iframe")).status == 403            # the page in somebody's frame
+                    # and one that carries the secret itself is no forgery: whoever wrote it had the secret
+                    @test hget("$base/api/v1/notebooks?secret=$hub_secret"; headers=from(site)[2:end]).status == 200
+                end
+                @test Pluto.is_page_path("/") && Pluto.is_page_path("/w/0123456789abcdef/") && Pluto.is_page_path("/w/0123456789abcdef/edit") && Pluto.is_page_path("/w/0123456789abcdef")
+                @test !Pluto.is_page_path("/open") && !Pluto.is_page_path("/w/0123456789abcdef/shutdown") && !Pluto.is_page_path("/w/nope/")
+                @test length(child_session.notebooks) == 3               # one: the user's own /new, and no other
             end
 
             @testset "the websocket is relayed frame for frame" begin
