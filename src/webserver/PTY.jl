@@ -28,6 +28,8 @@ const _F_GETFL = Cint(3)
 const _EAGAIN = @static Sys.isapple() ? Cint(35) : Cint(11)
 const _EINTR = Cint(4)  # same on Linux and macOS
 const _POSIX_SPAWN_SETSID = @static Sys.isapple() ? Cshort(0x0400) : Cshort(0x0080)
+const _POSIX_SPAWN_SETSIGDEF = Cshort(0x0004)  # the same on Linux and macOS
+const _POSIX_SPAWN_SETSIGMASK = Cshort(0x0008)
 const _O_RDWR = Cint(2)
 const _SPAWN_FA_SIZE = @static Sys.isapple() ? 8 : 80
 const _SPAWN_ATTR_SIZE = @static Sys.isapple() ? 8 : 336
@@ -128,11 +130,29 @@ function pty_spawn(cmd::Vector{String}; rows::Int=24, cols::Int=80,
               (Ptr{UInt8}, Cint), pointer(file_actions), slave_fd[])
     end
 
+    # The shell starts with NO signal blocked and every signal at its default. A spawned process
+    # inherits the mask of the thread that spawned it, and Julia keeps SIGINT, SIGTERM, SIGQUIT and
+    # others blocked in all its threads (one thread of its own waits for them). Handed on, that mask
+    # reached everything started in the terminal: Ctrl+C showed `^C` and `sleep`, `cat`, `ping`, `make`
+    # or a Python script went on running, because the signal was never delivered. (zsh clears the
+    # mask for its jobs in most setups, which is how it went unseen; bash keeps what it was given.)
+    # Signals that were ignored are inherited the same way, as from a server started with nohup.
     spawn_attr = zeros(UInt8, _SPAWN_ATTR_SIZE)
-    GC.@preserve spawn_attr begin
+    no_signals = zeros(UInt8, 128)  # a sigset_t: 128 bytes with glibc, 4 on macOS
+    all_signals = zeros(UInt8, 128)
+    GC.@preserve spawn_attr no_signals all_signals begin
+        ccall(:sigemptyset, Cint, (Ptr{UInt8},), pointer(no_signals))
+        ccall(:sigemptyset, Cint, (Ptr{UInt8},), pointer(all_signals))
+        for sig in 1:31
+            # (not SIGKILL and SIGSTOP, whose handling cannot be set: 9, and 17 on BSD or 19 on Linux)
+            (sig == 9 || sig == (Sys.islinux() ? 19 : 17)) && continue
+            ccall(:sigaddset, Cint, (Ptr{UInt8}, Cint), pointer(all_signals), Cint(sig))
+        end
         ccall(:posix_spawnattr_init, Cint, (Ptr{UInt8},), pointer(spawn_attr))
+        ccall(:posix_spawnattr_setsigmask, Cint, (Ptr{UInt8}, Ptr{UInt8}), pointer(spawn_attr), pointer(no_signals))
+        ccall(:posix_spawnattr_setsigdefault, Cint, (Ptr{UInt8}, Ptr{UInt8}), pointer(spawn_attr), pointer(all_signals))
         ccall(:posix_spawnattr_setflags, Cint,
-              (Ptr{UInt8}, Cshort), pointer(spawn_attr), _POSIX_SPAWN_SETSID)
+              (Ptr{UInt8}, Cshort), pointer(spawn_attr), _POSIX_SPAWN_SETSID | _POSIX_SPAWN_SETSIGDEF | _POSIX_SPAWN_SETSIGMASK)
     end
 
     c_strs = [Base.cconvert(Cstring, s) for s in cmd]

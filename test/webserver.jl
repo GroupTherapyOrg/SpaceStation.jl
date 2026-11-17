@@ -424,6 +424,29 @@ end
     end
 end
 
+Sys.isunix() && @testset "Ctrl+C reaches the program a terminal runs" begin
+    # This server keeps SIGINT blocked in its threads; a shell that inherits that hands it to every
+    # program it starts, and Ctrl+C prints ^C and stops nothing. bash keeps the mask it is given.
+    shell = something(Sys.which("bash"), "/bin/sh")
+    pty = Pluto.pty_spawn(["/bin/sh", "-c", "exec $(shell)"])
+    got = UInt8[]
+    reader = @async for data in pty.output
+        append!(got, data)
+    end
+    seen(text) = occursin(text, String(copy(got)))
+    try
+        sleep(2)
+        Pluto.pty_write(pty, "sleep 60\n")
+        sleep(1.5)
+        Pluto.pty_write(pty, "\x03")
+        sleep(1)
+        Pluto.pty_write(pty, "echo after-\$((40+2))\n")
+        @test timedwait(() -> seen("after-42"), 15.0) == :ok
+    finally
+        Pluto.pty_close!(pty)
+    end
+end
+
 Sys.isunix() && @testset "What a terminal is running" begin
     port = 13000 + rand(1:999)
     options = Pluto.Configuration.from_flat_kwargs(; port, launch_browser=false, require_secret_for_access=false, require_secret_for_open_links=false, workspace_use_distributed=false, workspace=mktempdir())

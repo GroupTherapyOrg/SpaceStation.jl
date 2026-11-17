@@ -1001,7 +1001,12 @@ function register_collab_api!(router, session::ServerSession)
         ])
         HTTP.Response(200, ["Content-Type" => "application/json; charset=utf-8"], body * "\n")
     end
-    HTTP.register!(router, "GET", "/api/v1/workspace", _offloaded(serve_api_workspace))
+    # A server with no workspace (a hub's own page, the launcher) says so itself, at once. Asked of a
+    # file helper it is the same answer later, and while the helpers are still starting it was "busy":
+    # for the first seconds after every cold start the launcher drew a workspace's sidebar under "the
+    # disk these files are on is not answering".
+    serve_api_workspace_here = _offloaded(serve_api_workspace)
+    HTTP.register!(router, "GET", "/api/v1/workspace", request -> _workspace_root(request) === nothing ? serve_api_workspace(request) : serve_api_workspace_here(request))
 
     # One folder's entries, nothing below it. This is what makes the sidebar's cost track what the
     # user has open rather than the size of the workspace: the hub asks for a folder when it is
