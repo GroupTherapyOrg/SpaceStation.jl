@@ -1393,10 +1393,45 @@ dialog.land-dialog .buttons .text-button {
 /* a pill on the canvas: raised, like a tile */
 .opener-head .text-button {
     height: 32px;
-    background-color: var(--land-raised-bg);
+    background: var(--land-raised-sheen), var(--land-raised-bg);
     box-shadow: var(--land-raised-shadow);
 }
 .opener-head .text-button .ico {
+    width: 15px;
+    height: 15px;
+}
+/* light / dark / the system's: three in a pill, the one in use marked */
+.scheme-switch {
+    display: inline-flex;
+    gap: 2px;
+    padding: 3px;
+    border-radius: 999px;
+    background: var(--land-raised-sheen), var(--land-raised-bg);
+    box-shadow: var(--land-raised-shadow);
+}
+.scheme-switch button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 26px;
+    padding: 0;
+    border: none;
+    border-radius: 999px;
+    background: none;
+    color: var(--land-muted);
+    transition: background-color 0.12s ease-out, color 0.12s ease-out;
+}
+.scheme-switch button:hover {
+    color: var(--land-fg);
+    background-color: var(--land-hover);
+}
+.scheme-switch button.active {
+    color: var(--land-fg);
+    background-color: var(--land-accent-tint);
+    box-shadow: var(--land-ring);
+}
+.scheme-switch .ico {
     width: 15px;
     height: 15px;
 }

@@ -15,7 +15,7 @@
 //   POST ./shutdown?id=…           stop a notebook session
 import { html, render, useState, useEffect, useCallback, useRef } from "./imports/Preact.js"
 import { pluto_file_extensions, has_pluto_file_extension } from "./common/PlutoFileExtensions.js"
-import { cycle_color_scheme, get_color_scheme, prefers_dark } from "./common/ColorScheme.js"
+import { set_color_scheme, get_color_scheme, prefers_dark } from "./common/ColorScheme.js"
 import { mount_icons, file_icon } from "./common/Icons.js"
 
 // What the page remembers. localStorage can be missing (blocked in a private window, by a policy)
@@ -294,15 +294,23 @@ const use_scheme = () => {
     return scheme
 }
 
+const SCHEMES = [
+    { value: "system", label: "Match the system", icon: "i-auto" },
+    { value: "light", label: "Light", icon: "i-sun" },
+    { value: "dark", label: "Dark", icon: "i-moon" },
+]
+/** Light, dark, or whatever the system is: all three on show, the one in use marked. (It was one
+ *  button that cycled through them and named the current one, which read as "press for dark"
+ *  while already dark, and then went to the system's light.) */
 const AppSchemeToggle = ({ classname }) => {
     const scheme = use_scheme().choice
-    return html`<button
-        class="text-button app-scheme-toggle ${classname ?? ""}"
-        title=${scheme === "system" ? "Appearance follows the system. Switch to light" : scheme === "light" ? "Appearance: light. Switch to dark" : "Appearance: dark. Switch to follow the system"}
-        onClick=${() => void cycle_color_scheme()}
-    >
-        <${Ico} name=${scheme === "system" ? "i-auto" : scheme === "light" ? "i-sun" : "i-moon"} />${scheme === "system" ? "Auto" : scheme === "light" ? "Light" : "Dark"}
-    </button>`
+    return html`<div class="scheme-switch ${classname ?? ""}" role="radiogroup" aria-label="Appearance">
+        ${SCHEMES.map(
+            (s) => html`<button role="radio" aria-checked=${scheme === s.value} class=${scheme === s.value ? "active" : ""} title=${s.label} aria-label=${s.label} onClick=${() => set_color_scheme(s.value)}>
+                <${Ico} name=${s.icon} />
+            </button>`
+        )}
+    </div>`
 }
 
 // `new URL(..., import.meta.url)` works unbundled in the browser AND gets rewritten by
@@ -2501,11 +2509,8 @@ const Land = () => {
                     run: () => tab && new_terminal({ label: `env: ${basename(tab.path)}`, notebook_env: tab.id }),
                 },
                 "-",
-                {
-                    label: `Appearance: ${scheme === "system" ? "match the system" : scheme}`,
-                    icon: scheme === "system" ? "i-auto" : scheme === "light" ? "i-sun" : "i-moon",
-                    run: () => void cycle_color_scheme(),
-                },
+                ...SCHEMES.map((s) => ({ label: scheme === s.value ? `${s.label}  ✓` : s.label, icon: s.icon, run: () => set_color_scheme(s.value) })),
+                "-",
                 { label: "Launcher", icon: "i-home", run: go_home },
                 "-",
                 { label: hub ? "Shut down this workspace…" : "Shut down SpaceStation…", icon: "i-power", danger: true, run: shutdown_server },
