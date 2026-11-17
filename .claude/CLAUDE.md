@@ -62,7 +62,7 @@ Release gotchas that still apply:
 julia --project=. -e 'import Pkg; Pkg.instantiate()'
 julia --project=. -e 'import Pluto; Pluto.run()'
 ```
-The server serves `frontend/` directly — edits to JS/CSS need only a browser reload. With `frontend-dist/` present (e.g. after a bundler run), the server serves that instead; delete or rename it to go back to dev mode.
+The server serves `frontend/` directly — edits to JS/CSS need only a browser reload. The exception is a workspace hub (`spacestation`, `hub=true`), which keeps frontend files in memory: start it with `SPACESTATION_DEV_ASSETS=1` while working on the shell (`frontend/land.js`, `frontend/land.css`) so a reload shows the edit. With `frontend-dist/` present (e.g. after a bundler run), the server serves that instead; delete or rename it to go back to dev mode.
 
 ### Backend tests (Julia)
 ```bash
@@ -117,6 +117,7 @@ Prettier config at the repo root: 160-col, 4-space, no semicolons, double quotes
 
 ### Icons
 - Icons are empty `<span>`s styled in CSS (background-image or `::before`), **never** imported from a JS icon library and never PNG/JPG.
+- The shell (`frontend/land.js`) is the exception: its icons are symbols in one inline sprite, `frontend/common/Icons.js` (Ionicons for the interface, Catppuccin's file-kind glyphs, tinted from the `--land-*` tokens). Add an icon there as a `<symbol>`, and use it as `<svg class="ico"><use href="#i-name" /></svg>`.
 - Use Ionicons pinned to `5.5.1`: `https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/<name>.svg`.
 - Size in `em`, use `background-size: contain`, theme via `filter: var(--image-filters)` (or `filter: invert(1)` for light-on-dark).
 

@@ -207,6 +207,51 @@
         --terminal-fg: hsl(0deg 0% 77%);
         --terminal-light-bg: hsl(0deg 0% 99%);
         --terminal-light-fg: hsl(213deg 14% 16%);
+
+        /* SpaceStation shell (land.css). Four levels, each defined once and used on both pages:
+           the canvas (Pluto's cream paper, with a faint wash of Julia's colours); an island (a pane,
+           a tray, a panel: the paper itself, with a glass edge); a raised thing on an island (a tile,
+           the open tab, a button: white, with a ring); and what floats above (menus, dialogs).
+           Julia's three colours keep their meaning: green runs, purple is a notebook, red stops. */
+        --land-canvas: hsl(42deg 38% 90%);
+        --land-canvas-glow: radial-gradient(1100px 620px at 8% -12%, rgba(149, 88, 178, 0.24), transparent 62%),
+            radial-gradient(1000px 560px at 102% -6%, rgba(94, 122, 211, 0.26), transparent 58%),
+            radial-gradient(900px 520px at 55% 112%, rgba(203, 60, 51, 0.1), transparent 60%);
+        --land-bg: #ffffff;
+        --land-sidebar-bg: hsl(46deg 90% 98%);
+        /* an island is glass: the canvas shows through it a little, and is blurred behind it */
+        --land-island-bg: linear-gradient(180deg, rgba(255, 254, 249, 0.9), rgba(255, 251, 240, 0.76));
+        --land-raised-sheen: linear-gradient(180deg, rgba(255, 255, 255, 0), rgba(120, 95, 30, 0.035));
+        --land-raised-bg: #ffffff;
+        --land-fg: #2b2822;
+        --land-muted: #6a6457;
+        --land-faint: #767062;
+        --land-border: rgba(80, 60, 15, 0.11);
+        --land-border-strong: rgba(80, 60, 15, 0.26);
+        --land-hover: rgba(90, 70, 20, 0.065);
+        --land-active: rgba(90, 70, 20, 0.12);
+        --land-selected: rgba(94, 122, 211, 0.13);
+        --land-accent: #4864c4;
+        --land-accent-soft: rgba(94, 122, 211, 0.55);
+        --land-accent-tint: rgba(94, 122, 211, 0.12);
+        --land-julia-green: #2f8520;
+        --land-julia-purple: #8a4faa;
+        --land-julia-red: #c2372e;
+        --land-danger: #b9342b;
+        --land-danger-bg: rgba(203, 60, 51, 0.1);
+        --land-ok: #2f8520;
+        --land-warn: #8a5d00;
+        --land-warn-bg: rgba(214, 160, 30, 0.16);
+        /* an island's edge is chosen by the island's own tone, not the page's: a dark terminal on a
+           light page gets the dark edge */
+        --land-glass-on-light: inset 0 1px 0 #ffffff, inset 0 0 0 1px rgba(255, 255, 255, 0.6), 0 0 0 1px rgba(80, 60, 15, 0.1), 0 2px 4px rgba(80, 60, 15, 0.08), 0 14px 30px -12px rgba(80, 60, 15, 0.34);
+        --land-glass-on-dark: inset 0 1px 0 rgba(255, 255, 255, 0.16), inset 0 0 0 1px rgba(255, 255, 255, 0.07), 0 0 0 1px rgba(20, 15, 5, 0.35), 0 2px 4px rgba(40, 30, 10, 0.16), 0 14px 30px -12px rgba(40, 30, 10, 0.5);
+        --land-glass: var(--land-glass-on-light);
+        --land-raised-shadow: inset 0 1px 0 #ffffff, 0 0 0 1px rgba(80, 60, 15, 0.1), 0 2px 3px rgba(80, 60, 15, 0.1), 0 8px 16px -7px rgba(80, 60, 15, 0.26);
+        /* the shadow of a raised thing alone, for when the ring is its edge: one line, not two */
+        --land-lift: 0 1px 2px rgba(80, 60, 15, 0.1), 0 6px 12px -6px rgba(80, 60, 15, 0.26);
+        --land-shadow: 0 0 0 1px rgba(80, 60, 15, 0.1), 0 14px 40px -6px rgba(60, 45, 10, 0.3), 0 2px 6px rgba(60, 45, 10, 0.1);
+        --land-backdrop: rgba(60, 50, 30, 0.3);
         --cm-color-code-differs-gutters: rgba(214, 172, 35, 0.2);
         --cm-color-line-numbers: #8d86875e;
         --cm-selection-background: hsl(214deg 100% 73% / 48%);

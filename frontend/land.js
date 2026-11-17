@@ -15,16 +15,63 @@
 //   POST ./shutdown?id=…           stop a notebook session
 import { html, render, useState, useEffect, useCallback, useRef } from "./imports/Preact.js"
 import { pluto_file_extensions, has_pluto_file_extension } from "./common/PlutoFileExtensions.js"
-import { cycle_color_scheme, get_color_scheme, prefers_dark } from "./common/ColorScheme.js"
+import { set_color_scheme, get_color_scheme, prefers_dark } from "./common/ColorScheme.js"
+import { mount_icons, file_icon } from "./common/Icons.js"
+
+// What the page remembers. localStorage can be missing (blocked in a private window, by a policy)
+// or full; both used to leave a blank or half-drawn page. So: every read and write is guarded, a
+// copy in memory stands in when the real one fails, and a key is written only when its value
+// changes (dragging a pane used to write seven keys several hundred times).
+const store = (() => {
+    const memory = new Map()
+    return {
+        get: (key) => {
+            try {
+                const v = localStorage.getItem(key)
+                if (v != null) memory.set(key, v)
+                return v ?? memory.get(key) ?? null
+            } catch {
+                return memory.get(key) ?? null
+            }
+        },
+        set: (key, value) => {
+            value = String(value)
+            if (memory.get(key) === value) return
+            memory.set(key, value)
+            try {
+                localStorage.setItem(key, value)
+            } catch {}
+        },
+        remove: (key) => {
+            memory.delete(key)
+            try {
+                localStorage.removeItem(key)
+            } catch {}
+        },
+    }
+})()
+
+/** What a failed request said, for a person: the server's own words when it sent any. */
+const failure_text = async (r) => {
+    let said = ""
+    try {
+        said = (await r.text()).trim()
+    } catch {}
+    try {
+        const parsed = JSON.parse(said)
+        said = String(parsed.detail ?? parsed.error ?? parsed.message ?? said)
+    } catch {}
+    return said !== "" && said.length < 400 && !said.startsWith("<") ? said : `the server answered ${r.status}`
+}
 
 const get_text = async (url, opts) => {
     const r = await fetch(url, opts)
-    if (!r.ok) throw new Error(`${url} → ${r.status}`)
+    if (!r.ok) throw new Error(await failure_text(r))
     return await r.text()
 }
 const get_json = async (url, opts) => {
     const r = await fetch(url, opts)
-    if (!r.ok) throw new Error(`${url} → ${r.status}`)
+    if (!r.ok) throw new Error(await failure_text(r))
     return await r.json()
 }
 
@@ -33,68 +80,237 @@ const get_json = async (url, opts) => {
 // basename in components/FilePicker.js, which is not exported.
 const basename = (p) => (p.split("/").pop() ?? "").split("\\").pop() ?? ""
 
-// A confirm() the browser can't suppress. window.confirm can be permanently silenced (Chrome's
-// "prevent this page from creating additional dialogs", iframes without allow-modals) — it then
-// returns false instantly and every destructive button in the hub appears dead, with no error.
-// A native <dialog>.showModal() is always shown. Returns Promise<boolean>; Esc / backdrop = false.
-const ask_confirm = (message, { action = "Confirm", danger = false } = {}) =>
+// Dialogs the browser can't suppress. window.confirm / window.prompt can be permanently silenced
+// (Chrome's "prevent this page from creating additional dialogs", frames without allow-modals, and
+// some webviews have no prompt() at all) — they then return at once and every button
+// that asks first appears dead, with no error. A native <dialog>.showModal() is always shown.
+const open_dialog = (build) =>
     new Promise((resolve) => {
         const dialog = document.createElement("dialog")
-        dialog.className = "land-confirm"
-        const body = document.createElement("p")
-        body.textContent = message
-        const row = document.createElement("div")
-        row.className = "buttons"
-        const cancel = document.createElement("button")
-        cancel.textContent = "Cancel"
-        const ok = document.createElement("button")
-        ok.textContent = action
-        ok.className = `go ${danger ? "danger" : ""}`
-        row.append(cancel, ok)
-        dialog.append(body, row)
-        document.body.append(dialog)
+        dialog.className = "land-dialog"
+        const before = document.activeElement
         const done = (result) => {
             dialog.close()
             dialog.remove()
+            if (before instanceof HTMLElement && before.isConnected) before.focus()
             resolve(result)
         }
-        cancel.onclick = () => done(false)
-        ok.onclick = () => done(true)
+        build(dialog, done)
+        document.body.append(dialog)
         dialog.oncancel = (e) => {
             e.preventDefault()
-            done(false)
+            done(null)
         }
-        dialog.onclick = (e) => e.target === dialog && done(false)
+        // a press that STARTS on the backdrop dismisses; a text selection dragged out of the box does not
+        dialog.onpointerdown = (e) => e.target === dialog && done(null)
         dialog.showModal()
-        cancel.focus() // safe default: Enter cancels, the destructive action needs a deliberate click/Tab
     })
 
-// One canonical homebase: the launcher tab names itself this, so a workspace's "home" button can focus it
-// (or reopen it if it was closed) via window.open(url, HOMEBASE_WINDOW_NAME) — instead of every workspace
-// spawning its own disconnected in-tab launcher.
-const HOMEBASE_WINDOW_NAME = "spacestation-homebase"
-const homebase_self_url = () => window.location.origin + window.location.pathname + window.location.search
-// Tag a workspace URL with this homebase's address (in the #fragment — never sent to the server) so the
-// workspace it opens knows where "home" is.
-const with_homebase = (url) => (url == null ? url : `${url}#homebase=${encodeURIComponent(homebase_self_url())}`)
+const dialog_button = (label, classname) => {
+    const b = document.createElement("button")
+    b.type = "button"
+    b.textContent = label
+    b.className = `text-button ${classname ?? ""}`
+    return b
+}
 
-// App-wide light/dark/auto — LAUNCHER-ONLY control (so the terminal's own scheme toggle stays
-// unambiguous), applied to every workspace immediately: same-origin pages follow via storage
-// events, and workspaces on other ports get it via a ?scheme= seed on workspace links
-// (ColorScheme.js handles both ends).
+/** Ask before doing something. Returns Promise<boolean>; Esc / backdrop = false. */
+const ask_confirm = (message, { action = "Confirm", danger = false, title = null } = {}) =>
+    open_dialog((dialog, done) => {
+        const [first, ...rest] = message.split("\n\n")
+        const heading = document.createElement("h3")
+        heading.textContent = title ?? first
+        const body = document.createElement("p")
+        body.textContent = title == null ? rest.join("\n\n") : message
+        const row = document.createElement("div")
+        row.className = "buttons"
+        const cancel = dialog_button("Cancel", "quiet")
+        const ok = dialog_button(action, danger ? "danger" : "primary")
+        row.append(cancel, ok)
+        dialog.append(heading, ...(body.textContent === "" ? [] : [body]), row)
+        cancel.onclick = () => done(null)
+        ok.onclick = () => done(true)
+        // safe default: Enter cancels, the action needs a deliberate click or Tab
+        queueMicrotask(() => (danger ? cancel : ok).focus())
+    }).then((r) => r === true)
+
+/** Ask for a line of text (a file name). `check(value)` returns a complaint, or null when the value
+ *  will do. Returns Promise<string?>; Esc / backdrop / Cancel = null. */
+const ask_text = ({ title, note = "", value = "", action = "Create", select_to = null, check = () => null }) =>
+    open_dialog((dialog, done) => {
+        const heading = document.createElement("h3")
+        heading.textContent = title
+        const form = document.createElement("form")
+        form.method = "dialog"
+        const input = document.createElement("input")
+        input.type = "text"
+        input.value = value
+        input.spellcheck = false
+        input.autocomplete = "off"
+        const hint = document.createElement("p")
+        hint.className = "field-note"
+        const row = document.createElement("div")
+        row.className = "buttons"
+        const cancel = dialog_button("Cancel", "quiet")
+        const ok = dialog_button(action, "primary")
+        ok.type = "submit"
+        row.append(cancel, ok)
+        form.append(input, hint, row)
+        dialog.append(heading, form)
+        const validate = () => {
+            const v = input.value.trim()
+            const complaint = v === "" ? null : check(v)
+            hint.textContent = complaint ?? note
+            hint.classList.toggle("error", complaint != null)
+            ok.disabled = v === "" || complaint != null
+            return !ok.disabled
+        }
+        input.oninput = validate
+        cancel.onclick = () => done(null)
+        form.onsubmit = (e) => {
+            e.preventDefault()
+            if (validate()) done(input.value.trim())
+        }
+        validate()
+        queueMicrotask(() => {
+            input.focus()
+            // the name without its extension, ready to be typed over
+            input.setSelectionRange(0, select_to ?? input.value.length)
+        })
+    })
+
+/** Put text on the clipboard. The async API needs a secure context and, in WebKit, a user gesture
+ *  it still recognises; the hidden-textarea copy is the fallback for a workspace reached over plain
+ *  http on another host. */
+const copy_text = async (text) => {
+    try {
+        await navigator.clipboard.writeText(text)
+        return true
+    } catch {}
+    try {
+        const ta = document.createElement("textarea")
+        ta.value = text
+        ta.style.cssText = "position: fixed; opacity: 0; pointer-events: none"
+        document.body.append(ta)
+        const previous = document.activeElement
+        ta.select()
+        const ok = document.execCommand("copy")
+        ta.remove()
+        previous?.focus?.()
+        return ok
+    } catch {
+        return false
+    }
+}
+
+const is_mac = navigator.platform.toUpperCase().includes("MAC")
+
+/** A menu at the pointer (or under a button). `items`: {label, icon?, keys?, danger?, disabled?, run}
+ *  or "-" for a rule. Closes on a choice, Escape, a press outside, a scroll or a resize. */
+const open_menu = (x, y, items) => {
+    document.querySelector(".land-menu.context")?.remove()
+    const menu = document.createElement("div")
+    menu.className = "land-menu context"
+    menu.setAttribute("role", "menu")
+    const before = document.activeElement
+    const close = () => {
+        menu.remove()
+        if (before instanceof HTMLElement && before.isConnected) before.focus()
+        document.removeEventListener("pointerdown", on_outside, true)
+        document.removeEventListener("keydown", on_key, true)
+        window.removeEventListener("blur", close)
+        window.removeEventListener("resize", close)
+    }
+    const on_outside = (e) => menu.contains(e.target) || close()
+    const on_key = (e) => {
+        const buttons = [...menu.querySelectorAll("button:not(:disabled)")]
+        const at = buttons.indexOf(document.activeElement)
+        if (e.key === "Escape") close()
+        else if (e.key === "ArrowDown") buttons[(at + 1) % buttons.length]?.focus()
+        else if (e.key === "ArrowUp") buttons[(at - 1 + buttons.length) % buttons.length]?.focus()
+        else return
+        e.preventDefault()
+        e.stopPropagation()
+    }
+    for (const item of items) {
+        if (item === "-") {
+            menu.append(document.createElement("hr"))
+            continue
+        }
+        const b = document.createElement("button")
+        b.className = `land-menu-item ${item.danger ? "danger" : ""}`
+        b.setAttribute("role", "menuitem")
+        b.disabled = item.disabled === true
+        const icon = icon_element(item.icon)
+        const label = document.createElement("span")
+        label.textContent = item.label
+        b.append(icon, label)
+        if (item.keys) {
+            const keys = document.createElement("span")
+            keys.className = "keys"
+            keys.textContent = item.keys
+            b.append(keys)
+        }
+        b.onclick = () => {
+            close()
+            item.run()
+        }
+        menu.append(b)
+    }
+    document.body.append(menu)
+    // keep it on screen: flip to the other side of the pointer when it would run off an edge
+    const { width, height } = menu.getBoundingClientRect()
+    menu.style.left = `${Math.max(4, x + width > window.innerWidth - 4 ? x - width : x)}px`
+    menu.style.top = `${Math.max(4, y + height > window.innerHeight - 4 ? y - height : y)}px`
+    document.addEventListener("pointerdown", on_outside, true)
+    document.addEventListener("keydown", on_key, true)
+    window.addEventListener("blur", close)
+    window.addEventListener("resize", close)
+    return close
+}
+
+// App-wide light/dark/auto. Same-origin pages (the launcher, every workspace under the hub, the
+// notebook frames) follow at once through storage events; a workspace link also carries the
+// choice as a ?scheme= seed (ColorScheme.js handles both ends). The terminal's own scheme toggle
+// is separate on purpose.
+/** The page's appearance, live: what was chosen ("system" | "light" | "dark") and whether that is
+ *  dark right now. One reading for everything that shows or follows it, kept current when the choice
+ *  is made here, in another tab, or by the system. */
+const use_scheme = () => {
+    const read = () => ({ choice: get_color_scheme(), dark: prefers_dark() })
+    const [scheme, set_scheme] = useState(read)
+    useEffect(() => {
+        const on_change = () => set_scheme(read())
+        const system = window.matchMedia("(prefers-color-scheme: dark)")
+        window.addEventListener("spacestation:scheme", on_change)
+        window.addEventListener("storage", on_change)
+        system.addEventListener("change", on_change)
+        return () => {
+            window.removeEventListener("spacestation:scheme", on_change)
+            window.removeEventListener("storage", on_change)
+            system.removeEventListener("change", on_change)
+        }
+    }, [])
+    return scheme
+}
+
+const SCHEMES = [
+    { value: "system", label: "Match the system", icon: "i-auto" },
+    { value: "light", label: "Light", icon: "i-sun" },
+    { value: "dark", label: "Dark", icon: "i-moon" },
+]
+/** Light, dark, or whatever the system is: all three on show, the one in use marked. (It was one
+ *  button that cycled through them and named the current one, which read as "press for dark"
+ *  while already dark, and then went to the system's light.) */
 const AppSchemeToggle = ({ classname }) => {
-    const [scheme, set_scheme] = useState(get_color_scheme())
-    return html`<button
-        class="app-scheme-toggle ${classname ?? ""}"
-        title=${scheme === "system" ? "Appearance: follow the system — switch to light" : scheme === "light" ? "Appearance: light — switch to dark" : "Appearance: dark — follow the system"}
-        aria-label="Toggle light/dark appearance"
-        onClick=${() => {
-            const next = cycle_color_scheme()
-            set_scheme(next)
-        }}
-    >
-        ${scheme === "system" ? "◐" : scheme === "light" ? "☀" : "☾"}
-    </button>`
+    const scheme = use_scheme().choice
+    return html`<div class="scheme-switch ${classname ?? ""}" role="radiogroup" aria-label="Appearance">
+        ${SCHEMES.map(
+            (s) => html`<button role="radio" aria-checked=${scheme === s.value} class=${scheme === s.value ? "active" : ""} title=${s.label} aria-label=${s.label} onClick=${() => set_color_scheme(s.value)}>
+                <${Ico} name=${s.icon} />
+            </button>`
+        )}
+    </div>`
 }
 
 // `new URL(..., import.meta.url)` works unbundled in the browser AND gets rewritten by
@@ -104,36 +320,70 @@ const logo_url = new URL("img/spacestation.svg", import.meta.url).href
 const RECENT_KEY = "spacestation recent workspaces"
 const get_recent_workspaces = () => {
     try {
-        const r = JSON.parse(localStorage.getItem(RECENT_KEY) ?? "[]")
+        const r = JSON.parse(store.get(RECENT_KEY) ?? "[]")
         return Array.isArray(r) ? r : []
     } catch {
         return []
     }
 }
 const remember_workspace = (path) => {
-    localStorage.setItem(RECENT_KEY, JSON.stringify([path, ...get_recent_workspaces().filter((p) => p !== path)].slice(0, 8)))
+    store.set(RECENT_KEY, JSON.stringify([path, ...get_recent_workspaces().filter((p) => p !== path)].slice(0, 8)))
 }
 
 // Terminals live in the terminal panel as their own tabs. Their shells persist on the server
 // (keyed by tid), so we remember each terminal's tid + label and reattach on reload.
+// The tabs that were open in a workspace, and which one was in front: a reload comes back to the
+// same page, not to an empty editor.
+const TABS_KEY = "spacestation tabs by workspace"
+const restore_tabs = (workspace_root) => {
+    try {
+        const saved = JSON.parse(store.get(TABS_KEY) ?? "{}")?.[workspace_root]
+        if (saved == null || !Array.isArray(saved.tabs)) return null
+        const tabs = saved.tabs.filter((t) => t && typeof t.id === "string" && typeof t.path === "string").map((t) => ({ id: t.id, path: t.path, kind: t.kind === "file" ? "file" : "notebook" }))
+        // `known`: every notebook that was running when this was saved, tabbed or not. One that is
+        // running now and is not in there was started since (by an agent, from a terminal), and is
+        // shown; one whose tab was closed on purpose stays closed.
+        const known = Array.isArray(saved.known) ? saved.known.filter((id) => typeof id === "string") : []
+        return { tabs, active: typeof saved.active === "string" ? saved.active : null, known }
+    } catch {
+        return null
+    }
+}
+const save_tabs = (workspace_root, tabs, active, known) => {
+    try {
+        const parsed = JSON.parse(store.get(TABS_KEY) ?? "{}")
+        const all = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}
+        all[workspace_root] = { tabs: tabs.map((t) => ({ id: t.id, path: t.path, kind: t.kind ?? "notebook" })), active, known }
+        store.set(TABS_KEY, JSON.stringify(all))
+    } catch {}
+}
+
+const forget_workspace = (path) => {
+    store.set(RECENT_KEY, JSON.stringify(get_recent_workspaces().filter((p) => p !== path)))
+}
+
 const TERMINALS_KEY = "spacestation terminals by workspace"
 const LEGACY_TERMINALS_KEY = "spacestation terminals"
 const restore_terminals = (workspace_root) => {
     if (typeof workspace_root !== "string" || workspace_root.length === 0) return []
     try {
-        const all = JSON.parse(localStorage.getItem(TERMINALS_KEY) ?? "{}")
+        const all = JSON.parse(store.get(TERMINALS_KEY) ?? "{}")
         let saved = all && typeof all === "object" && !Array.isArray(all) ? all[workspace_root] : null
         // One-time migration: old builds stored one global list. Adopt it for the workspace that
         // first loads after upgrade, then remove it so other workspaces don't inherit those tabs.
         if (!Array.isArray(saved)) {
-            const legacy = JSON.parse(localStorage.getItem(LEGACY_TERMINALS_KEY) ?? "[]")
+            const legacy = JSON.parse(store.get(LEGACY_TERMINALS_KEY) ?? "[]")
             if (Array.isArray(legacy) && legacy.length > 0) {
                 saved = legacy
-                localStorage.removeItem(LEGACY_TERMINALS_KEY)
+                store.remove(LEGACY_TERMINALS_KEY)
             }
         }
         if (!Array.isArray(saved)) return []
-        return saved.filter((t) => t && typeof t.tid === "string").map((t) => ({ tid: t.tid, label: t.label ?? "Terminal" }))
+        // `cwd` and `notebook_env` too: reattaching from the workspace root to a shell that was opened
+        // in a subfolder made the server take it for a stale one and end it, job and all
+        return saved
+            .filter((t) => t && typeof t.tid === "string")
+            .map((t) => ({ tid: t.tid, label: t.label ?? "Terminal", ...(typeof t.cwd === "string" ? { cwd: t.cwd } : {}), ...(typeof t.notebook_env === "string" ? { notebook_env: t.notebook_env } : {}) }))
     } catch {
         return []
     }
@@ -142,11 +392,11 @@ const save_terminals = (workspace_root, terminals) => {
     if (typeof workspace_root !== "string" || workspace_root.length === 0) return
     let all = {}
     try {
-        const parsed = JSON.parse(localStorage.getItem(TERMINALS_KEY) ?? "{}")
+        const parsed = JSON.parse(store.get(TERMINALS_KEY) ?? "{}")
         if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) all = parsed
     } catch {}
-    all[workspace_root] = terminals.map((t) => ({ tid: t.tid, label: t.label }))
-    localStorage.setItem(TERMINALS_KEY, JSON.stringify(all))
+    all[workspace_root] = terminals.map((t) => ({ tid: t.tid, label: t.label, ...(t.cwd ? { cwd: t.cwd } : {}), ...(t.notebook_env ? { notebook_env: t.notebook_env } : {}) }))
+    store.set(TERMINALS_KEY, JSON.stringify(all))
 }
 
 // How long to wait for an SSH connection before giving up (seconds). A busy ProxyJump login node can
@@ -156,8 +406,47 @@ const SSH_TIMEOUT_KEY = "spacestation ssh connect timeout"
 const SSH_TIMEOUT_DEFAULT = 25
 const clamp_ssh_timeout = (v) => Math.max(3, Math.min(180, Math.round(Number(v) || SSH_TIMEOUT_DEFAULT)))
 const get_ssh_timeout = () => {
-    const v = Number(localStorage.getItem(SSH_TIMEOUT_KEY))
+    const v = Number(store.get(SSH_TIMEOUT_KEY))
     return Number.isFinite(v) && v >= 3 ? clamp_ssh_timeout(v) : SSH_TIMEOUT_DEFAULT
+}
+
+/** A long path, shortened at folder boundaries: its last two folders, never a fragment of a name. */
+const short_path = (path) => {
+    const sep = path.includes("\\") && !path.includes("/") ? "\\" : "/"
+    const parts = path.split(sep).filter((x) => x !== "")
+    return parts.length <= 3 ? path : `…${sep}${parts.slice(-2).join(sep)}`
+}
+/** What leads up to a folder's own name, shortened at folder boundaries: "…/scratchpad/" for
+ *  /a/b/scratchpad/demo-ws. The name itself is shown after it, and stands out. */
+const path_lead = (path) => {
+    const sep = path.includes("\\") && !path.includes("/") ? "\\" : "/"
+    const parts = path.split(sep).filter((x) => x !== "")
+    if (parts.length <= 1) return path.startsWith(sep) ? sep : ""
+    const lead = parts.length <= 3 ? (path.startsWith(sep) ? sep : "") + parts.slice(0, -1).join(sep) : `…${sep}${parts[parts.length - 2]}`
+    return lead + sep
+}
+const greeting = () => {
+    const h = new Date().getHours()
+    return h < 5 ? "Good night" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening"
+}
+
+/** An icon from the sprite. `name` is "i-terminal", or what `file_icon` returns. */
+const Ico = ({ name }) => {
+    const icon = typeof name === "string" ? name : name.icon
+    const kind = typeof name === "string" ? (name.startsWith("i-folder") ? "k-folder" : "") : name.kind
+    return html`<svg class="ico ${kind}" aria-hidden="true"><use href=${"#" + icon} /></svg>`
+}
+/** The same, for the menus and dialogs that are built without a template. */
+const icon_element = (name) => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg")
+    svg.setAttribute("class", "ico")
+    svg.setAttribute("aria-hidden", "true")
+    if (name != null) {
+        const use = document.createElementNS("http://www.w3.org/2000/svg", "use")
+        use.setAttribute("href", "#" + name)
+        svg.append(use)
+    }
+    return svg
 }
 
 /** One row of the sidebar tree.
@@ -166,37 +455,35 @@ const get_ssh_timeout = () => {
  * (`expanded` / `listings`) and arrive as props. That is what makes the tree lazy: the hub fetches
  * a folder's contents the first time it is expanded, and its 10s poll re-reads only the folders
  * that are currently open. A folder that has never been opened costs the server nothing.
+ *
+ * `tree` carries what every row needs and none of them changes: the handlers, the path shown in the
+ * active tab, and the paths of the notebooks that are running.
  */
-const FileEntry = ({ entry, listings, expanded, on_toggle, on_open_notebook, on_open_file, on_create_in, on_delete, depth }) => {
+const FileEntry = ({ entry, listings, expanded, tree, depth }) => {
+    const row_style = `--depth: ${depth}`
     if (entry.type === "dir") {
         const open = expanded.has(entry.path)
         const children = listings[entry.path]
         return html`<li class="dir ${open ? "open" : ""}">
-            <div class="entry-row">
-                <button class="entry" onClick=${() => on_toggle(entry.path)}><span class="icon chevron"></span>${entry.name}</button>
-                <button class="row-action" title="New notebook or file in ${entry.name}/" onClick=${() => on_create_in(entry.path)}>+</button>
+            <div class="entry-row" onContextMenu=${(e) => tree.on_menu(e, entry)}>
+                <button class="entry" style=${row_style} title=${entry.path} aria-expanded=${open} onClick=${(e) => e.detail > 1 || tree.on_toggle(entry.path)}>
+                    <svg class="ico chevron" aria-hidden="true"><use href="#i-chevron" /></svg><${Ico} name=${open ? "i-folder-open" : "i-folder"} /><span class="entry-name">${entry.name}</span>
+                </button>
+                <button class="row-action" title="New notebook or file in ${entry.name}" aria-label="New notebook or file in ${entry.name}" onClick=${(e) => tree.on_create_menu(e.currentTarget, entry.path)}>
+                    <svg class="ico" aria-hidden="true"><use href="#i-add" /></svg>
+                </button>
             </div>
             ${open
                 ? html`<ul>
                       ${children == null
                           ? html`<li class="pending">
-                                <div class="entry-row"><span class="entry plain">reading…</span></div>
+                                <div class="entry-row"><span class="entry plain" style=${`--depth: ${depth + 1}`}><span class="no-chevron"></span>Reading…</span></div>
                             </li>`
-                          : children.map(
-                                (c) =>
-                                    html`<${FileEntry}
-                                        key=${c.path}
-                                        entry=${c}
-                                        listings=${listings}
-                                        expanded=${expanded}
-                                        on_toggle=${on_toggle}
-                                        on_open_notebook=${on_open_notebook}
-                                        on_open_file=${on_open_file}
-                                        on_create_in=${on_create_in}
-                                        on_delete=${on_delete}
-                                        depth=${depth + 1}
-                                    />`
-                            )}
+                          : children.length === 0
+                            ? html`<li class="truncated">
+                                  <div class="entry-row"><span class="entry plain" style=${`--depth: ${depth + 1}`}><span class="no-chevron"></span>Empty</span></div>
+                              </li>`
+                            : children.map((c) => html`<${FileEntry} key=${c.path} entry=${c} listings=${listings} expanded=${expanded} tree=${tree} depth=${depth + 1} />`)}
                   </ul>`
                 : null}
         </li>`
@@ -206,30 +493,33 @@ const FileEntry = ({ entry, listings, expanded, on_toggle, on_open_notebook, on_
     if (entry.type === "truncated") {
         return html`<li class="truncated">
             <div class="entry-row">
-                <span
-                    class="entry plain"
-                    title="This folder has more entries than SpaceStation lists in one go. Use the terminal to see the rest."
-                    >… not listed</span
+                <span class="entry plain" style=${row_style} title="This folder has more entries than SpaceStation lists in one go. Use the terminal to see the rest."
+                    ><span class="no-chevron"></span>More files not listed</span
                 >
             </div>
         </li>`
     }
     if (entry.type === "unreadable") {
         return html`<li class="truncated">
-            <div class="entry-row"><span class="entry plain" title=${entry.detail ?? ""}>… could not be read</span></div>
+            <div class="entry-row">
+                <span class="entry plain" style=${row_style} title=${entry.detail ?? ""}><span class="no-chevron"></span>Could not be read</span>
+            </div>
         </li>`
     }
     const is_notebook = entry.type === "notebook"
-    return html`<li class=${is_notebook ? "notebook" : "file"}>
-        <div class="entry-row">
+    const kind = is_notebook ? null : file_icon(entry.name)
+    return html`<li class="${is_notebook ? "notebook" : "file"} ${kind?.kind === "k-quiet" ? "quiet" : ""} ${tree.current_path === entry.path ? "current" : ""}">
+        <div class="entry-row" onContextMenu=${(e) => tree.on_menu(e, entry)}>
             <button
-                class="entry ${is_notebook ? "" : "quiet"}"
+                class="entry"
+                style=${row_style}
                 title=${entry.path}
-                onClick=${() => (is_notebook ? on_open_notebook(entry.path) : on_open_file(entry.path))}
+                aria-current=${tree.current_path === entry.path ? "page" : undefined}
+                onClick=${() => (is_notebook ? tree.on_open_notebook(entry.path) : tree.on_open_file(entry.path))}
             >
-                <span class="icon ${is_notebook ? "pluto-dot" : ""}"></span>${entry.name}
+                <span class="no-chevron"></span><${Ico} name=${is_notebook ? "i-notebook" : kind} /><span class="entry-name">${entry.name}</span>
+                ${is_notebook && tree.running_paths.has(entry.path) ? html`<span class="dot ok running-mark" title="Running"></span>` : null}
             </button>
-            <button class="row-action danger" title="Delete ${entry.name}" onClick=${() => on_delete(entry)}>✕</button>
         </div>
     </li>`
 }
@@ -239,18 +529,11 @@ const FileEntry = ({ entry, listings, expanded, on_toggle, on_open_notebook, on_
  *  Picking a folder spawns a child server in a new tab (see connect_local); this view never leaves.
  *  `on_cancel` (optional) shows a back button when opened on top of an existing workspace. */
 const WorkspaceOpener = ({ on_cancel, tunneled }) => {
-    // Workspace links open in a new tab and carry the homebase fragment — the workspace's way back.
-    // Stamp the launcher's appearance choice on workspace links: workspaces are other origins
-    // (their own ports), so localStorage can't carry it — the ?scheme= seed does.
-    const scheme_url = (url) => {
-        const s = get_color_scheme()
-        return s === "system" ? url : `${url}${url.includes("?") ? "&" : "?"}scheme=${s}`
-    }
     // A workspace's URL is the hub's own page for it (`/w/<id>/`, relative to the hub — see
-    // src/webserver/Proxy.jl), so resolve it against this page before handing it to a tab.
+    // src/webserver/Proxy.jl), so resolve it against this page before handing it to a tab. It
+    // carries the homebase fragment: the workspace's way back here.
     const abs_url = (url) => new URL(url, window.location.href).href
-    const open_href = (url) => with_homebase(scheme_url(abs_url(url)))
-    const open_target = "_blank"
+    const open_href = (url) => abs_url(url)
     const [listing, set_listing] = useState(
         /** @type {{path: String, parent: String, entries: Array<{name: String, path: String}>, crumbs: Array<{name: String, path: String}>}?} */ (null)
     )
@@ -282,7 +565,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
     // The SSH connect timeout is a homebase setting. The server resets it to its default on restart, so
     // push our stored value on load and whenever it changes (and persist it locally for next time).
     useEffect(() => {
-        localStorage.setItem(SSH_TIMEOUT_KEY, String(ssh_timeout))
+        store.set(SSH_TIMEOUT_KEY, String(ssh_timeout))
         fetch(`./api/v1/remote/config?connect_timeout=${encodeURIComponent(ssh_timeout)}`, { method: "POST" }).catch(() => {})
     }, [ssh_timeout])
 
@@ -299,7 +582,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                 set_remote_states((s) => ({ ...s, [host]: status }))
             }
             if (status.state === "ready" && status.url != null) {
-                window.open(open_href(status.url), "_blank") // may be blocked: the pill stays a clickable link either way
+                window.open(open_href(status.url), `spacestation-${status.url}`) // may be blocked: the pill stays a clickable link either way
             }
         } catch (e) {
             if (cancelled_hosts.current.has(host)) return
@@ -336,7 +619,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
             }
             if (status.state === "ready" && status.url != null) {
                 remember_workspace(path)
-                window.open(open_href(status.url), "_blank") // may be blocked: the ready card stays a clickable link either way
+                window.open(open_href(status.url), `spacestation-${status.url}`) // may be blocked: the ready card stays a clickable link either way
             }
         } catch (e) {
             if (cancelled_paths.current.has(path)) return
@@ -410,7 +693,8 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
             ])
         }
         load()
-        const iv = setInterval(load, 3000)
+        // not while the tab is in the background: nobody is looking, and it adds up
+        const iv = setInterval(() => document.visibilityState === "visible" && load(), 3000)
         return () => {
             alive = false
             clearInterval(iv)
@@ -418,13 +702,18 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
     }, [])
 
     const browsed_path = useRef(/** @type {String?} */ (null))
-    const browse = useCallback(async (path) => {
+    const browse = useCallback(async (path, { quiet = false } = {}) => {
+        const previous = browsed_path.current
         browsed_path.current = path
         try {
             set_listing(await get_json(path == null ? "./api/v1/browse" : `./api/v1/browse?path=${encodeURIComponent(path)}`))
-            set_error(null)
+            if (!quiet) set_error(null)
+            return true
         } catch (e) {
-            set_error(String(e))
+            // stay where we were: the periodic refresh re-reads `browsed_path`, and a mistyped path
+            // must not become the folder it asks for from now on
+            browsed_path.current = previous
+            if (!quiet) set_error(path == null ? "The folders on this machine could not be read." : `${path} is not a folder that can be opened.`)
         }
     }, [])
 
@@ -436,7 +725,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
     const refresh_sources = useCallback(async () => {
         set_refreshing(true)
         try {
-            await Promise.all([load_ssh_hosts(), browse(browsed_path.current)])
+            await Promise.all([load_ssh_hosts(), browse(browsed_path.current, { quiet: true })])
         } finally {
             // keep the spin visible long enough to register as feedback
             setTimeout(() => set_refreshing(false), 400)
@@ -458,59 +747,149 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
         }
     }, [refresh_sources])
     const refresh_button = html`<button
-        class="row-action h2-action refresh ${refreshing ? "spinning" : ""}"
-        title="Refresh: re-read the folders on disk and the hosts in ~/.ssh/config"
+        class="icon-button refresh ${refreshing ? "spinning" : ""}"
+        title="Read the folders on disk and the hosts in ~/.ssh/config again"
         aria-label="Refresh"
         onClick=${() => void refresh_sources()}
     >
-        <span class="refresh-icon"></span>
+        <svg class="ico" aria-hidden="true"><use href="#i-refresh" /></svg>
     </button>`
 
-    const recent = get_recent_workspaces()
+    // How long each connect has been going. A step that takes minutes (the first install on a
+    // cluster) with nothing moving on screen reads as a hang; a running clock says it is alive.
+    const busy_since = useRef(/** @type {Record<String, number>} */ ({}))
+    const [, set_tick] = useState(0)
+    const is_busy = (st) => st != null && st.state !== "ready" && st.state !== "error"
+    const elapsed = (key, st) => {
+        if (!is_busy(st)) {
+            delete busy_since.current[key]
+            return ""
+        }
+        busy_since.current[key] ??= Date.now()
+        const seconds = Math.floor((Date.now() - busy_since.current[key]) / 1000)
+        return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`
+    }
+    const state_label = (st) => st.state.charAt(0).toUpperCase() + st.state.slice(1)
+
+    // One answer per place: what this page was told while connecting (it has the detail), else what
+    // the server lists (it survives a reload of this page).
+    const local_rows = [
+        ...running.filter((w) => w.kind === "local").map((w) => ({ path: w.path, st: local_states[w.path] ?? { state: w.state, detail: "", url: w.url } })),
+        ...Object.entries(local_states)
+            .filter(([path]) => !running.some((w) => w.kind === "local" && w.path === path))
+            .map(([path, st]) => ({ path, st })),
+    ].map((r) => ({ ...r, st: r.st.state === "ready" && r.st.url == null ? { ...r.st, url: running.find((w) => w.path === r.path)?.url ?? null } : r.st }))
+    const remote_state = (h) => {
+        const listed = running.find((w) => w.kind === "remote" && w.host === h)
+        return remote_states[h] ?? (listed == null ? null : { state: listed.state, detail: "", url: listed.url })
+    }
+    const connected_hosts = ssh_hosts.map((host) => ({ host, st: remote_state(host) })).filter(({ st }) => st?.state === "ready" && st.url != null)
+    const anything_busy = local_rows.some((r) => is_busy(r.st)) || ssh_hosts.some((h) => is_busy(remote_state(h)))
+    useEffect(() => {
+        if (!anything_busy) return
+        const iv = setInterval(() => set_tick((n) => n + 1), 1000)
+        return () => clearInterval(iv)
+    }, [anything_busy])
+
+    const recent = get_recent_workspaces().filter((p) => !local_rows.some((r) => r.path === p))
 
     // Built by the server: splitting a path on "/" here turned a Windows one into a single bogus
     // crumb, and joining one back together means knowing about drives and backslashes.
     const crumbs = listing?.crumbs ?? []
 
+    // A link to something that is ready, opened in a new tab (which keeps its opener: the way home).
+    const open_link = (url, title, body, classname = "ws-open") => html`<a class=${classname} href=${open_href(url)} target=${`spacestation-${url}`} title=${`Open ${title}`}>${body}</a>`
+
     return html`<div class="workspace-opener">
-        <div class="bubble opener-card">
-            <header>
-                <img class="land-logo opener-logo" src=${logo_url} alt="SpaceStation" />
-                <h1>Space<span class="land-accent">Station</span></h1>
-                <p class="subtitle">Open a folder as your workspace — notebooks inside it open as tabs.</p>
-                <${AppSchemeToggle} classname=${on_cancel == null ? "opener-corner" : "opener-corner beside-cancel"} />
-                ${on_cancel == null ? null : html`<button class="opener-cancel" title="Close — back to your workspace" onClick=${on_cancel}><span class="opener-cancel-icon"></span></button>`}
+        <div class="opener-page">
+            <header class="opener-head">
+                <img class="land-logo opener-logo" src=${logo_url} alt="" />
+                <div class="opener-title">
+                    <p class="section-label">${greeting()}</p>
+                    <h1 class="wordmark">Space<span class="land-accent">Station</span></h1>
+                </div>
+                <div class="opener-head-actions">
+                    <${AppSchemeToggle} />
+                    ${on_cancel == null
+                        ? null
+                        : html`<button class="text-button opener-cancel" title="Back to your workspace" onClick=${on_cancel}>
+                              <svg class="ico" aria-hidden="true"><use href="#i-close" /></svg>Back
+                          </button>`}
+                </div>
             </header>
 
-            ${!tunneled && running.length > 0
-                ? html`<section>
-                      <h2>Running Workspaces</h2>
-                      <div class="recent-grid">
-                          ${running.map(
-                              (w) => html`<div class="recent-card running-card ${w.state === "ready" ? "" : "running-busy"}" key=${w.key}>
-                                  ${w.url != null
-                                      ? html`<a
-                                            class="running-open"
-                                            href=${open_href(w.url)}
-                                            target=${open_target}
-                                            rel="opener"
-                                            title=${`Open ${w.name}`}
-                                        >
-                                            <span class="recent-icon">${w.kind === "remote" ? "🛰" : "🗂"}</span>
-                                            <span class="recent-name">${w.name}</span>
-                                            <span class="recent-path">${w.sub}</span>
-                                        </a>`
-                                      : html`<div class="running-open is-busy">
-                                            <span class="recent-icon">${w.kind === "remote" ? "🛰" : "🗂"}</span>
-                                            <span class="recent-name">${w.name}</span>
-                                            <span class="recent-path">${w.state}…</span>
-                                        </div>`}
+            ${!tunneled && (local_rows.length > 0 || connected_hosts.length > 0)
+                ? html`<section class="opener-section">
+                      <h2 class="section-label">Open workspaces</h2>
+                      <div class="island tray">
+                          ${local_rows.map(({ path, st }) => {
+                              const name = basename(path) || path
+                              const time = elapsed(`local:${path}`, st)
+                              const body = html`<span class="ws-card-icon"><svg class="ico" aria-hidden="true"><use href="#i-folder" /></svg></span>
+                                  <span class="ws-name">${name}</span>
+                                  <span class="ws-path" title=${path}>${short_path(path)}</span>
+                                  ${st.state === "ready"
+                                      ? null
+                                      : st.state === "error"
+                                        ? html`<span class="ws-state"><span class="dot bad"></span>Did not start</span>`
+                                        : html`<span class="ws-state"><span class="spinner"></span>${state_label(st)} · ${time}</span>`}`
+                              return html`<div class="ws-card ${st.state === "error" ? "error" : ""} ${is_busy(st) ? "busy" : ""}" key=${path}>
+                                  ${st.state === "ready" && st.url != null ? open_link(st.url, name, body, "ws-card-open") : html`<div class="ws-card-open inert">${body}</div>`}
+                                  ${st.state !== "ready" && st.detail ? html`<p class="ws-card-detail">${st.detail}</p>` : null}
+                                  ${st.state === "ready"
+                                      ? html`<div class="ws-card-foot">
+                                            <span class="ws-state"><span class="dot ok"></span>Running</span>
+                                            <button class="text-button stop" title="Stop this workspace's server and its notebooks. Files stay as they are." onClick=${() => shutdown_local(path)}>
+                                                Shut down
+                                            </button>
+                                        </div>`
+                                      : st.state === "error"
+                                        ? html`<div class="ws-card-actions">
+                                                  <button class="text-button" onClick=${() => open_workspace(path)}>Try again</button>
+                                              </div>
+                                              <button class="icon-button ws-card-corner" title="Dismiss" aria-label="Dismiss" onClick=${() => cancel_local(path)}><svg class="ico" aria-hidden="true"><use href="#i-close" /></svg></button>`
+                                        : html`<div class="ws-card-actions"><button class="text-button" onClick=${() => cancel_local(path)}>Cancel</button></div>`}
+                              </div>`
+                          })}
+                          ${connected_hosts.map(({ host, st }) => {
+                              const body = html`<span class="ws-card-icon"><svg class="ico" aria-hidden="true"><use href="#i-server" /></svg></span>
+                                  <span class="ws-name">${host}</span>
+                                  <span class="ws-path">over SSH</span>`
+                              return html`<div class="ws-card" key=${`remote:${host}`}>
+                                  ${open_link(st.url, host, body, "ws-card-open")}
+                                  <div class="ws-card-foot">
+                                      <span class="ws-state"><span class="dot ok"></span>Connected</span>
+                                      <button class="text-button stop" title=${`Close the tunnel to ${host}. Its server and whatever runs on it keep going.`} onClick=${() => cancel_remote(host)}>
+                                          Disconnect
+                                      </button>
+                                  </div>
+                              </div>`
+                          })}
+                      </div>
+                  </section>`
+                : null}
+
+            ${recent.length > 0
+                ? html`<section class="opener-section">
+                      <h2 class="section-label">Recent</h2>
+                      <div class="island tray">
+                          ${recent.map(
+                              (p) => html`<div class="ws-card" key=${p}>
+                                  <button class="ws-card-open" title=${`Open ${p}`} onClick=${() => open_workspace(p)}>
+                                      <span class="ws-card-icon quiet"><svg class="ico" aria-hidden="true"><use href="#i-folder" /></svg></span>
+                                      <span class="ws-name">${basename(p) || p}</span>
+                                      <span class="ws-path" title=${p}>${short_path(p)}</span>
+                                  </button>
                                   <button
-                                      class="running-shutdown"
-                                      title=${w.state === "error" ? "Dismiss" : w.state !== "ready" ? "Cancel" : w.kind === "remote" ? "Disconnect" : "Shut down this workspace"}
-                                      onClick=${() => dismiss_running(w)}
+                                      class="icon-button ws-card-corner on-hover"
+                                      title="Remove from this list"
+                                      aria-label=${`Remove ${basename(p) || p} from recent`}
+                                      onClick=${() => {
+                                          forget_workspace(p)
+                                          set_tick((n) => n + 1)
+                                      }}
                                   >
-                                      ✕
+                                      <svg class="ico" aria-hidden="true"><use href="#i-close" /></svg>
                                   </button>
                               </div>`
                           )}
@@ -518,149 +897,105 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                   </section>`
                 : null}
 
-            ${recent.length > 0
-                ? html`<section>
-                      <h2>Recent</h2>
-                      <div class="recent-grid">
-                          ${recent.map(
-                              (p) => html`<button class="recent-card" title=${p} onClick=${() => open_workspace(p)}>
-                                  <span class="recent-icon">🗂</span>
-                                  <span class="recent-name">${basename(p)}</span>
-                                  <span class="recent-path">${p}</span>
-                              </button>`
-                          )}
-                      </div>
-                  </section>`
-                : null}
-
-            <section>
-                <h2>Browse ${refresh_button}</h2>
-                ${listing == null
-                    ? html`<p class="subtitle">loading…</p>`
-                    : html`
-                          <nav class="breadcrumbs">
-                              ${crumbs.map(
-                                  (c, i) => html`<button
-                                          class="crumb ${i === crumbs.length - 1 ? "current" : ""}"
-                                          onClick=${() => browse(c.path)}
-                                          title=${c.path}
-                                      >
-                                          ${c.name}</button
-                                      >${i > 0 && i < crumbs.length - 1 ? html`<span class="crumb-sep">/</span>` : null}`
-                              )}
-                          </nav>
-                          <div class="dir-grid">
-                              ${listing.entries.map(
-                                  (d) => html`<button class="dir-pill" title=${d.path} onClick=${() => browse(d.path)}>
-                                      <span class="dir-icon">📁</span>${d.name}
-                                  </button>`
-                              )}
-                              ${listing.entries.length === 0 ? html`<p class="subtitle">no subfolders</p>` : null}
-                          </div>
-                          <div class="opener-actions">
-                              <button class="open-this-folder" onClick=${() => open_workspace(listing.path)}>
-                                  Open <strong>${basename(listing.path) || "/"}</strong> as workspace
-                              </button>
+            <section class="opener-section">
+                <h2 class="section-label">Open a folder <span class="spacer"></span>${refresh_button}</h2>
+                <div class="island browse-panel">
+                    ${listing == null
+                        ? html`<p class="ws-empty">${error == null ? "Reading…" : "This folder could not be read."}</p>`
+                        : html`
+                              <div class="browse-bar">
+                                  <nav class="breadcrumbs" aria-label="Folder path">
+                                      ${crumbs.map(
+                                          (c, i) => html`<button class="crumb ${i === crumbs.length - 1 ? "current" : ""}" onClick=${() => browse(c.path)} title=${c.path}>
+                                                  ${c.name}</button
+                                              >${i > 0 && i < crumbs.length - 1 ? html`<span class="crumb-sep">/</span>` : null}`
+                                      )}
+                                  </nav>
+                              </div>
                               <form
                                   class="paste-path"
                                   onSubmit=${(e) => {
                                       e.preventDefault()
                                       const v = e.target.elements.path.value.trim()
-                                      if (v !== "") browse(v)
+                                      if (v !== "") browse(v).then((found) => found && (e.target.elements.path.value = ""))
                                   }}
                               >
-                                  <input name="path" type="text" placeholder="…or paste a folder path and press Enter" autocomplete="off" />
+                                  <input name="path" type="text" aria-label="Go to a folder" placeholder="Go to a folder: type or paste a path, then Enter" autocomplete="off" spellcheck=${false} />
                               </form>
-                          </div>
-                      `}
+                              <div class="dir-grid">
+                                  ${listing.entries.map(
+                                      (d) => html`<button class="dir-pill" title=${d.path} onClick=${() => browse(d.path)}>
+                                          <svg class="ico" aria-hidden="true"><use href="#i-folder" /></svg><span class="dir-name">${d.name}</span>
+                                      </button>`
+                                  )}
+                                  ${listing.entries.length === 0 ? html`<p class="ws-empty">No folders in here.</p>` : null}
+                              </div>
+                              <div class="opener-actions">
+                                  <button class="text-button primary open-this-folder" onClick=${() => open_workspace(listing.path)}>
+                                      Open <strong>${basename(listing.path) || listing.path}</strong>
+                                  </button>
+                                  <span class="hint">as a workspace</span>
+                              </div>
+                          `}
+                </div>
+                ${error == null
+                    ? null
+                    : html`<p class="opener-error" role="alert"><svg class="ico" aria-hidden="true"><use href="#i-alert" /></svg><span>${error}</span></p>`}
             </section>
+
             ${!tunneled && ssh_hosts.length > 0
-                ? html`<section>
-                      <h2>SSH Remotes ${refresh_button}</h2>
-                      <p class="subtitle small">
-                          Click a host: the whole Land (files, kernels, terminal) runs on that machine over an SSH tunnel. First contact installs the
-                          server there; after that it reconnects instantly.
+                ? html`<section class="opener-section">
+                      <h2 class="section-label">
+                          Remote hosts
+                          <span class="spacer"></span>
+                          <label class="ssh-timeout" title="How long to wait for an SSH connection, including the banner of a slow login node in between, before giving up.">
+                              Give up after
+                              <input type="number" min="3" max="180" step="1" value=${ssh_timeout} onChange=${(e) => set_ssh_timeout(clamp_ssh_timeout(e.target.value))} />
+                              s
+                          </label>
+                          ${refresh_button}
+                      </h2>
+                      <p class="section-note">
+                          From <code>~/.ssh/config</code>. The files, notebooks and terminal all run on that machine, over an SSH tunnel. The first connection installs
+                          SpaceStation there; after that it reconnects at once.
                       </p>
-                      <label
-                          class="ssh-timeout"
-                          title="How long to wait for an SSH connection — including the banner from a slow ProxyJump login node — before giving up."
-                      >
-                          Connection timeout
-                          <input
-                              type="number"
-                              min="3"
-                              max="180"
-                              step="1"
-                              value=${ssh_timeout}
-                              onChange=${(e) => set_ssh_timeout(clamp_ssh_timeout(e.target.value))}
-                          />
-                          <span class="unit">s</span>
-                          <span class="ssh-timeout-hint">Raise this if a host fails with “timed out reaching … slow SSH hop”.</span>
-                      </label>
-                      <div class="dir-grid">
+                      <ul class="island ws-list">
                           ${ssh_hosts.map((h) => {
-                              const st = remote_states[h]
-                              const busy = st != null && st.state !== "ready" && st.state !== "error"
-                              return st?.state === "ready" && st.url != null
-                                  ? html`<a
-                                        class="dir-pill remote-ready"
-                                        href=${open_href(st.url)}
-                                        target=${open_target}
-                                        rel="opener"
-                                        title=${st.detail}
-                                    >
-                                        <span class="dir-icon">🛰</span>${h} →
-                                    </a>`
-                                  : html`<button
-                                        class="dir-pill ${busy ? "remote-busy" : ""} ${st?.state === "error" ? "remote-error" : ""}"
-                                        title=${st?.detail ?? `Open a workspace on ${h}`}
-                                        onClick=${() => connect_remote(h)}
-                                    >
-                                        <span class="dir-icon">🛰</span>${busy ? `${h}: ${st.state}…` : st?.state === "error" ? `${h}: failed (retry)` : h}
-                                    </button>`
+                              const st = remote_state(h)
+                              const time = elapsed(`remote:${h}`, st)
+                              const body = html`<svg class="ico" aria-hidden="true"><use href="#i-server" /></svg><span class="ws-name">${h}</span>`
+                              return html`<li class="ws-row ${st?.state === "error" ? "error" : ""}" key=${h}>
+                                  ${st?.state === "ready" && st.url != null
+                                      ? open_link(st.url, h, body)
+                                      : is_busy(st)
+                                        ? html`<div class="ws-open inert">${body}</div>`
+                                        : html`<button class="ws-open" title=${`Open a workspace on ${h}`} onClick=${() => connect_remote(h)}>${body}</button>`}
+                                  ${st == null
+                                      ? html`<span class="row-hint">Connect</span>`
+                                      : st.state === "ready"
+                                        ? html`<span class="ws-state"><span class="dot ok"></span>Connected</span>
+                                              <button class="text-button" title=${`Close the tunnel to ${h}. Its server and whatever runs on it keep going.`} onClick=${() => cancel_remote(h)}>
+                                                  Disconnect
+                                              </button>`
+                                        : st.state === "error"
+                                          ? html`<span class="ws-state"><span class="dot bad"></span>Could not connect</span>
+                                                <button class="text-button" onClick=${() => connect_remote(h)}>Try again</button>
+                                                <button class="icon-button" title="Dismiss" aria-label="Dismiss" onClick=${() => cancel_remote(h)}><svg class="ico" aria-hidden="true"><use href="#i-close" /></svg></button>`
+                                          : html`<span class="ws-state"><span class="spinner"></span>${state_label(st)} · ${time}</span>
+                                                <button class="text-button" onClick=${() => cancel_remote(h)}>Cancel</button>`}
+                                  ${st != null && st.state !== "ready" && (st.detail || st.state === "installing")
+                                      ? html`<p class="ws-detail" role=${st.state === "error" ? "alert" : "status"}>
+                                            ${st.detail}
+                                            ${st.state === "installing"
+                                                ? html`<span class="note">The first setup compiles a lot of Julia and takes a few minutes. Leave this page open: it connects by itself.</span>`
+                                                : null}
+                                        </p>`
+                                      : null}
+                              </li>`
                           })}
-                      </div>
-                      ${Object.entries(remote_states)
-                          .filter(([_, st]) => st.state !== "ready" && st.state !== "error")
-                          .map(
-                              ([h, st]) => html`<div class="remote-progress" key=${h}>
-                                  <span class="remote-spinner"></span>
-                                  <div class="remote-progress-text">
-                                      <strong>Connecting to ${h} — ${st.state}</strong>
-                                      <span>${st.detail}</span>
-                                      ${st.state === "installing"
-                                          ? html`<span class="remote-progress-note">First-time setup compiles a lot of Julia — this is the slow step. Leave this page open; it will connect by itself.</span>`
-                                          : null}
-                                  </div>
-                                  <button class="remote-cancel" title="Cancel this connection" onClick=${() => cancel_remote(h)}>Cancel</button>
-                              </div>`
-                          )}
-                      ${Object.values(remote_states).some((st) => st.state === "error")
-                          ? html`<p class="opener-error">${Object.entries(remote_states).filter(([_, st]) => st.state === "error").map(([h, st]) => `${h}: ${st.detail}`).join(" · ")}</p>`
-                          : null}
+                      </ul>
                   </section>`
                 : null}
-            ${Object.entries(local_states)
-                .filter(([_, st]) => st.state !== "ready" && st.state !== "error")
-                .map(
-                    ([path, st]) => html`<div class="remote-progress" key=${path}>
-                        <span class="remote-spinner"></span>
-                        <div class="remote-progress-text">
-                            <strong>Starting ${basename(path)} — ${st.state}</strong>
-                            <span>${st.detail}</span>
-                        </div>
-                        <button class="remote-cancel" title="Cancel this launch" onClick=${() => cancel_local(path)}>Cancel</button>
-                    </div>`
-                )}
-            ${Object.values(local_states).some((st) => st.state === "error")
-                ? html`<p class="opener-error">
-                      ${Object.entries(local_states)
-                          .filter(([_, st]) => st.state === "error")
-                          .map(([path, st]) => `${basename(path)}: ${st.detail}`)
-                          .join(" · ")}
-                  </p>`
-                : null}
-            ${error == null ? null : html`<p class="opener-error">${error}</p>`}
         </div>
     </div>`
 }
@@ -685,7 +1020,7 @@ const terminal_theme_for = (scheme) => {
     const v = (name, fallback) => styles.getPropertyValue(name).trim() || fallback
     return scheme === "light"
         ? {
-              background: v("--terminal-light-bg", "#fbfbfb"),
+              background: "#00000000",
               foreground: v("--terminal-light-fg", "#24292f"),
               cursor: "#24292f",
               cursorAccent: "#fbfbfb",
@@ -708,13 +1043,18 @@ const terminal_theme_for = (scheme) => {
               brightWhite: "#8c959f",
           }
         : {
-              background: v("--terminal-bg", "#1f1f1f"),
+              background: "#00000000",
               foreground: v("--terminal-fg", "#dddddd"),
           }
 }
 
-const TerminalView = ({ tid, cwd, visible, scheme, notebook_env }) => {
+const TerminalView = ({ tid, cwd, visible, scheme, notebook_env, on_exit }) => {
     const node_ref = useRef(null)
+    // "lost": the connection dropped and is being re-made; "failed": it could not be.
+    const [link, set_link] = useState(/** @type {"ok" | "lost" | "failed"} */ ("ok"))
+    const reconnect_ref = useRef(/** @type {(() => void)?} */ (null))
+    const on_exit_ref = useRef(on_exit)
+    on_exit_ref.current = on_exit
     const started = useRef(false)
     const fit_ref = useRef(null)
     const refit_timer = useRef(null)
@@ -731,6 +1071,7 @@ const TerminalView = ({ tid, cwd, visible, scheme, notebook_env }) => {
     const term_ref = useRef(/** @type {any} */ (null))
     const ro_ref = useRef(/** @type {ResizeObserver?} */ (null))
     const paste_cleanup_ref = useRef(/** @type {(() => void)?} */ (null))
+    const retry_timer_ref = useRef(/** @type {(() => void)?} */ (null))
 
     // Recolour in place. The scheme goes through a ref so it stays OUT of the mount effect's deps:
     // that effect owns the websocket and the xterm instance, and re-running it would kill the live
@@ -750,8 +1091,8 @@ const TerminalView = ({ tid, cwd, visible, scheme, notebook_env }) => {
     // xterm clamp to its minimum 2 columns and ship that to the PTY — which is exactly what leaves a
     // backgrounded terminal reattaching wrapped to a sliver. The guard makes a hide a no-op.
     const refit = useCallback(() => {
-        clearTimeout(refit_timer.current)
-        refit_timer.current = setTimeout(() => {
+        cancelAnimationFrame(refit_timer.current)
+        refit_timer.current = requestAnimationFrame(() => {
             const node = node_ref.current
             const fit = fit_ref.current
             if (node == null || fit == null) return
@@ -787,7 +1128,7 @@ const TerminalView = ({ tid, cwd, visible, scheme, notebook_env }) => {
                 term._core?.viewport?.syncScrollArea?.(true)
                 term.refresh(0, term.rows - 1)
             } catch {}
-        }, 120)
+        })
     }, [])
 
     useEffect(() => {
@@ -803,9 +1144,11 @@ const TerminalView = ({ tid, cwd, visible, scheme, notebook_env }) => {
             }
             return
         }
-        // returning to this tab (or first reveal of an already-started one): re-measure once painted
+        // returning to this tab (or first reveal of an already-started one): re-measure once painted,
+        // and take the keyboard — showing a terminal is asking to type in it
         if (started.current) {
             refit()
+            term_ref.current?.focus()
             return
         }
         if (node_ref.current == null) return
@@ -824,6 +1167,7 @@ const TerminalView = ({ tid, cwd, visible, scheme, notebook_env }) => {
                 fontSize: 13,
                 fontFamily: "JuliaMono, SFMono-Regular, Menlo, Consolas, monospace",
                 cursorBlink: true,
+                allowTransparency: true, // the island behind is the background (see terminal_theme_for)
                 scrollback: 5000,
                 // The SERVER's pty backend decides this, not the browser's OS: on a Windows server the
                 // pty is ConPTY, and xterm needs its ConPTY heuristics (reliable wrapped-line detection
@@ -846,22 +1190,82 @@ const TerminalView = ({ tid, cwd, visible, scheme, notebook_env }) => {
                 return
             }
             term.open(node_ref.current)
+            term.focus()
 
             // Assigned when the websocket opens (below); the paste handler needs it, so it lives out here.
             let socket = null
 
-            // Copy: Cmd/Ctrl+C copies when there is a selection; otherwise it falls through to the shell
-            // as SIGINT. Text paste is deliberately NOT handled here: xterm already consumes the browser's
-            // native `paste` event. Calling the privileged Clipboard API from Cmd+V as well caused
-            // browser permission prompts and could deliver text twice through the two competing paths.
+            // Copy and paste, by each platform's own convention:
+            //   macOS            ⌘C / ⌘V
+            //   Windows          Ctrl+C with text selected (Ctrl+C alone stays the interrupt), Ctrl+V,
+            //                    and Ctrl+Shift+C / Ctrl+Shift+V
+            //   Linux and others Ctrl+Shift+C / Ctrl+Shift+V, and Ctrl+C with text selected
+            // Paste is never read here. Returning false hands the key back to the browser, whose own
+            // `paste` event xterm already handles (bracketed paste included): one path, and no
+            // clipboard permission prompt. Without that, Ctrl+V reached the shell as ^V and
+            // Ctrl+Shift+V did nothing at all.
+            const is_windows = navigator.platform.toUpperCase().includes("WIN")
             term.attachCustomKeyEventHandler((e) => {
                 if (e.type !== "keydown") return true
-                if ((e.metaKey || e.ctrlKey) && (e.key === "c" || e.key === "C") && term.hasSelection()) {
-                    navigator.clipboard?.writeText(term.getSelection()).catch(() => {})
+                const key = e.key.toLowerCase()
+                const mod = is_mac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey
+                if (!mod || e.altKey) return true
+                // ⌘← ⌘→ ⌘⌫ on macOS: start of line, end of line, delete to the start
+                const line_edit = is_mac && !e.shiftKey ? { arrowleft: "\x01", arrowright: "\x05", backspace: "\x15" }[key] : undefined
+                if (line_edit != null) {
+                    if (socket?.readyState === WebSocket.OPEN) socket.send("0:" + line_edit)
+                    e.preventDefault()
+                    return false
+                }
+                if (key === "c" && (is_mac || e.shiftKey || term.hasSelection())) {
+                    if (term.hasSelection()) {
+                        copy_text(term.getSelection())
+                        // off macOS the same key is the interrupt: once copied, let the next press be one
+                        if (!is_mac) term.clearSelection()
+                    }
+                    e.preventDefault() // Ctrl+Shift+C opens the inspector in Chromium
+                    return false
+                }
+                if (key === "v" && (is_mac || is_windows || e.shiftKey)) return false
+                if (is_mac && key === "a") {
+                    term.selectAll()
+                    e.preventDefault()
+                    return false
+                }
+                if (is_mac && key === "k") {
+                    term.clear()
+                    e.preventDefault()
                     return false
                 }
                 return true
             })
+
+            // Right-click: what every terminal offers. (On macOS xterm has already selected the word
+            // under the pointer by now, so Copy is ready.) Shift+right-click keeps the browser's own menu.
+            const on_context_menu = (/** @type {MouseEvent} */ e) => {
+                if (e.shiftKey) return
+                e.preventDefault()
+                const can_read = typeof navigator.clipboard?.readText === "function"
+                open_menu(e.clientX, e.clientY, [
+                    { label: "Copy", icon: "i-copy", keys: is_mac ? "⌘C" : "Ctrl+Shift+C", disabled: !term.hasSelection(), run: () => (copy_text(term.getSelection()), term.focus()) },
+                    {
+                        label: "Paste",
+                        icon: "i-paste",
+                        keys: is_mac ? "⌘V" : is_windows ? "Ctrl+V" : "Ctrl+Shift+V",
+                        disabled: !can_read,
+                        run: () =>
+                            navigator.clipboard
+                                .readText()
+                                .then((text) => text && term.paste(text))
+                                .catch(() => {})
+                                .finally(() => term.focus()),
+                    },
+                    "-",
+                    { label: "Select all", keys: is_mac ? "⌘A" : "", run: () => (term.selectAll(), term.focus()) },
+                    { label: "Clear", keys: is_mac ? "⌘K" : "", run: () => (term.clear(), term.focus()) },
+                ])
+            }
+            node_ref.current.addEventListener("contextmenu", on_context_menu)
 
             // Images cannot go through xterm's text-only paste. Intercept ONLY a native paste carrying
             // an image; ordinary text is left untouched for xterm to process exactly once. Using the
@@ -904,19 +1308,6 @@ const TerminalView = ({ tid, cwd, visible, scheme, notebook_env }) => {
             refit()
 
             const proto = window.location.protocol === "https:" ? "wss" : "ws"
-            // Open the shell in the workspace the client is showing (local or ssh-remote), not wherever
-            // the server happened to launch. The server falls back to its workspace_folder if omitted.
-            const cwd_param = cwd ? `&cwd=${encodeURIComponent(cwd)}` : ""
-            const size_param = `&rows=${term.rows}&cols=${term.cols}`
-            // A notebook-environment terminal (issue #29): the server types `julia --project=<env>`
-            // into the shell it spawns for this tid — only on spawn, so reattaching never repeats it.
-            const env_param = notebook_env ? `&notebook_env=${encodeURIComponent(notebook_env)}` : ""
-            // Relative to this page: under a hub's /w/<id>/ the terminal is the hub's, at that prefix.
-            const terminal_url = new URL(`./terminal?tid=${tid}${cwd_param}${size_param}${env_param}`, window.location.href)
-            terminal_url.protocol = `${proto}:`
-            socket = new WebSocket(terminal_url.href)
-            socket_ref.current = socket
-            socket.binaryType = "arraybuffer"
             // Measure the panel and tell the pty (the server ignores a no-change resize). Called once
             // the attach replay has fully rendered — resizing earlier would make the pty repaint into
             // a grid the replay bytes weren't recorded for.
@@ -929,32 +1320,99 @@ const TerminalView = ({ tid, cwd, visible, scheme, notebook_env }) => {
                 }
                 if (socket?.readyState === WebSocket.OPEN) socket.send(`1:${term.rows},${term.cols}`)
             }
-            socket.onmessage = (e) => {
-                if (typeof e.data !== "string") {
-                    term.write(new Uint8Array(e.data))
-                    return
-                }
-                // Text frames are the attach protocol (all shell output is binary). First frame: the
-                // pty's current geometry — adopt it BEFORE the replay renders, since the replayed bytes
-                // (absolute cursor positioning included) only make sense in that exact grid. Second
-                // frame: replay complete — now re-fit to the panel; the resulting pty resize makes the
-                // live app repaint itself cleanly at the real size.
-                let meta = null
-                try {
-                    meta = JSON.parse(e.data)
-                } catch {}
-                if (meta == null) return
-                if (Number.isFinite(meta.rows) && Number.isFinite(meta.cols) && (term.rows !== meta.rows || term.cols !== meta.cols)) {
+            let attempts = 0
+            let retry_timer = null
+            const connect = () => {
+                if (node_ref.current == null) return // unmounted while waiting to retry
+                // Open the shell in the workspace the client is showing (local or ssh-remote), not wherever
+                // the server happened to launch. The server falls back to its workspace_folder if omitted.
+                const cwd_param = cwd ? `&cwd=${encodeURIComponent(cwd)}` : ""
+                const size_param = `&rows=${term.rows}&cols=${term.cols}`
+                // A notebook-environment terminal (issue #29): the server types `julia --project=<env>`
+                // into the shell it spawns for this tid — only on spawn, so reattaching never repeats it.
+                const env_param = notebook_env ? `&notebook_env=${encodeURIComponent(notebook_env)}` : ""
+                // Relative to this page: under a hub's /w/<id>/ the terminal is the hub's, at that prefix.
+                const terminal_url = new URL(`./terminal?tid=${tid}${cwd_param}${size_param}${env_param}`, window.location.href)
+                terminal_url.protocol = `${proto}:`
+                const sock = new WebSocket(terminal_url.href)
+                socket = sock
+                socket_ref.current = sock
+                sock.binaryType = "arraybuffer"
+                let exited = false
+                let failed = false // no shell could be started: what the server said stays on screen
+                let first_frame = true
+                sock.onmessage = (e) => {
+                    if (typeof e.data !== "string") {
+                        term.write(new Uint8Array(e.data))
+                        return
+                    }
+                    // Text frames are the attach protocol (all shell output is binary). First frame: the
+                    // pty's current geometry — adopt it BEFORE the replay renders, since the replayed bytes
+                    // (absolute cursor positioning included) only make sense in that exact grid. Second
+                    // frame: replay complete — now re-fit to the panel; the resulting pty resize makes the
+                    // live app repaint itself cleanly at the real size.
+                    let meta = null
                     try {
-                        term.resize(meta.cols, meta.rows)
+                        meta = JSON.parse(e.data)
                     } catch {}
+                    if (meta == null) return
+                    if (meta.exited || meta.failed) {
+                        exited = meta.exited === true
+                        failed = meta.failed === true
+                        if (exited) {
+                            socket_ref.current = null // its close is expected: nothing to re-attach to
+                            on_exit_ref.current?.(tid)
+                        }
+                        return
+                    }
+                    if (first_frame) {
+                        first_frame = false
+                        // a re-made connection replays the scrollback: start from a clean screen, or
+                        // everything already shown would be there twice
+                        if (attempts > 0) term.reset()
+                        attempts = 0
+                        set_link("ok")
+                    }
+                    if (Number.isFinite(meta.rows) && Number.isFinite(meta.cols) && (term.rows !== meta.rows || term.cols !== meta.cols)) {
+                        try {
+                            term.resize(meta.cols, meta.rows)
+                        } catch {}
+                    }
+                    if (meta.replayed) sync_size_to_panel()
                 }
-                if (meta.replayed) sync_size_to_panel()
+                sock.onopen = () => refit()
+                sock.onclose = () => {
+                    if (socket_ref.current !== sock) return // replaced, or torn down on purpose
+                    // The shell ended (`exit`, Ctrl-D): its tab goes with it, as in any terminal.
+                    if (exited) return on_exit_ref.current?.(tid)
+                    if (failed) return
+                    // Otherwise the connection dropped and the shell is still there: re-attach to it.
+                    attempts += 1
+                    if (attempts > 8) return set_link("failed")
+                    set_link("lost")
+                    retry_timer = setTimeout(connect, Math.min(500 * 2 ** (attempts - 1), 8000))
+                }
             }
-            socket.onopen = () => refit()
-            socket.onclose = () => term.write("\r\n\x1b[2m[disconnected — the shell is still running; reload to reattach]\x1b[0m\r\n")
-            term.onData((d) => socket.readyState === WebSocket.OPEN && socket.send("0:" + d))
-            term.onResize(({ rows, cols }) => socket.readyState === WebSocket.OPEN && socket.send(`1:${rows},${cols}`))
+            reconnect_ref.current = () => {
+                clearTimeout(retry_timer)
+                attempts = 1
+                set_link("lost")
+                connect()
+            }
+            retry_timer_ref.current = () => clearTimeout(retry_timer)
+            connect()
+            term.onData((d) => socket?.readyState === WebSocket.OPEN && socket.send("0:" + d))
+            let told = { rows: term.rows, cols: term.cols }
+            let width_timer = null
+            const tell_size = () => {
+                told = { rows: term.rows, cols: term.cols }
+                if (socket?.readyState === WebSocket.OPEN) socket.send(`1:${term.rows},${term.cols}`)
+            }
+            term.onResize(({ rows, cols }) => {
+                clearTimeout(width_timer)
+                if (cols === told.cols) tell_size()
+                else width_timer = setTimeout(tell_size, 90)
+            })
             const ro = new ResizeObserver(() => refit())
             ro.observe(node_ref.current)
             ro_ref.current = ro
@@ -968,7 +1426,8 @@ const TerminalView = ({ tid, cwd, visible, scheme, notebook_env }) => {
     // separately (close_terminal → POST /api/v1/terminal/close).
     useEffect(() => {
         return () => {
-            clearTimeout(refit_timer.current)
+            cancelAnimationFrame(refit_timer.current)
+            retry_timer_ref.current?.()
             paste_cleanup_ref.current?.()
             paste_cleanup_ref.current = null
             try {
@@ -996,7 +1455,15 @@ const TerminalView = ({ tid, cwd, visible, scheme, notebook_env }) => {
         }
     }, [])
 
-    return html`<div class="terminal-host" ref=${node_ref}></div>`
+    return html`<div class="terminal-host" ref=${node_ref}></div>
+        ${link === "ok"
+            ? null
+            : html`<div class="terminal-note" role="status">
+                  ${link === "lost"
+                      ? html`<span class="spinner"></span><span>Connection lost. The shell is still running; reconnecting…</span>`
+                      : html`<span>Could not reconnect. The shell may still be running.</span
+                            ><button class="text-button" onClick=${() => reconnect_ref.current?.()}>Try again</button>`}
+              </div>`}`
 }
 
 
@@ -1005,12 +1472,13 @@ const file_dirty = new Map()
 
 /** A text-file editor pane built on Pluto's own bundled CodeMirror (imports/CodemirrorPlutoSetup.js),
  *  with syntax colors wired to Pluto's --cm-color-* theme variables. Save with the button or Ctrl/Cmd+S. */
-const FileEditorPane = ({ path, visible }) => {
+const FileEditorPane = ({ path, label, visible, on_dirty }) => {
     const node_ref = useRef(null)
     const view_ref = useRef(null)
     const started = useRef(false)
     const [dirty, set_dirty] = useState(false)
-    const [status, set_status] = useState("loading…")
+    const [status, set_status] = useState("Loading…")
+    const [failed, set_failed] = useState(false)
 
     const save = useCallback(async () => {
         const view = view_ref.current
@@ -1019,10 +1487,13 @@ const FileEditorPane = ({ path, visible }) => {
             await get_json(`./api/v1/file/save?path=${encodeURIComponent(path)}`, { method: "POST", body: view.state.doc.toString() })
             file_dirty.set(path, false)
             set_dirty(false)
-            set_status("saved")
+            on_dirty?.(path, false)
+            set_failed(false)
+            set_status("Saved")
             setTimeout(() => set_status(""), 1500)
         } catch (e) {
-            set_status(String(e))
+            set_failed(true)
+            set_status(`Not saved: ${e?.message ?? e}`)
         }
     }, [path])
 
@@ -1089,9 +1560,10 @@ const FileEditorPane = ({ path, visible }) => {
                                 ...cm.historyKeymap,
                             ]),
                             cm.EditorView.updateListener.of((update) => {
-                                if (update.docChanged) {
+                                if (update.docChanged && !file_dirty.get(path)) {
                                     file_dirty.set(path, true)
                                     set_dirty(true)
+                                    on_dirty?.(path, true)
                                 }
                             }),
                             cm.EditorView.theme({}, { dark: prefers_dark() }),
@@ -1110,7 +1582,8 @@ const FileEditorPane = ({ path, visible }) => {
                 view_ref.current = view
                 set_status("")
             } catch (e) {
-                set_status(String(e))
+                set_failed(true)
+                set_status(`Could not be opened: ${e?.message ?? e}`)
             }
         })()
     }, [visible])
@@ -1128,13 +1601,55 @@ const FileEditorPane = ({ path, visible }) => {
 
     return html`<div class="file-pane">
         <div class="file-toolbar">
-            <span class="file-path" title=${path}>${path}</span>
-            <span class="file-status">${dirty ? "●" : ""} ${status}</span>
-            <button class="file-save ${dirty ? "dirty" : ""}" onClick=${save} title="Save (Ctrl/Cmd+S)">Save</button>
+            <span class="file-path" title=${path}>${label ?? path}</span>
+            <span class="file-status ${failed ? "error" : ""}" role="status">${status !== "" ? status : dirty ? "Unsaved changes" : ""}</span>
+            <button class="text-button file-save ${dirty ? "primary" : ""}" disabled=${!dirty} onClick=${save} title=${`Save (${is_mac ? "⌘S" : "Ctrl+S"})`}>Save</button>
         </div>
         <div class="file-editor" ref=${node_ref}></div>
     </div>`
 }
+
+const SIDEBAR_WIDTH = 260
+const TERMINAL_HEIGHT = 280
+const TERMINAL_WIDTH = 460
+
+/** Drag a pane's edge. `measure(event)` turns a pointer position into the new size; it is applied
+ *  at most once a frame, however fast the pointer reports. The handle captures the pointer, so the
+ *  drag carries on over the notebook frames and the terminal, and ends wherever the button is let go. */
+const drag_resize = (e, axis, measure, apply) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    const handle = e.currentTarget
+    try {
+        handle.setPointerCapture(e.pointerId)
+    } catch {}
+    const body_class = axis === "x" ? "resizing" : "resizing-v"
+    document.body.classList.add(body_class)
+    handle.classList.add("dragging")
+    let frame = 0
+    let latest = null
+    const flush = () => {
+        frame = 0
+        if (latest != null) apply(measure(latest))
+    }
+    const move = (ev) => {
+        latest = ev
+        if (frame === 0) frame = requestAnimationFrame(flush)
+    }
+    const up = () => {
+        cancelAnimationFrame(frame)
+        flush()
+        document.body.classList.remove(body_class)
+        handle.classList.remove("dragging")
+        handle.removeEventListener("pointermove", move)
+        handle.removeEventListener("pointerup", up)
+        handle.removeEventListener("pointercancel", up)
+    }
+    handle.addEventListener("pointermove", move)
+    handle.addEventListener("pointerup", up)
+    handle.addEventListener("pointercancel", up)
+}
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(Math.max(lo, hi), v))
 
 const Land = () => {
     const [workspace, set_workspace] = useState(/** @type {{root: String, entries: Array, git?: {branch: String, detached: Boolean}?}?} */ (null))
@@ -1154,20 +1669,38 @@ const Land = () => {
     const [tabs, set_tabs] = useState(/** @type {Array<{id: String, path: String, kind?: String}>} */ ([]))
     const [active, set_active] = useState(/** @type {String?} */ (null))
     const [error, set_error] = useState(/** @type {String?} */ (null))
-    const [sidebar_width, set_sidebar_width] = useState(() => Number(localStorage.getItem("spacestation sidebar width")) || 290)
-    const [sidebar_hidden, set_sidebar_hidden] = useState(() => localStorage.getItem("spacestation sidebar hidden") === "true")
-    const [terminal_open, set_terminal_open] = useState(() => localStorage.getItem("spacestation terminal open") === "true")
-    const [terminal_height, set_terminal_height] = useState(() => Number(localStorage.getItem("spacestation terminal height")) || 280)
-    const [terminal_width, set_terminal_width] = useState(() => Number(localStorage.getItem("spacestation terminal width")) || 420)
-    const [terminal_dock, set_terminal_dock] = useState(() => (localStorage.getItem("spacestation terminal dock") === "right" ? "right" : "bottom"))
+    // what the background poll could not do; it clears itself when the poll works again
+    const [poll_error, set_poll_error] = useState(/** @type {String?} */ (null))
+    const [sidebar_width, set_sidebar_width] = useState(() => Number(store.get("spacestation sidebar width")) || SIDEBAR_WIDTH)
+    const [sidebar_hidden, set_sidebar_hidden] = useState(() => store.get("spacestation sidebar hidden") === "true")
+    const [terminal_open, set_terminal_open] = useState(() => store.get("spacestation terminal open") === "true")
+    const [terminal_height, set_terminal_height] = useState(() => Number(store.get("spacestation terminal height")) || TERMINAL_HEIGHT)
+    const [terminal_width, set_terminal_width] = useState(() => Number(store.get("spacestation terminal width")) || TERMINAL_WIDTH)
+    const [terminal_dock, set_terminal_dock] = useState(() => {
+        const saved = store.get("spacestation terminal dock")
+        return saved === "right" || saved === "tab" ? saved : "bottom"
+    })
     // The terminal's colours are its own preference, not the page theme's: plenty of people want a
     // light UI with a dark terminal. Defaults to dark, which is what the terminal has always been.
-    const [terminal_scheme, set_terminal_scheme] = useState(() => (localStorage.getItem("spacestation terminal scheme") === "light" ? "light" : "dark"))
+    // The terminal is the page's colour, light or dark with it. Its own switch makes it the opposite
+    // (a dark terminal in a light page is a common wish), and it stays the opposite as the page changes.
+    const page_scheme = use_scheme()
+    const [terminal_inverted, set_terminal_inverted] = useState(() => store.get("spacestation terminal opposite") === "true")
+    const terminal_scheme = page_scheme.dark !== terminal_inverted ? "dark" : "light"
     const terminal_ever_opened = useRef(false)
     if (terminal_open) terminal_ever_opened.current = true
     const [show_opener, set_show_opener] = useState(false)
-    const [menu_open, set_menu_open] = useState(false)
-    const menu_ref = useRef(null)
+    const [path_copied, set_path_copied] = useState(false)
+    // which file tabs have unsaved changes (the panes report it; the strip marks them)
+    const [dirty_tabs, set_dirty_tabs] = useState(/** @type {Set<String>} */ (new Set()))
+    const set_tab_dirty = useCallback((path, dirty) => {
+        set_dirty_tabs((prev) => {
+            if (prev.has(path) === dirty) return prev
+            const next = new Set(prev)
+            dirty ? next.add(path) : next.delete(path)
+            return next
+        })
+    }, [])
 
     // ---- Tab switching from the keyboard (issue #29) ----
     // The conventions every browser, VS Code and iTerm share: ⌘⇧[ / ⌘⇧] and ⌘⌥← / ⌘⌥→ on macOS,
@@ -1178,10 +1711,18 @@ const Land = () => {
     // keys up here, on each frame's window as it loads (`attach_tab_keys`) — so the chord works with
     // a cell, a file, the sidebar or the terminal focused. None of it collides with Pluto's own
     // bindings (cell folding is ⌘⌥[ on macOS and Ctrl+Shift+[ elsewhere) or with xterm.
+    const toggle_terminal_ref = useRef(/** @type {(() => void)?} */ (null))
     const tab_keys_ref = useRef({ tabs: /** @type {Array<{id: String}>} */ ([]), active: /** @type {String?} */ (null), terminal_tab: false })
     const handle_tab_keys = useCallback((/** @type {KeyboardEvent} */ e) => {
         if (e.defaultPrevented || e.isComposing) return
-        const mac = navigator.platform.toUpperCase().includes("MAC")
+        // Ctrl+` shows and hides the terminal, as in VS Code — on macOS too, where it is also Ctrl.
+        if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && e.code === "Backquote") {
+            e.preventDefault()
+            e.stopPropagation()
+            toggle_terminal_ref.current?.()
+            return
+        }
+        const mac = is_mac
         const mod = mac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey
         let move = 0
         let jump = -1
@@ -1224,54 +1765,22 @@ const Land = () => {
     // Answers "I can never remember the invocation": the server composes the exact command for
     // this Julia and this shell, and types it into a fresh terminal tab, so the line is there to
     // read, edit and learn. Availability is looked up when the menu opens, for the active notebook.
-    const [notebook_env, set_notebook_env] = useState(/** @type {{id: String, managed: boolean, command?: String}?} */ (null))
-
-    // Close the header overflow menu on an outside click or Escape — standard popover behaviour.
-    useEffect(() => {
-        if (!menu_open) return
-        const on_pointer = (e) => {
-            if (menu_ref.current != null && !menu_ref.current.contains(e.target)) set_menu_open(false)
-        }
-        const on_key = (e) => {
-            if (e.key === "Escape") set_menu_open(false)
-        }
-        document.addEventListener("pointerdown", on_pointer)
-        document.addEventListener("keydown", on_key)
-        return () => {
-            document.removeEventListener("pointerdown", on_pointer)
-            document.removeEventListener("keydown", on_key)
-        }
-    }, [menu_open])
     tab_keys_ref.current = { tabs, active, terminal_tab: terminal_open && terminal_dock === "tab" }
 
     const active_notebook_tab = active != null && active !== "__terminal__" && tabs.find((t) => t.id === active && t.kind !== "file")
+
     useEffect(() => {
-        if (!menu_open) return
-        if (!active_notebook_tab) {
-            set_notebook_env(null)
-            return
-        }
-        let alive = true
-        get_json(`./api/v1/notebook/env?id=${encodeURIComponent(active_notebook_tab.id)}`)
-            .then((info) => alive && set_notebook_env({ id: active_notebook_tab.id, managed: info?.managed === true, command: info?.command }))
-            .catch(() => alive && set_notebook_env({ id: active_notebook_tab.id, managed: false }))
-        return () => {
-            alive = false
-        }
-    }, [menu_open, active_notebook_tab?.id])
+        if (active == null && tabs.length > 0) set_active(tabs[tabs.length - 1].id)
+        else if (active === "__terminal__" && !(terminal_open && terminal_dock === "tab")) set_active(tabs.length > 0 ? tabs[tabs.length - 1].id : null)
+    }, [active, tabs, terminal_open, terminal_dock])
 
     const auto_tabbed = useRef(false)
-    // If this tab was spawned by a homebase, it carries the homebase URL in its #fragment — remember it so
-    // the "home" button returns there instead of opening a disconnected in-tab launcher.
-    const homebase_url = useRef(/** @type {String?} */ (null))
-    if (homebase_url.current == null) {
-        const m = window.location.hash.match(/[#&]homebase=([^&]+)/)
-        if (m) {
-            try {
-                homebase_url.current = decodeURIComponent(m[1])
-            } catch (e) {}
-        }
-    }
+    // set once the saved tabs of this workspace are on screen: only then is what is on screen worth saving
+    const tabs_restored_for = useRef(/** @type {String?} */ (null))
+    useEffect(() => {
+        const root = workspace?.root
+        if (root != null && tabs_restored_for.current === root) save_tabs(root, tabs, active, running.map((nb) => nb.notebook_id))
+    }, [tabs, active, running, workspace?.root])
     // This server may be reached over an SSH tunnel (when it's a remote workspace). If so, its child
     // workspace ports aren't forwarded to the browser, so workspaces open IN-PLACE rather than in new tabs.
     const [tunneled, set_tunneled] = useState(false)
@@ -1301,66 +1810,18 @@ const Land = () => {
      *  extension half — the header half only applies to files that already exist. */
     const has_notebook_extension = useCallback((name) => has_pluto_file_extension(name, notebook_extensions), [notebook_extensions])
 
-    // The launcher (no workspace of its own) is THE homebase — name the tab so workspaces can target it.
-    useEffect(() => {
-        if (no_workspace) window.name = HOMEBASE_WINDOW_NAME
-    }, [no_workspace])
-
     // Tab title tells the homebase apart from workspaces in the browser's tab strip: the launcher reads
     // "SpaceStation (launcher)"; a workspace reads "SpaceStation — <folder>".
     useEffect(() => {
         document.title = no_workspace ? "SpaceStation (launcher)" : workspace?.root ? `SpaceStation — ${basename(workspace.root)}` : "SpaceStation"
     }, [no_workspace, workspace])
 
-    // "Home" from inside a workspace. Over a tunnel: clear the workspace and reload this same tab (the
-    // remote homebase). Otherwise: focus the homebase tab if open, or reopen it if it was closed — one
-    // shared homebase, never a disconnected duplicate. (In-tab opener only when no homebase is known.)
+    // The logo: the launcher, shown over this workspace, with a way back. (It used to ask the
+    // browser to raise the tab that opened this one, which browsers do not allow: the button did
+    // nothing.) The workspace keeps running underneath.
     const go_home = useCallback(() => {
         if (!hub && tunneled) {
             fetch("./api/v1/workspace/close", { method: "POST" }).finally(() => window.location.reload())
-            return
-        }
-        // Focus the homebase tab that opened us. opener.focus() is one of the few cross-origin-permitted
-        // calls, so unlike window.open(url, name) it actually focuses across the different ports our
-        // workspaces live on — and it doesn't reload the homebase. (Anchor-opened tabs keep their opener
-        // thanks to rel="opener" on the workspace links.)
-        try {
-            if (window.opener && !window.opener.closed) {
-                window.opener.focus()
-                return
-            }
-        } catch (e) {}
-        // Under a hub the launcher is the hub's root, always: seed it when no homebase was recorded.
-        if (hub && homebase_url.current == null) homebase_url.current = new URL("../../", window.location.href).href
-        // No live opener. If we know the homebase, switch to its tab: reuse it (never a duplicate) and
-        // focus the returned handle, so an ALREADY-OPEN homebase actually gets raised to the front — plain
-        // window.open(url, name) reuses the tab but only auto-focuses when it has to CREATE one.
-        if (homebase_url.current) {
-            // window.open("", name) hands back the existing named tab WITHOUT reloading it; if none is open
-            // it returns a fresh blank tab, which we then point at the homebase.
-            let w = null
-            try {
-                w = window.open("", HOMEBASE_WINDOW_NAME)
-            } catch (e) {}
-            if (w == null) {
-                // Popup blocked / unsupported: last-resort reopen-by-name.
-                window.open(homebase_url.current, HOMEBASE_WINDOW_NAME)
-                return
-            }
-            let is_blank = false
-            try {
-                is_blank = w.location.href === "about:blank"
-            } catch (e) {
-                // cross-origin: the homebase runs on another port, so it's already open — just focus it.
-            }
-            if (is_blank) {
-                try {
-                    w.location.href = homebase_url.current
-                } catch (e) {}
-            }
-            try {
-                w.focus()
-            } catch (e) {}
             return
         }
         set_show_opener(true)
@@ -1393,14 +1854,14 @@ const Land = () => {
     }, [workspace?.root])
 
     useEffect(() => {
-        localStorage.setItem("spacestation sidebar width", String(sidebar_width))
-        localStorage.setItem("spacestation sidebar hidden", String(sidebar_hidden))
-        localStorage.setItem("spacestation terminal open", String(terminal_open))
-        localStorage.setItem("spacestation terminal height", String(terminal_height))
-        localStorage.setItem("spacestation terminal scheme", terminal_scheme)
-        localStorage.setItem("spacestation terminal width", String(terminal_width))
-        localStorage.setItem("spacestation terminal dock", terminal_dock)
-    }, [sidebar_width, sidebar_hidden, terminal_open, terminal_height, terminal_width, terminal_dock, terminal_scheme])
+        store.set("spacestation sidebar width", String(sidebar_width))
+        store.set("spacestation sidebar hidden", String(sidebar_hidden))
+        store.set("spacestation terminal open", String(terminal_open))
+        store.set("spacestation terminal height", String(terminal_height))
+        store.set("spacestation terminal opposite", String(terminal_inverted))
+        store.set("spacestation terminal width", String(terminal_width))
+        store.set("spacestation terminal dock", terminal_dock)
+    }, [sidebar_width, sidebar_hidden, terminal_open, terminal_height, terminal_width, terminal_dock, terminal_inverted])
 
     useEffect(() => {
         const root = workspace?.root ?? null
@@ -1427,26 +1888,18 @@ const Land = () => {
         return () => window.removeEventListener("beforeunload", on_beforeunload)
     }, [])
 
+    const split_ref = useRef(/** @type {HTMLElement?} */ (null))
     const start_terminal_resize = useCallback(
         (e) => {
-            e.preventDefault()
-            const vertical = terminal_dock === "bottom"
-            document.body.classList.add(vertical ? "resizing-v" : "resizing")
-            const move = (ev) =>
-                vertical
-                    ? set_terminal_height(Math.max(120, Math.min(window.innerHeight - 220, window.innerHeight - ev.clientY - 12)))
-                    : set_terminal_width(Math.max(240, Math.min(window.innerWidth - 420, window.innerWidth - ev.clientX - 12)))
-            const up = () => {
-                document.body.classList.remove("resizing-v")
-                document.body.classList.remove("resizing")
-                window.removeEventListener("pointermove", move)
-                window.removeEventListener("pointerup", up)
-            }
-            window.addEventListener("pointermove", move)
-            window.addEventListener("pointerup", up)
+            const split = split_ref.current
+            if (split == null) return
+            const box = split.getBoundingClientRect()
+            if (terminal_dock === "bottom") drag_resize(e, "y", (ev) => clamp(box.bottom - ev.clientY, 100, box.height - 140), set_terminal_height)
+            else drag_resize(e, "x", (ev) => clamp(box.right - ev.clientX, 240, box.width - 320), set_terminal_width)
         },
         [terminal_dock]
     )
+    const reset_terminal_size = useCallback(() => (terminal_dock === "bottom" ? set_terminal_height(TERMINAL_HEIGHT) : set_terminal_width(TERMINAL_WIDTH)), [terminal_dock])
 
     const add_tab = useCallback((id, path, kind = "notebook") => {
         set_tabs((tabs) => (tabs.some((t) => t.id === id) ? tabs : [...tabs, { id, path, kind }]))
@@ -1463,17 +1916,19 @@ const Land = () => {
     /** Open a new terminal tab. `notebook_env` (a notebook id) makes it a notebook-environment
      *  terminal: the shell starts by activating that notebook's package environment (issue #29). */
     const new_terminal = useCallback(
-        (/** @type {{label?: String, notebook_env?: String}} */ opts = {}) => {
+        (/** @type {{label?: String, notebook_env?: String, cwd?: String}} */ opts = {}) => {
             if (workspace?.root == null || terminals_workspace.current !== workspace.root) return
             terminal_seq.current += 1
             const tid = "term-" + Math.random().toString(36).slice(2, 12)
             const entry = { tid, label: opts.label ?? `Terminal ${terminal_seq.current}` }
             if (opts.notebook_env) entry.notebook_env = opts.notebook_env
+            if (opts.cwd) entry.cwd = opts.cwd
+            if (terminal_dock === "tab") set_active("__terminal__")
             set_terminals((ts) => [...ts, entry])
             set_active_terminal(tid)
             set_terminal_open(true)
         },
-        [workspace?.root]
+        [workspace?.root, terminal_dock]
     )
 
     const close_terminal = useCallback((tid) => {
@@ -1481,8 +1936,14 @@ const Land = () => {
         // going away regardless. Persistent shells only survive detaches (hide / dock / reload).
         fetch(`./api/v1/terminal/close?tid=${encodeURIComponent(tid)}`, { method: "POST" }).catch(() => {})
         set_terminals((ts) => {
+            const at = ts.findIndex((t) => t.tid === tid)
             const remaining = ts.filter((t) => t.tid !== tid)
-            set_active_terminal((a) => (a === tid ? (remaining.length ? remaining[remaining.length - 1].tid : null) : a))
+            set_active_terminal((a) => (a === tid ? (remaining[Math.min(at, remaining.length - 1)]?.tid ?? null) : a))
+            // closing the last one closes the panel: it used to start another in its place
+            if (remaining.length === 0) {
+                set_terminal_open(false)
+                set_active((a) => (a === "__terminal__" ? null : a))
+            }
             return remaining
         })
     }, [])
@@ -1539,6 +2000,7 @@ const Land = () => {
     const [files_status, set_files_status] = useState(/** @type {{since: number, detail: String}?} */ (null))
     const [workspace_status, set_workspace_status] = useState(/** @type {{kind: "busy" | "down", since: number, detail: String}?} */ (null))
     const refreshing = useRef(false)
+    const unreachable = useRef(0) // polls in a row that nothing answered
     const refresh = useCallback(async () => {
         // One poll in flight at a time, with a deadline: against a stalled child every poll would
         // otherwise pile up on the one origin, and the browser's per-origin connection limit would
@@ -1548,13 +2010,15 @@ const Land = () => {
         const ctrl = new AbortController()
         const deadline = setTimeout(() => ctrl.abort(), 15_000)
         const signal = ctrl.signal
+        let root_now = null
         try {
             const ws_response = await fetch("./api/v1/workspace", { signal })
+            unreachable.current = 0
             if (ws_response.status === 404) {
                 set_files_status(null)
                 set_no_workspace(true)
                 set_workspace(null)
-                set_error(null)
+                set_poll_error(null)
                 return // the launcher has no notebooks to list (a hub's root list would poll every workspace's child)
             } else if (ws_response.status === 504) {
                 const info = await ws_response.json().catch(() => ({}))
@@ -1563,7 +2027,9 @@ const Land = () => {
             } else if (ws_response.ok) {
                 set_files_status(null)
                 set_no_workspace(false)
-                set_workspace(await ws_response.json())
+                const ws_now = await ws_response.json()
+                root_now = typeof ws_now?.root === "string" ? ws_now.root : null
+                set_workspace(ws_now)
                 // Re-read the open folders — and only those. This is the whole point of the lazy
                 // tree: poll cost tracks what is on screen, not the size of the workspace.
                 const open_dirs = [...expanded_ref.current]
@@ -1587,19 +2053,33 @@ const Land = () => {
             if (nb_response.status === 503 || nb_response.status === 504) {
                 const info = await nb_response.json().catch(() => ({}))
                 set_workspace_status((prev) => ({ kind: info.workspace_down ? "down" : "busy", since: prev?.since ?? Date.now(), detail: String(info.detail ?? "") }))
-                set_error(null)
+                set_poll_error(null)
                 return
             }
             if (!nb_response.ok) throw new Error(`notebooks request failed: ${nb_response.status}`)
             const running_now = await nb_response.json()
             set_workspace_status(null)
             set_running(running_now)
-            // on first load, show already-running notebooks as tabs (e.g. one passed via Pluto.run(notebook=…))
+            // On first load: the tabs that were open here last time — files, and the notebooks among
+            // them that are still running — with the same one in front. A workspace seen for the first
+            // time shows its running notebooks as tabs (e.g. one passed via Pluto.run(notebook=…)).
             if (!auto_tabbed.current) {
                 auto_tabbed.current = true
-                running_now.forEach((nb) => add_tab(nb.notebook_id, nb.path))
+                const saved = root_now == null ? null : restore_tabs(root_now)
+                if (saved == null) running_now.forEach((nb) => add_tab(nb.notebook_id, nb.path))
+                else {
+                    const still_running = new Set(running_now.map((nb) => nb.notebook_id))
+                    const known = new Set(saved.known)
+                    const restored = [
+                        ...saved.tabs.filter((t) => t.kind === "file" || still_running.has(t.id)),
+                        ...running_now.filter((nb) => !known.has(nb.notebook_id) && !saved.tabs.some((t) => t.id === nb.notebook_id)).map((nb) => ({ id: nb.notebook_id, path: nb.path, kind: "notebook" })),
+                    ]
+                    set_tabs(restored)
+                    set_active((a) => a ?? (restored.some((t) => t.id === saved.active) || (saved.active === "__terminal__" && tab_keys_ref.current.terminal_tab) ? saved.active : (restored[restored.length - 1]?.id ?? null)))
+                }
+                tabs_restored_for.current = root_now
             }
-            set_error(null)
+            set_poll_error(null)
         } catch (e) {
             // A rejected fetch (TypeError) means nothing answered — the server is gone, or for a
             // remote workspace the SSH tunnel is down, which is just what a closed laptop lid looks
@@ -1607,8 +2087,10 @@ const Land = () => {
             // rebuilding the tunnel, on the same local port, so this tab's URL stays valid. Wait for
             // it instead. A response that arrives and is bad (a thrown status) is still a real error.
             if (e?.name === "AbortError") set_workspace_status((prev) => ({ kind: "busy", since: prev?.since ?? Date.now(), detail: "no answer within 15 seconds" }))
-            else if (e instanceof TypeError) set_offline(true)
-            else set_error(String(e))
+            else if (e instanceof TypeError) {
+                unreachable.current += 1
+                if (unreachable.current >= 2) set_offline(true)
+            } else set_poll_error(String(e?.message ?? e))
         } finally {
             clearTimeout(deadline)
             refreshing.current = false
@@ -1668,7 +2150,13 @@ const Land = () => {
             try {
                 const r = await fetch("./ping", { cache: "no-store" })
                 if (r.ok) {
-                    window.location.reload()
+                    // Back. A reload revives every notebook frame's dead socket at once, but it also
+                    // throws away a file that has not been saved: then just carry on in place.
+                    const unsaved = [...file_dirty.values()].some(Boolean)
+                    unreachable.current = 0
+                    set_offline(false)
+                    if (!unsaved) window.location.reload()
+                    else refresh()
                     return
                 }
             } catch {}
@@ -1683,16 +2171,8 @@ const Land = () => {
     }, [offline])
 
     const start_sidebar_resize = useCallback((e) => {
-        e.preventDefault()
-        document.body.classList.add("resizing") // disables pointer events on the iframes so the drag isn't swallowed
-        const move = (ev) => set_sidebar_width(Math.max(180, Math.min(560, ev.clientX - 12)))
-        const up = () => {
-            document.body.classList.remove("resizing")
-            window.removeEventListener("pointermove", move)
-            window.removeEventListener("pointerup", up)
-        }
-        window.addEventListener("pointermove", move)
-        window.addEventListener("pointerup", up)
+        const left = e.currentTarget.parentElement.getBoundingClientRect().left
+        drag_resize(e, "x", (ev) => clamp(ev.clientX - left, 180, Math.min(560, window.innerWidth - 360)), set_sidebar_width)
     }, [])
 
     const open_notebook = useCallback(
@@ -1708,35 +2188,40 @@ const Land = () => {
         [add_tab, refresh]
     )
 
-    const new_notebook = useCallback(async () => {
-        if (workspace == null) return
-        const name = prompt("Notebook file name (created in the workspace):", "new notebook.jl")
-        if (name == null) return
-        try {
-            const id = await get_text("./new", { method: "POST" })
-            // "notes.plutojl" is already a notebook name — appending .jl would make "notes.plutojl.jl"
-            const newpath = `${workspace.root}/${has_notebook_extension(name) ? name : name + ".jl"}`
-            await get_text(`./move?id=${encodeURIComponent(id)}&newpath=${encodeURIComponent(newpath)}`, { method: "POST" })
-            add_tab(id, newpath)
-            refresh()
-        } catch (e) {
-            set_error(String(e))
-        }
-    }, [workspace, add_tab, refresh, has_notebook_extension])
+    /** Names already in a folder, as far as this page has seen it listed (the server checks again). */
+    const names_in = useCallback((dir) => new Set((dir === workspace?.root ? workspace?.entries : listings[dir])?.map((e) => e.name) ?? []), [workspace, listings])
 
     const close_tab = useCallback(async (id) => {
         if (id.startsWith("file:")) {
             const path = id.slice(5)
-            if (file_dirty.get(path) && !(await ask_confirm("This file has unsaved changes. Close anyway?", { action: "Close without saving", danger: true }))) return
+            if (file_dirty.get(path) && !(await ask_confirm(`Close ${basename(path)} without saving?\n\nIts unsaved changes will be lost.`, { action: "Close without saving", danger: true }))) return
             file_dirty.delete(path)
+            set_tab_dirty(path, false)
         }
         // closing a notebook tab does NOT shut down the notebook (JupyterHub semantics) — it keeps running, listed under "Running"
         set_tabs((tabs) => {
+            const at = tabs.findIndex((t) => t.id === id)
             const remaining = tabs.filter((t) => t.id !== id)
-            set_active((a) => (a === id ? (remaining.length > 0 ? remaining[remaining.length - 1].id : null) : a))
+            // the tab that slides into its place, as in a browser; the last one when it was the last
+            set_active((a) => (a === id ? (remaining[Math.min(at, remaining.length - 1)]?.id ?? null) : a))
             return remaining
         })
-    }, [])
+    }, [set_tab_dirty])
+
+    // What is in front has the keyboard, and its tab is in view. Without this a click on a file left
+    // the keys on the tree, and a chord that switched tabs from inside a notebook left them inside
+    // the notebook that had just been hidden.
+    useEffect(() => {
+        if (active == null) return
+        const frame = requestAnimationFrame(() => {
+            document.querySelector("#tabs .tab.active")?.scrollIntoView({ block: "nearest", inline: "nearest" })
+            if (document.querySelector("dialog[open], .land-menu.context") != null) return
+            const front = document.querySelector("#frames > .active")
+            if (front instanceof HTMLIFrameElement) front.contentWindow?.focus()
+            else front?.querySelector(".cm-content, .xterm-helper-textarea")?.focus()
+        })
+        return () => cancelAnimationFrame(frame)
+    }, [active])
 
     // A notebook frame asks to be closed: its session is gone (the editor's "Close tab"), or it
     // navigated to this hub and would otherwise render a whole Land inside the tab (see the bottom
@@ -1752,15 +2237,44 @@ const Land = () => {
         return () => window.removeEventListener("message", on_message)
     }, [close_tab])
 
+    /** Make a notebook or a file in `dir`, asking for its name. `kind` only decides what the dialog
+     *  proposes: a name with a notebook extension makes a notebook either way. */
     const create_in = useCallback(
-        async (dir) => {
-            const name = prompt(`New file in ${basename(dir)}/ — a name ending in .jl or .plutojl becomes a Pluto notebook:`, "notebook.jl")
-            if (name == null || name.trim() === "") return
-            const path = `${dir}/${name.trim()}`
+        async (dir, kind = "notebook") => {
+            let taken = names_in(dir)
+            if (workspace != null && dir !== workspace.root && listings[dir] == null) {
+                try {
+                    const { entries } = await get_json(`./api/v1/workspace/listing?path=${encodeURIComponent(dir)}`)
+                    taken = new Set(entries.map((e) => e.name))
+                } catch {}
+            }
+            const proposed = kind === "notebook" ? "notebook.jl" : ""
+            const typed = await ask_text({
+                title: kind === "notebook" ? `New notebook in ${basename(dir) || dir}` : `New file in ${basename(dir) || dir}`,
+                note: kind === "notebook" ? "" : "A name ending in .jl opens as a notebook.",
+                value: proposed,
+                select_to: proposed.includes(".") ? proposed.lastIndexOf(".") : null,
+                check: (v) => {
+                    if (/[\\/]/.test(v)) return "A name, not a path: pick the folder in the sidebar."
+                    const name = kind === "notebook" && !has_notebook_extension(v) ? `${v}.jl` : v
+                    return taken.has(name) ? `${name} already exists here.` : null
+                },
+            })
+            if (typed == null) return
+            const name = kind === "notebook" && !has_notebook_extension(typed) ? `${typed}.jl` : typed
+            // the folder's own separator: a Windows server lists `C:\ws\sub`
+            const sep = dir.includes("\\") && !dir.includes("/") ? "\\" : "/"
+            const path = `${dir}${dir.endsWith(sep) ? "" : sep}${name}`
             try {
-                if (has_notebook_extension(name.trim())) {
+                if (has_notebook_extension(name)) {
                     const id = await get_text("./new", { method: "POST" })
-                    await get_text(`./move?id=${encodeURIComponent(id)}&newpath=${encodeURIComponent(path)}`, { method: "POST" })
+                    try {
+                        await get_text(`./move?id=${encodeURIComponent(id)}&newpath=${encodeURIComponent(path)}`, { method: "POST" })
+                    } catch (e) {
+                        // it could not be put where it was asked for: do not leave it running somewhere else
+                        fetch(`./shutdown?id=${encodeURIComponent(id)}`, { method: "POST" }).catch(() => {})
+                        throw e
+                    }
                     add_tab(id, path)
                 } else {
                     await get_json(`./api/v1/file/new?path=${encodeURIComponent(path)}`, { method: "POST" })
@@ -1772,10 +2286,20 @@ const Land = () => {
                 else load_listing(dir)
                 refresh()
             } catch (e) {
-                set_error(String(e))
+                set_error(`${name} could not be created: ${e?.message ?? e}`)
             }
         },
-        [add_tab, open_file, refresh, toggle_dir, load_listing, workspace, has_notebook_extension]
+        [add_tab, open_file, refresh, toggle_dir, load_listing, workspace, has_notebook_extension, names_in, listings]
+    )
+    const create_menu = useCallback(
+        (anchor, dir) => {
+            const box = anchor.getBoundingClientRect()
+            open_menu(box.left, box.bottom + 2, [
+                { label: "New notebook…", icon: "i-notebook", run: () => create_in(dir, "notebook") },
+                { label: "New file…", icon: "i-file", run: () => create_in(dir, "file") },
+            ])
+        },
+        [create_in]
     )
 
     const delete_entry = useCallback(
@@ -1797,7 +2321,8 @@ const Land = () => {
 
     const shutdown_notebook = useCallback(
         async (id) => {
-            if (!(await ask_confirm("Shut down this notebook session? The file stays on disk; outputs are cached.", { action: "Shut down" }))) return
+            const nb = running.find((n) => n.notebook_id === id)
+            if (!(await ask_confirm(`Shut down ${nb ? basename(nb.path) : "this notebook"}?\n\nIts process stops. The file stays on disk and its outputs stay cached, so opening it again shows them.`, { action: "Shut down", danger: true }))) return
             try {
                 await get_text(`./shutdown?id=${encodeURIComponent(id)}`, { method: "POST" })
                 close_tab(id)
@@ -1806,7 +2331,7 @@ const Land = () => {
                 set_error(String(e))
             }
         },
-        [close_tab, refresh]
+        [close_tab, refresh, running]
     )
 
     // The terminal area can live in three places (its "dock"): bottom, right, or embedded as an
@@ -1819,48 +2344,94 @@ const Land = () => {
         if (next && terminal_dock === "tab") set_active("__terminal__")
         if (!next) set_active((a) => (a === "__terminal__" ? null : a))
     }, [terminal_open, terminal_dock])
+    toggle_terminal_ref.current = toggle_terminal
 
-    const cycle_dock = useCallback(() => {
-        const next = terminal_dock === "bottom" ? "right" : terminal_dock === "right" ? "tab" : "bottom"
-        if (next === "tab") {
-            set_terminal_open(true)
-            set_active("__terminal__")
-        } else if (terminal_dock === "tab") {
-            set_active((a) => (a === "__terminal__" ? null : a))
-        }
-        set_terminal_dock(next)
-    }, [terminal_dock])
+    /** Put the terminal at the bottom, at the right, or among the editor's tabs. */
+    const set_dock = useCallback(
+        (next) => {
+            if (next === terminal_dock) return
+            if (next === "tab") {
+                set_terminal_open(true)
+                set_active("__terminal__")
+            }
+            set_terminal_dock(next)
+        },
+        [terminal_dock]
+    )
+    // The places are a choice, not a cycle: pick one from a menu under the button.
+    const dock_menu = useCallback(
+        (anchor) => {
+            const box = anchor.getBoundingClientRect()
+            const place = (dock, label, icon) => ({ label: dock === terminal_dock ? `${label}  ✓` : label, icon, run: () => set_dock(dock) })
+            open_menu(box.right - 190, box.bottom + 4, [place("bottom", "Dock at the bottom", "i-dock-bottom"), place("right", "Dock at the right", "i-dock-right"), place("tab", "Show as a tab", "i-dock-tab")])
+        },
+        [terminal_dock, set_dock]
+    )
 
     // the terminals UI (a tab strip of terminals + their bodies); rendered either in the docked
     // panel or inside the editor "Terminal" tab. `shown` gates which shell is live/painted.
+    const shown_terminals = terminals_workspace.current === workspace?.root ? terminals : []
+    const hide_terminal = () => {
+        set_terminal_open(false)
+        set_active((a) => (a === "__terminal__" ? null : a))
+    }
+    // a shell that ends takes its tab with it; the last one takes the panel
+    const on_terminal_exit = useCallback(
+        (tid) => {
+            close_terminal(tid)
+            if (terminals.length <= 1) hide_terminal()
+        },
+        [close_terminal, terminals.length]
+    )
     const render_terminals = (shown) => html`
         <div class="terminal-tabs">
-            <div class="terminal-tab-scroller">
-                ${(terminals_workspace.current === workspace?.root ? terminals : []).map(
-                    (t) => html`<div class="tab terminal-tab ${t.tid === active_terminal ? "active" : ""}" key=${t.tid}>
-                        <button class="title" title=${t.label} onClick=${() => set_active_terminal(t.tid)}>
-                            <span class="tab-term-icon">⌨</span>${t.label}
+            <div class="terminal-tab-scroller" role="tablist">
+                ${shown_terminals.map(
+                    (t) => html`<div
+                        class="tab terminal-tab ${t.tid === active_terminal ? "active" : ""}"
+                        key=${t.tid}
+                        onAuxClick=${(e) => e.button === 1 && close_terminal(t.tid)}
+                    >
+                        <button class="title" role="tab" aria-selected=${t.tid === active_terminal} title=${t.label} onClick=${() => set_active_terminal(t.tid)}>
+                            <svg class="ico" aria-hidden="true"><use href="#i-terminal" /></svg><span class="tab-name">${t.label}</span>
                         </button>
-                        <button class="close" title="Close terminal" onClick=${() => close_terminal(t.tid)}>×</button>
+                        <button class="close" title="Close this terminal and end its shell" aria-label=${`Close ${t.label}`} onClick=${() => close_terminal(t.tid)}>
+                            <svg class="ico" aria-hidden="true"><use href="#i-close" /></svg>
+                        </button>
                     </div>`
                 )}
-                <button class="new-terminal-tab" title="New terminal" onClick=${() => new_terminal()}>
-                    <span class="nt-icon">⌨</span><span class="nt-plus">＋</span>
+                <button class="icon-button new-terminal-tab" title="New terminal" aria-label="New terminal" onClick=${() => new_terminal()}>
+                    <svg class="ico" aria-hidden="true"><use href="#i-add" /></svg>
                 </button>
             </div>
-            <button
-                class="terminal-scheme-toggle"
-                title=${terminal_scheme === "light" ? "Terminal colours: light — switch to dark" : "Terminal colours: dark — switch to light"}
-                aria-label="Toggle terminal colours"
-                onClick=${() => set_terminal_scheme((s) => (s === "light" ? "dark" : "light"))}
-            >
-                ${terminal_scheme === "light" ? "☀" : "☾"}
-            </button>
+            <div class="panel-actions">
+                <button
+                    class="icon-button terminal-scheme-toggle"
+                    title=${terminal_inverted ? "The terminal is the opposite of the page. Make it match" : `The terminal matches the page. Make it ${terminal_scheme === "light" ? "dark" : "light"}`}
+                    aria-label="Switch the terminal between light and dark"
+                    onClick=${() => set_terminal_inverted((v) => !v)}
+                >
+                    <${Ico} name=${terminal_scheme === "light" ? "i-sun" : "i-moon"} />
+                </button>
+                <button class="icon-button dock-toggle" title="Where the terminal sits" aria-label="Where the terminal sits" aria-haspopup="menu" onClick=${(e) => dock_menu(e.currentTarget)}>
+                    <${Ico} name=${terminal_dock === "bottom" ? "i-dock-bottom" : terminal_dock === "right" ? "i-dock-right" : "i-dock-tab"} />
+                </button>
+                <button class="icon-button" title="Hide the terminal (Ctrl+\`). Its shells keep running." aria-label="Hide the terminal" onClick=${hide_terminal}>
+                    <svg class="ico" aria-hidden="true"><use href="#i-close" /></svg>
+                </button>
+            </div>
         </div>
         <div class="terminal-bodies">
-            ${(terminals_workspace.current === workspace?.root ? terminals : []).map(
+            ${shown_terminals.map(
                 (t) => html`<div key=${t.tid} class="terminal-body ${t.tid === active_terminal ? "active" : ""}">
-                    <${TerminalView} tid=${t.tid} cwd=${workspace?.root} visible=${shown && t.tid === active_terminal} scheme=${terminal_scheme} notebook_env=${t.notebook_env} />
+                    <${TerminalView}
+                        tid=${t.tid}
+                        cwd=${t.cwd ?? workspace?.root}
+                        visible=${shown && t.tid === active_terminal}
+                        scheme=${terminal_scheme}
+                        notebook_env=${t.notebook_env}
+                        on_exit=${on_terminal_exit}
+                    />
                 </div>`
             )}
         </div>
@@ -1874,7 +2445,7 @@ const Land = () => {
                 hub
                     ? `Shut down the server for this workspace?\n\nIts running notebooks stop; this terminal, the launcher and other workspaces keep running.`
                     : "Shut down the SpaceStation server?\n\nRunning notebooks and the integrated terminal will stop. SSH remote servers keep running and can be reattached later.",
-                { action: "Shut down" }
+                { action: "Shut down", danger: true }
             ))
         )
             return
@@ -1915,6 +2486,75 @@ const Land = () => {
         set_error("Shutdown was requested, but the server is still responding — it may not have shut down.")
     }, [hub])
 
+    // The ⋯ menu in the sidebar's header. Whether the active notebook has an environment to open is
+    // asked when the menu is: a notebook gets one the first time it runs.
+    const open_header_menu = useCallback(
+        async (anchor) => {
+            const box = anchor.getBoundingClientRect()
+            const tab = active_notebook_tab || null
+            const env =
+                tab == null
+                    ? null
+                    : await Promise.race([
+                          get_json(`./api/v1/notebook/env?id=${encodeURIComponent(tab.id)}`).catch(() => null),
+                          new Promise((r) => setTimeout(() => r(null), 600)),
+                      ])
+            const scheme = get_color_scheme()
+            open_menu(box.left, box.bottom + 2, [
+                {
+                    label: tab == null ? "Open notebook environment in terminal" : `Open the environment of ${basename(tab.path)} in a terminal`,
+                    icon: "i-terminal",
+                    // no Pluto-managed environment: it has not run yet, or it activates its own with Pkg.activate
+                    disabled: env?.managed !== true,
+                    run: () => tab && new_terminal({ label: `env: ${basename(tab.path)}`, notebook_env: tab.id }),
+                },
+                "-",
+                ...SCHEMES.map((s) => ({ label: scheme === s.value ? `${s.label}  ✓` : s.label, icon: s.icon, run: () => set_color_scheme(s.value) })),
+                "-",
+                { label: "Launcher", icon: "i-home", run: go_home },
+                "-",
+                { label: hub ? "Shut down this workspace…" : "Shut down SpaceStation…", icon: "i-power", danger: true, run: shutdown_server },
+            ])
+        },
+        [active_notebook_tab, new_terminal, go_home, shutdown_server, hub]
+    )
+
+    const relative_path = (path) => {
+        const root = workspace?.root ?? ""
+        return root !== "" && path.startsWith(root) ? path.slice(root.length).replace(/^[\\/]+/, "") : path
+    }
+    const entry_menu = useCallback(
+        (e, entry) => {
+            e.preventDefault()
+            const nb = entry.type === "notebook" ? running.find((n) => n.path === entry.path) : null
+            const copy_items = [
+                { label: "Copy path", icon: "i-copy", run: () => copy_text(entry.path) },
+                { label: "Copy relative path", run: () => copy_text(relative_path(entry.path)) },
+            ]
+            open_menu(
+                e.clientX,
+                e.clientY,
+                entry.type === "dir"
+                    ? [
+                          { label: "New notebook…", icon: "i-notebook", run: () => create_in(entry.path, "notebook") },
+                          { label: "New file…", icon: "i-file", run: () => create_in(entry.path, "file") },
+                          { label: "Open in terminal", icon: "i-terminal", run: () => new_terminal({ label: entry.name, cwd: entry.path }) },
+                          "-",
+                          ...copy_items,
+                      ]
+                    : [
+                          { label: "Open", icon: "i-arrow", run: () => (entry.type === "notebook" ? open_notebook(entry.path) : open_file(entry.path)) },
+                          ...(nb == null ? [] : [{ label: "Shut down", icon: "i-stop", run: () => shutdown_notebook(nb.notebook_id) }]),
+                          "-",
+                          ...copy_items,
+                          "-",
+                          { label: "Delete…", icon: "i-trash", danger: true, run: () => delete_entry(entry) },
+                      ]
+            )
+        },
+        [running, workspace?.root, create_in, new_terminal, open_notebook, open_file, shutdown_notebook, delete_entry]
+    )
+
     // The opener is "homebase": it shows on first launch (no workspace) and on demand (the "open another
     // workspace" button). Picking a folder spawns a child server in a new tab — it never takes over this
     // tab — so the launcher persists as the place you see and manage every running workspace.
@@ -1922,198 +2562,250 @@ const Land = () => {
         return html`<${WorkspaceOpener} on_cancel=${no_workspace ? null : () => set_show_opener(false)} tunneled=${tunneled} />`
     }
 
+    const active_tab = tabs.find((t) => t.id === active)
+    const tree = {
+        on_toggle: toggle_dir,
+        on_open_notebook: open_notebook,
+        on_open_file: open_file,
+        on_create_menu: create_menu,
+        on_delete: delete_entry,
+        on_menu: entry_menu,
+        current_path: active_tab?.path ?? null,
+        running_paths: new Set(running.map((nb) => nb.path)),
+    }
+    const seconds_since = (t) => Math.max(1, Math.round((Date.now() - t) / 1000))
+
     return html`
         <div id="land">
             ${offline
                 ? html`<div class="reconnect-overlay" role="status" aria-live="polite">
                       <div class="reconnect-card">
-                          <span class="reconnect-spinner"></span>
+                          <span class="spinner"></span>
                           <div>
                               <b>Reconnecting…</b>
-                              <p>
-                                  Waiting for this workspace to come back. Notebooks and terminals on the server keep running — this page reloads
-                                  itself as soon as it can reach them again.
-                              </p>
+                              <p>Notebooks and terminals keep running on the server. This page reloads itself as soon as it can reach them again.</p>
                           </div>
                       </div>
                   </div>`
                 : null}
-            ${files_status != null && !offline
-                ? html`<div class="workspace-status busy" role="status" aria-live="polite" title=${files_status.detail}>
-                      <span>The filesystem that holds these files is not answering (${Math.max(1, Math.round((Date.now() - files_status.since) / 1000))}s) — the file list will catch up; the terminal and notebooks keep working.</span>
-                  </div>`
-                : null}
-            ${workspace_status != null && !offline
-                ? html`<div class="workspace-status ${workspace_status.kind}" role="status" aria-live="polite">
-                      ${workspace_status.kind === "down"
-                          ? html`<span>The server for this workspace stopped answering. Its notebooks are gone with it; the sidebar and terminal are fine.</span>
-                                <button onClick=${restart_workspace}>Restart workspace server</button>`
-                          : html`<span>The server for this workspace is busy (${Math.max(1, Math.round((Date.now() - workspace_status.since) / 1000))}s) — notebooks will catch up; the sidebar and terminal keep working.</span>`}
-                  </div>`
-                : null}
             ${sidebar_hidden
-                ? html`<button id="sidebar-reopen" title="Show sidebar" onClick=${() => set_sidebar_hidden(false)}>☰</button>`
-                : html`<aside style=${`width: ${sidebar_width}px`}>
-                <header class="bubble">
-                    <div class="header-row">
-                        <button class="land-logo-button" title="Back to homebase (open &amp; manage workspaces)" onClick=${go_home}>
-                            <img class="land-logo" src=${logo_url} alt="SpaceStation" />
-                        </button>
-                        <div class="header-text">
-                            <h1 title=${workspace?.root ?? ""}>Space<span class="land-accent">Station</span></h1>
-                            ${workspace?.root
-                                ? html`<p class="workspace-root" title=${workspace.root}>${basename(workspace.root) || workspace.root}</p>`
-                                : null}
-                        </div>
-                        <div class="header-buttons">
-                            <div class="header-menu" ref=${menu_ref}>
-                                <button class="header-button menu-button ${menu_open ? "active" : ""}" title="More actions" aria-haspopup="menu" aria-expanded=${menu_open} onClick=${() => set_menu_open((o) => !o)}><span class="menu-dots"></span></button>
-                                ${menu_open
-                                    ? html`<div class="header-menu-popover" role="menu">
-                                          <button
-                                              class="header-menu-item"
-                                              role="menuitem"
-                                              disabled=${!(active_notebook_tab && notebook_env?.id === active_notebook_tab.id && notebook_env.managed)}
-                                              title=${!active_notebook_tab
-                                                  ? "Open a notebook tab first"
-                                                  : notebook_env?.id !== active_notebook_tab.id
-                                                    ? "Checking the notebook's environment…"
-                                                    : notebook_env.managed
-                                                      ? `Open a terminal in this notebook's package environment. It runs:\n${notebook_env.command}`
-                                                      : "This notebook has no Pluto-managed environment yet: it has not run, or it activates its own with Pkg.activate"}
-                                              onClick=${() => {
-                                                  set_menu_open(false)
-                                                  if (active_notebook_tab) new_terminal({ label: `env: ${basename(active_notebook_tab.path)}`, notebook_env: active_notebook_tab.id })
-                                              }}
-                                          >
-                                              <span class="menu-icon terminal"></span>Open env in terminal
-                                          </button>
-                                          <button class="header-menu-item danger" role="menuitem" onClick=${() => {
-                                              set_menu_open(false)
-                                              shutdown_server()
-                                          }}><span class="menu-icon power"></span>Shut down server</button>
-                                      </div>`
-                                    : null}
-                            </div>
-                            <button class="header-button collapse-button" title="Hide sidebar" onClick=${() => set_sidebar_hidden(true)}><span class="collapse-icon"></span></button>
-                        </div>
-                    </div>
-                </header>
-                <section class="files bubble">
-                    <h2>
-                        Workspace
-                        ${workspace?.git == null
-                            ? null
-                            : html`<span
-                                  class="git-branch"
-                                  title=${workspace.git.detached ? `Detached HEAD at ${workspace.git.branch}` : `On branch ${workspace.git.branch}`}
-                              >
-                                  <span class="git-branch-icon"></span><span class="git-branch-name">${workspace.git.branch}</span>
-                              </span>`}
-                        ${workspace == null
-                            ? null
-                            : html`<button class="row-action h2-action" title="New notebook or file in the workspace root" onClick=${() => create_in(workspace.root)}>+</button>`}
-                    </h2>
-                    <ul class="tree">
-                        ${workspace == null
-                            ? null
-                            : workspace.entries.map(
-                                  (e) =>
-                                      html`<${FileEntry}
-                                          key=${e.path}
-                                          entry=${e}
-                                          listings=${listings}
-                                          expanded=${expanded}
-                                          on_toggle=${toggle_dir}
-                                          on_open_notebook=${open_notebook}
-                                          on_open_file=${open_file}
-                                          on_create_in=${create_in}
-                                          on_delete=${delete_entry}
-                                          depth=${0}
-                                      />`
-                              )}
-                    </ul>
-                </section>
-                <section class="running bubble">
-                    <h2>Running</h2>
-                    <ul>
-                        ${running.map(
-                            (nb) => html`<li>
-                                <button class="entry" title=${nb.path} onClick=${() => add_tab(nb.notebook_id, nb.path)}>
-                                    <span class="icon running-dot"></span>${basename(nb.path)}
-                                </button>
-                                <button class="shutdown" title="Shut down this notebook" onClick=${() => shutdown_notebook(nb.notebook_id)}>✕</button>
-                            </li>`
-                        )}
-                    </ul>
-                </section>
-                <footer>
-                    <button class="new-notebook" onClick=${new_notebook}>+ New notebook</button>
-                </footer>
-            </aside>`}
-            ${sidebar_hidden ? null : html`<div id="sidebar-resizer" onPointerDown=${start_sidebar_resize}></div>`}
+                ? null
+                : html`<aside class="island" aria-label="Workspace" style=${`width: ${sidebar_width}px`}>
+                      <header class="side-head">
+                          <button class="land-logo-button" title="Launcher: open and manage workspaces" aria-label="Launcher" onClick=${go_home}>
+                              <img class="land-logo" src=${logo_url} alt="" />
+                          </button>
+                          <span class="wordmark">Space<span class="land-accent">Station</span></span>
+                          <span class="head-buttons">
+                              <button class="icon-button menu-button" title="More" aria-label="More" aria-haspopup="menu" onClick=${(e) => open_header_menu(e.currentTarget)}>
+                                  <svg class="ico" aria-hidden="true"><use href="#i-more" /></svg>
+                              </button>
+                              <button class="icon-button collapse-button" title="Hide the sidebar" aria-label="Hide the sidebar" onClick=${() => set_sidebar_hidden(true)}>
+                                  <svg class="ico" aria-hidden="true"><use href="#i-sidebar" /></svg>
+                              </button>
+                          </span>
+                          ${workspace?.root
+                              ? html`<div class="side-where">
+                                    <button
+                                        class="where-line where-path"
+                                        title=${`${workspace.root}\nClick to copy the path`}
+                                        aria-label=${`Workspace folder ${workspace.root}. Copy the path`}
+                                        onClick=${() => {
+                                            copy_text(workspace.root)
+                                            set_path_copied(true)
+                                            setTimeout(() => set_path_copied(false), 1200)
+                                        }}
+                                    >
+                                        ${path_copied
+                                            ? html`<span class="where-name">Path copied</span>`
+                                            : html`<span class="where-prefix">${path_lead(workspace.root)}</span><span class="where-name">${basename(workspace.root) || workspace.root}</span>`}
+                                    </button>
+                                    ${workspace.git == null
+                                        ? null
+                                        : html`<span class="where-line where-branch" title=${workspace.git.detached ? `Detached HEAD at ${workspace.git.branch}` : `On branch ${workspace.git.branch}`}>
+                                              <svg class="ico" aria-hidden="true"><use href="#i-branch" /></svg><span class="where-text">${workspace.git.branch}</span>${workspace.git.detached
+                                                  ? html`<span class="git-detached">detached</span>`
+                                                  : null}
+                                          </span>`}
+                                </div>`
+                              : null}
+                      </header>
+                      <section class="files">
+                          <h2 class="section-label">
+                              Files
+                              ${workspace == null
+                                  ? null
+                                  : html`<span class="section-actions">
+                                        <button class="icon-button" title="New notebook or file" aria-label="New notebook or file" onClick=${(e) => create_menu(e.currentTarget, workspace.root)}>
+                                            <svg class="ico" aria-hidden="true"><use href="#i-add" /></svg>
+                                        </button>
+                                        <button class="icon-button" title="Read the files again" aria-label="Refresh the files" onClick=${() => refresh()}>
+                                            <svg class="ico" aria-hidden="true"><use href="#i-refresh" /></svg>
+                                        </button>
+                                    </span>`}
+                          </h2>
+                          <ul class="tree" onContextMenu=${(e) => workspace != null && e.target === e.currentTarget && entry_menu(e, { type: "dir", path: workspace.root, name: basename(workspace.root) })}>
+                              ${workspace == null
+                                  ? null
+                                  : workspace.entries.length === 0
+                                    ? html`<li><p class="tree-empty">This folder is empty.</p></li>`
+                                    : workspace.entries.map((e) => html`<${FileEntry} key=${e.path} entry=${e} listings=${listings} expanded=${expanded} tree=${tree} depth=${0} />`)}
+                          </ul>
+                      </section>
+                      ${running.length === 0
+                          ? null
+                          : html`<section class="running">
+                                <h2 class="section-label">Running <span class="count">${running.length}</span></h2>
+                                <ul>
+                                    ${running.map(
+                                        (nb) => html`<li key=${nb.notebook_id}>
+                                            <div class="entry-row">
+                                                <button class="entry" title=${nb.path} onClick=${() => add_tab(nb.notebook_id, nb.path)}>
+                                                    <span class="no-chevron"></span><span class="dot ok"></span><span class="entry-name">${basename(nb.path)}</span>
+                                                </button>
+                                                <button
+                                                    class="row-action danger shutdown"
+                                                    title="Shut down this notebook"
+                                                    aria-label=${`Shut down ${basename(nb.path)}`}
+                                                    onClick=${() => shutdown_notebook(nb.notebook_id)}
+                                                >
+                                                    <svg class="ico" aria-hidden="true"><use href="#i-stop" /></svg>
+                                                </button>
+                                            </div>
+                                        </li>`
+                                    )}
+                                </ul>
+                            </section>`}
+                  </aside>`}
+            ${sidebar_hidden
+                ? null
+                : html`<div
+                      id="sidebar-resizer"
+                      class="resizer col"
+                      role="separator"
+                      aria-orientation="vertical"
+                      title="Drag to resize. Double-click to reset."
+                      onPointerDown=${start_sidebar_resize}
+                      onDblClick=${() => set_sidebar_width(SIDEBAR_WIDTH)}
+                  ></div>`}
             <main>
-                <div class="main-split ${terminal_dock}">
-                    <div class="editor-card">
+                <div class="main-split dock-${terminal_dock}" ref=${split_ref}>
+                    <div class="editor-card island">
                         <nav id="tabs">
-                            <div class="tab-scroller">
+                            ${sidebar_hidden
+                                ? html`<div class="strip-lead">
+                                      <button id="sidebar-reopen" class="icon-button" title="Show the sidebar" aria-label="Show the sidebar" onClick=${() => set_sidebar_hidden(false)}>
+                                          <svg class="ico" aria-hidden="true"><use href="#i-sidebar" /></svg>
+                                      </button>
+                                  </div>`
+                                : null}
+                            <div
+                                class="tab-scroller"
+                                role="tablist"
+                                onWheel=${(e) => {
+                                    // a wheel that only goes up and down still moves along the strip
+                                    if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) e.currentTarget.scrollLeft += e.deltaY
+                                }}
+                            >
                                 ${tabs.map(
-                                    (t) => html`<div class="tab ${t.id === active ? "active" : ""}" key=${t.id}>
-                                        <button class="title" title=${t.path} onClick=${() => set_active(t.id)}>${basename(t.path)}</button>
-                                        <button class="close" title="Close tab (notebook keeps running)" onClick=${() => close_tab(t.id)}>×</button>
+                                    (t) => html`<div
+                                        class="tab ${t.kind === "file" ? "file" : "notebook"} ${t.id === active ? "active" : ""} ${t.kind === "file" && dirty_tabs.has(t.path) ? "dirty" : ""}"
+                                        key=${t.id}
+                                        onMouseDown=${(e) => e.button === 1 && e.preventDefault()}
+                                        onAuxClick=${(e) => e.button === 1 && close_tab(t.id)}
+                                    >
+                                        <button class="title" role="tab" aria-selected=${t.id === active} title=${t.path} onClick=${() => set_active(t.id)}>
+                                            <${Ico} name=${t.kind === "file" ? file_icon(basename(t.path)) : "i-notebook"} /><span class="tab-name">${basename(t.path)}</span>
+                                        </button>
+                                        <button
+                                            class="close"
+                                            title=${t.kind === "file" ? "Close" : "Close the tab. The notebook keeps running."}
+                                            aria-label=${`Close ${basename(t.path)}`}
+                                            onClick=${() => close_tab(t.id)}
+                                        >
+                                            <svg class="ico" aria-hidden="true"><use href="#i-close" /></svg>
+                                        </button>
                                     </div>`
                                 )}
                                 ${tab_mode
                                     ? html`<div class="tab terminal-tab ${active === "__terminal__" ? "active" : ""}" key="__terminal__">
-                                          <button class="title" title="Terminal" onClick=${() => set_active("__terminal__")}>
-                                              <span class="tab-term-icon">⌨</span>Terminal
+                                          <button class="title" role="tab" aria-selected=${active === "__terminal__"} title="Terminal" onClick=${() => set_active("__terminal__")}>
+                                              <svg class="ico" aria-hidden="true"><use href="#i-terminal" /></svg><span class="tab-name">Terminal</span>
                                           </button>
-                                          <button class="close" title="Hide terminal" onClick=${() => {
-        set_terminal_open(false)
-        set_active((a) => (a === "__terminal__" ? null : a))
-    }}>×</button>
+                                          <button class="close" title="Hide the terminal. Its shells keep running." aria-label="Hide the terminal" onClick=${hide_terminal}>
+                                              <svg class="ico" aria-hidden="true"><use href="#i-close" /></svg>
+                                          </button>
                                       </div>`
                                     : null}
                             </div>
-                            <button class="terminal-toggle ${terminal_open ? "active" : ""}" title="Toggle the integrated terminal (runs in the workspace folder)" onClick=${toggle_terminal}>⌨ Terminal</button>
-                            ${terminal_open
-                                ? html`<button
-                                      class="terminal-toggle dock-toggle"
-                                      title=${terminal_dock === "bottom"
-                                          ? "Move terminal to the right"
-                                          : terminal_dock === "right"
-                                            ? "Embed terminal as an editor tab"
-                                            : "Dock terminal to the bottom"}
-                                      onClick=${cycle_dock}
-                                  >
-                                      ${terminal_dock === "bottom" ? "◨" : terminal_dock === "right" ? "▭" : "⬓"}
-                                  </button>`
-                                : null}
+                            ${tab_mode
+                                ? null
+                                : html`<div class="tab-actions">
+                                <button
+                                    class="terminal-toggle ${terminal_open ? "active" : ""}"
+                                    title="Show or hide the terminal (Ctrl+\`)"
+                                    aria-pressed=${terminal_open}
+                                    onClick=${toggle_terminal}
+                                >
+                                    <svg class="ico" aria-hidden="true"><use href="#i-terminal" /></svg>Terminal
+                                </button>
+                            </div>`}
                         </nav>
+                        ${files_status != null && !offline
+                            ? html`<div class="workspace-status busy" role="status" aria-live="polite" title=${files_status.detail}>
+                                  <span class="spinner"></span>
+                                  <span class="text"
+                                      >The disk these files are on is not answering (${seconds_since(files_status.since)}s). The file list will catch up; notebooks and the
+                                      terminal keep working.</span
+                                  >
+                              </div>`
+                            : null}
+                        ${workspace_status != null && !offline
+                            ? html`<div class="workspace-status ${workspace_status.kind}" role="status" aria-live="polite">
+                                  ${workspace_status.kind === "down"
+                                      ? html`<svg class="ico" aria-hidden="true"><use href="#i-alert" /></svg>
+                                            <span class="text">The server for this workspace stopped, and its notebooks with it. The files and the terminal are fine.</span>
+                                            <button class="text-button primary" onClick=${restart_workspace}>Start it again</button>`
+                                      : html`<span class="spinner"></span>
+                                            <span class="text"
+                                                >The server for this workspace is busy (${seconds_since(workspace_status.since)}s). Notebooks will catch up; the files and the
+                                                terminal keep working.</span
+                                            >`}
+                              </div>`
+                            : null}
                         <div id="frames">
                             ${tabs.map((t) =>
                                 t.kind === "file"
                                     ? html`<div key=${t.id} class="pane ${t.id === active ? "active" : ""}">
-                                          <${FileEditorPane} path=${t.path} visible=${t.id === active} />
+                                          <${FileEditorPane} path=${t.path} label=${relative_path(t.path)} visible=${t.id === active} on_dirty=${set_tab_dirty} />
                                       </div>`
                                     : // every notebook tab is the stock Pluto editor; iframes stay mounted so switching tabs never loses state
                                       html`<iframe
                                           key=${t.id}
                                           data-tab-id=${t.id}
+                                          title=${basename(t.path)}
                                           src=${`./edit?id=${t.id}`}
                                           class=${t.id === active ? "active" : ""}
                                           onLoad=${(/** @type {Event} */ e) => attach_tab_keys(/** @type {HTMLIFrameElement} */ (e.target).contentWindow)}
                                       ></iframe>`
                             )}
                             ${tab_mode
-                                ? html`<div class="pane terminal-area-pane ${active === "__terminal__" ? "active" : ""}">
+                                ? html`<div class="pane terminal-area-pane terminal-surface scheme-${terminal_scheme} ${active === "__terminal__" ? "active" : ""}">
                                       ${render_terminals(tab_mode && active === "__terminal__")}
                                   </div>`
                                 : null}
-                            ${tabs.length === 0 && active !== "__terminal__"
+                            ${active_tab == null && active !== "__terminal__"
                                 ? html`<div class="empty-state">
-                                      <p>Open a notebook from the workspace on the left, or create a new one.</p>
-                                      <p class="hint">Agents can work here too: edit any notebook file, or use <code>pluto-collab</code>.</p>
+                                      <img src=${logo_url} alt="" />
+                                      <p class="lede">Nothing open yet</p>
+                                      <p>Open a notebook or a file from the sidebar, or start a new one.</p>
+                                      ${workspace == null
+                                          ? null
+                                          : html`<div class="empty-actions">
+                                                <button class="text-button primary" onClick=${() => create_in(workspace.root, "notebook")}>New notebook</button>
+                                                ${terminal_open ? null : html`<button class="text-button" onClick=${toggle_terminal}>Open the terminal</button>`}
+                                            </div>`}
+                                      <p class="hint">Coding agents can work here too: they edit a notebook's file, and run what changed with <code>pluto-collab</code>.</p>
                                   </div>`
                                 : null}
                         </div>
@@ -2122,12 +2814,17 @@ const Land = () => {
                         ? html`
                               <div
                                   id="terminal-resizer"
+                                  class="resizer ${terminal_dock === "bottom" ? "row" : "col"}"
+                                  role="separator"
+                                  aria-orientation=${terminal_dock === "bottom" ? "horizontal" : "vertical"}
+                                  title="Drag to resize. Double-click to reset."
                                   style=${terminal_open && terminal_dock !== "tab" ? "" : "display: none"}
                                   onPointerDown=${start_terminal_resize}
+                                  onDblClick=${reset_terminal_size}
                               ></div>
                               <div
                                   id="terminal-panel"
-                                  class="bubble"
+                                  class="island terminal-surface scheme-${terminal_scheme}"
                                   style=${terminal_open && terminal_dock !== "tab"
                                       ? terminal_dock === "bottom"
                                           ? `height: ${terminal_height}px`
@@ -2140,7 +2837,15 @@ const Land = () => {
                         : null}
                 </div>
             </main>
-            ${error == null ? null : html`<div id="land-error">${error}</div>`}
+            ${(error ?? poll_error) == null
+                ? null
+                : html`<div class="land-toasts">
+                      <div class="land-toast" role="alert">
+                          <svg class="ico" aria-hidden="true"><use href="#i-alert" /></svg>
+                          <p>${error ?? poll_error}</p>
+                          <button class="icon-button" title="Dismiss" aria-label="Dismiss" onClick=${() => (set_error(null), set_poll_error(null))}><svg class="ico" aria-hidden="true"><use href="#i-close" /></svg></button>
+                      </div>
+                  </div>`}
         </div>
     `
 }
@@ -2157,4 +2862,7 @@ const framed_by_land = (() => {
     }
 })()
 if (framed_by_land) window.parent.postMessage({ type: "spacestation:close-notebook-tab" }, location.origin)
-else render(html`<${Land} />`, document.querySelector("#land-app"))
+else {
+    mount_icons()
+    render(html`<${Land} />`, document.querySelector("#land-app"))
+}

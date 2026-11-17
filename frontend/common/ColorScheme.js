@@ -19,6 +19,13 @@ if (seed === "light" || seed === "dark" || seed === "system") {
     try {
         localStorage.setItem(KEY, seed)
     } catch (e) {}
+    // A seed is applied once and then taken out of the address. Left there, every reload wrote it
+    // back over whatever had been chosen since: pick light, refresh, and the page was dark again.
+    try {
+        const url = new URL(window.location.href)
+        url.searchParams.delete("scheme")
+        window.history.replaceState(window.history.state, "", url)
+    } catch (e) {}
 }
 
 export const get_color_scheme = () => {
@@ -87,6 +94,13 @@ const apply = (scheme) => {
     // (invisible buttons, washed-out logs). The color-scheme PROPERTY on :root overrides the
     // meta and pins the UA side too.
     document.documentElement.style.colorScheme = scheme === "system" ? "" : scheme
+    // anything on the page that shows or follows the choice (the control's label, the terminal).
+    // After this turn of the event loop, so the stylesheets' rules have been rewritten by then.
+    setTimeout(() => {
+        try {
+            window.dispatchEvent(new Event("spacestation:scheme"))
+        } catch (e) {}
+    }, 0)
     // apply() re-runs constantly (new stylesheets arrive with cell output) — only nudge the
     // scroller when the scheme actually changed, or it would flicker on every mutation.
     if (last_applied !== scheme) {

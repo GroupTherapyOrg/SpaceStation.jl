@@ -129,3 +129,22 @@ import SpaceStation as Pluto
         @test startswith(read(`bash $runtime /no/such/julia /tmp`, String), "NORUNTIME")        # a refusal is an answer, never an error
     end
 end
+
+# `spacestation` starts its hub as a second process. That process is where terminals, SSH tunnels and
+# workspace servers come from, so it has to have the environment the command was typed in: it once
+# got `SPACESTATION_HUB=1` and nothing else (no PATH, no HOME, no SSH_AUTH_SOCK, no LANG), and its
+# output, the address included, went nowhere.
+@testset "The hub runs in the environment the command was run in" begin
+    unwrap(c) = c isa Cmd ? c : unwrap(c.cmd)
+    redirects(c) = c isa Cmd ? Int[] : push!(redirects(c.cmd), c.stream_no)
+    withenv("SPACESTATION_TEST_MARKER" => "kept", "SPACESTATION_HUB" => nothing) do
+        command = Pluto._hub_process_command(["--no-browser", "some folder"])
+        cmd = unwrap(command)
+        @test cmd.env !== nothing
+        @test "SPACESTATION_HUB=1" in cmd.env                                    # the marker…
+        @test "SPACESTATION_TEST_MARKER=kept" in cmd.env                         # …added to what was there
+        @test any(startswith("PATH="), cmd.env)
+        @test cmd.exec[end-2:end] == ["--", "--no-browser", "some folder"]
+        @test sort(redirects(command)) == [0, 1, 2]                              # its output is this command's
+    end
+end

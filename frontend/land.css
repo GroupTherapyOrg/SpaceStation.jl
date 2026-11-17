@@ -1,18 +1,53 @@
-/* SpaceStation hub shell. Layout + geometry only — all colors come from Pluto's theme
-   variables (themes/light.css + themes/dark.css), so the hub matches the editor
-   automatically in light and dark mode.
+/* SpaceStation shell: the workspace (sidebar, tabs, terminal) and the launcher.
 
-   Design language: floating rounded "bubble" cards (the welcome page's card idiom:
-   soft shadow + generous border-radius), pill-shaped entries and tabs. */
+   Three parents. From an Apple TV home screen: calm, a lot of room, one tray of uniform tiles, a
+   focus you cannot miss, few controls. From the islands editor themes: every pane a rounded island
+   with a glass edge, floating on a canvas with one gap. From Pluto: cream paper, the heavy sans
+   wordmark, the pill with a coloured ring, Julia's three colours meaning what they mean.
+
+   One system for both pages, four levels:
+     canvas   the page                               --land-canvas (+ a faint wash of colour)
+     island   a pane, a tray, a panel: `.island`     one surface, one radius, one glass edge
+     raised   a tile, the open tab, a button         --land-raised-bg + --land-raised-shadow
+     floating menus, dialogs, notices                --land-shadow
+   and one way to say "this one": a 2px ring in the accent colour (the open tab, the focused tile,
+   the main button, keyboard focus).
+
+   Colours are the `--land-*` tokens in themes/light.css and themes/dark.css. */
+
+@import url("./fonts/juliamono.css");
+
+:root {
+    /* editor.css defines this for notebooks; this page does not load editor.css */
+    --julia-mono-font-stack: JuliaMono, ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    --land-ui-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+    /* spacing: multiples of 4 */
+    --land-gap: 10px; /* between islands, and between them and the window: room for their shadows */
+    --land-pad: 12px; /* an island's inner edge: where its labels and icons start */
+    --land-row: 28px; /* a row in the tree, a list, a menu */
+    --land-strip: 44px; /* the tab strip */
+    /* radii, one per level */
+    --land-island-radius: 22px;
+    --land-tile-radius: 14px; /* raised tiles, floating menus, dialogs */
+    --land-radius: 9px; /* rows, tabs, inputs */
+    --land-ring: inset 0 0 0 2px var(--land-accent-soft);
+    --land-ease: cubic-bezier(0.3, 1.3, 0.5, 1); /* a small overshoot, as Pluto's own popups have */
+}
 
 html,
 body {
     margin: 0;
     padding: 0;
     height: 100%;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
-    background-color: var(--main-bg-color);
-    color: var(--pluto-output-color);
+    font-family: var(--land-ui-font);
+    font-size: 13px;
+    line-height: 1.4;
+    background-color: var(--land-canvas);
+    background-image: var(--land-canvas-glow);
+    background-attachment: fixed;
+    color: var(--land-fg);
+    -webkit-font-smoothing: antialiased;
+    scrollbar-color: var(--land-border-strong) transparent;
 }
 
 #land-app,
@@ -20,292 +55,538 @@ body {
     height: 100%;
 }
 
+button,
+input {
+    font: inherit;
+    color: inherit;
+}
+
+button {
+    cursor: pointer;
+}
+
+:focus {
+    outline: none;
+}
+
+:focus-visible {
+    outline: 2px solid var(--land-accent);
+    outline-offset: -2px;
+    border-radius: var(--land-radius);
+}
+
+/* ---- icons: symbols from the sprite in common/Icons.js ---- */
+
+.ico {
+    display: inline-block;
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke-width: var(--ico-w, 1.2);
+    overflow: visible;
+}
+/* A file's kind is one of four hues, from the same tokens as everything else. */
+svg.ico.k-code {
+    color: var(--land-accent);
+}
+svg.ico.k-doc {
+    color: var(--land-julia-purple);
+}
+svg.ico.k-config {
+    color: var(--land-warn);
+}
+svg.ico.k-data {
+    color: var(--land-julia-green);
+}
+svg.ico.k-quiet {
+    color: var(--land-faint);
+}
+svg.ico.k-plain,
+svg.ico.k-folder {
+    color: var(--land-muted);
+}
+svg.ico.k-folder {
+    fill: color-mix(in srgb, currentColor 14%, transparent);
+}
+
+/* ---- controls shared by every surface ---- */
+
+.icon-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    border: none;
+    border-radius: var(--land-radius);
+    background: none;
+    color: var(--land-muted);
+    transition: background-color 0.12s ease-out, color 0.12s ease-out;
+}
+.icon-button:hover,
+.icon-button.active {
+    background-color: var(--land-hover);
+    color: var(--land-fg);
+}
+.icon-button:active {
+    background-color: var(--land-active);
+}
+.icon-button.danger:hover {
+    background-color: var(--land-danger-bg);
+    color: var(--land-danger);
+}
+.icon-button:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+.text-button {
+    flex-shrink: 0;
+    height: 28px;
+    padding: 0 13px;
+    border: none;
+    border-radius: 999px;
+    background-color: var(--land-hover);
+    color: var(--land-fg);
+    font-weight: 600;
+    white-space: nowrap;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: background-color 0.12s ease-out, box-shadow 0.12s ease-out, transform 0.16s var(--land-ease);
+}
+.text-button:focus-visible {
+    outline-offset: 2px;
+}
+.text-button:hover {
+    background-color: var(--land-active);
+}
+.text-button.primary {
+    background-color: var(--land-raised-bg);
+    color: var(--land-fg);
+    box-shadow: var(--land-ring), var(--land-lift);
+}
+.text-button.primary:hover {
+    background-color: var(--land-raised-bg);
+    box-shadow: inset 0 0 0 2px var(--land-accent), var(--land-lift);
+    transform: translateY(-1px);
+}
+.text-button.danger {
+    background-color: var(--land-danger-bg);
+    color: var(--land-danger);
+}
+.text-button.quiet {
+    background: none;
+    color: var(--land-muted);
+}
+.text-button.quiet:hover {
+    background-color: var(--land-hover);
+    color: var(--land-fg);
+}
+.text-button:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+.dot {
+    display: inline-block;
+    flex-shrink: 0;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background-color: var(--land-faint);
+}
+.dot.ok {
+    background-color: var(--land-ok);
+}
+.dot.bad {
+    background-color: var(--land-danger);
+}
+.dot.warn {
+    background-color: var(--land-warn);
+}
+
+.spinner {
+    display: inline-block;
+    flex-shrink: 0;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 2px solid var(--land-border-strong);
+    border-top-color: var(--land-accent);
+    animation: land-spin 0.8s linear infinite;
+}
+@keyframes land-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+@media (prefers-reduced-motion: reduce) {
+    .spinner {
+        animation-duration: 2.4s;
+    }
+}
+
+/* ---- the workspace: sidebar | editor (| terminal) ---- */
+
 #land {
     display: flex;
-    gap: 0.75rem;
-    padding: 0.75rem;
+    padding: var(--land-gap);
     box-sizing: border-box;
 }
-
-/* ---- sidebar: a stack of bubble cards ---- */
-
-#land > aside {
-    width: 290px; /* overridden inline by the resizer */
-    flex-shrink: 0;
+/* An island: one surface, one radius, a glass edge. Its children are clipped to its corners, so
+   whatever fills it (a notebook, a terminal) is the island's own shape. */
+.island {
+    background: var(--land-island-bg);
+    -webkit-backdrop-filter: blur(22px) saturate(1.5);
+    backdrop-filter: blur(22px) saturate(1.5);
+    border-radius: var(--land-island-radius);
+    box-shadow: var(--land-glass);
+    overflow: hidden;
+}
+/* The one label style: what a group of things is. Small, spaced capitals, as on a tv home screen. */
+.section-label {
     display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-    /* never scroll the column itself — that clips the cards' rings and shadows.
-       The tree card scrolls internally; the running list has its own cap. */
-    overflow: visible;
-    min-height: 0;
+    align-items: center;
+    gap: 6px;
+    margin: 0;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--land-muted);
 }
 
-#land > aside > header,
-#land > aside > section.running,
-#land > aside > footer {
-    flex-shrink: 0;
+/* The wordmark, as Pluto writes its own name: heavy sans, the second half stepping back. */
+.wordmark {
+    font-weight: 800;
+    letter-spacing: -0.015em;
+    white-space: nowrap;
 }
-
-#land section.running ul {
-    max-height: 9rem;
-    overflow-y: auto;
-}
-
-#sidebar-resizer {
-    width: 6px;
-    margin: 0 -0.45rem; /* sit inside the flex gap */
-    flex-shrink: 0;
-    cursor: col-resize;
-    border-radius: 1000px;
-    transition: background-color 0.1s linear;
-}
-
-#sidebar-resizer:hover {
-    background-color: var(--cm-color-builtin, #5e7be1);
+.wordmark .land-accent {
     opacity: 0.5;
 }
 
-/* while dragging, don't let the editor iframes swallow pointer events */
+#land > aside {
+    width: 260px; /* overridden inline by the resizer */
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+/* The gap between two islands is the handle that resizes them: a pill shows in it under the
+   pointer, the way a scrollbar thumb does. */
+.resizer {
+    position: relative;
+    flex-shrink: 0;
+    z-index: 5;
+    touch-action: none;
+}
+.resizer.col {
+    width: var(--land-gap);
+    cursor: col-resize;
+}
+.resizer.row {
+    height: var(--land-gap);
+    cursor: row-resize;
+}
+.resizer::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    border-radius: 999px;
+    background-color: var(--land-accent);
+    opacity: 0;
+    transition: opacity 0.14s ease-out 0.05s;
+}
+.resizer.col::after {
+    width: 4px;
+    height: 48px;
+}
+.resizer.row::after {
+    width: 48px;
+    height: 4px;
+}
+.resizer:hover::after,
+.resizer.dragging::after {
+    opacity: 0.8;
+}
+
+/* while dragging, the notebook frames and the terminal must not swallow the pointer */
 body.resizing,
 body.resizing * {
     cursor: col-resize !important;
+    user-select: none;
 }
-
-body.resizing #frames iframe {
+body.resizing-v,
+body.resizing-v * {
+    cursor: row-resize !important;
+    user-select: none;
+}
+body.resizing #frames iframe,
+body.resizing-v #frames iframe,
+body.resizing .terminal-host,
+body.resizing-v .terminal-host {
     pointer-events: none;
 }
 
-#land .header-row {
+/* ---- sidebar ---- */
+
+/* Which workspace this is. Two edges, shared with everything below it in the sidebar: the logo,
+   section labels and tree icons start at --land-pad; the wordmark, the workspace's name, its path
+   and its branch all start on the line the tree's names start on. */
+.side-head {
+    position: relative;
+    display: grid;
+    grid-template-columns: 28px minmax(0, 1fr) auto;
+    column-gap: 10px;
+    align-items: center;
+    flex-shrink: 0;
+    margin-bottom: 6px;
+    padding: 14px 8px 13px var(--land-pad);
+    box-sizing: border-box;
+    border-bottom: 1px solid var(--land-border);
+}
+.side-head .head-buttons {
     display: flex;
-    align-items: center; /* logo and buttons centre against the wordmark block, which is two lines
-                            tall whenever a workspace is open (name under "SpaceStation") */
-    gap: 0.45rem;
+    gap: 0;
 }
-
-#land .header-text {
-    flex: 1;
-    min-width: 0; /* must be able to shrink, or the buttons get pushed out of the card */
+/* quiet until the sidebar is in use */
+.side-head .head-buttons .icon-button {
+    opacity: 0.55;
+    transition: opacity 0.2s ease-out, background-color 0.12s ease-out, color 0.12s ease-out;
 }
-
-#land .header-text h1 {
+#land > aside:hover .head-buttons .icon-button,
+.side-head .head-buttons .icon-button:focus-visible {
+    opacity: 1;
+}
+.side-head .wordmark {
+    font-size: 16px;
+    line-height: 28px;
+}
+/* Where this workspace is: one line, the folder's own name standing out of its path; and under it,
+   the branch. Both start on the text edge; the branch's mark hangs in the icon column. */
+.side-where {
+    grid-column: 2 / -1;
+    min-width: 0;
+    margin-top: 5px;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+    font-size: 12.5px;
+    line-height: 18px;
+    color: var(--land-muted);
+}
+.side-where .where-line {
+    display: flex;
+    align-items: center;
+    max-width: 100%;
+    min-width: 0;
+}
+.side-where .where-path {
+    margin: -1px 0 -1px -6px;
+    padding: 1px 6px;
+    border: none;
+    border-radius: 6px;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+}
+.side-where .where-path:hover {
+    background-color: var(--land-hover);
+}
+.side-where .where-prefix {
+    flex: 0 1 auto;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.side-where .where-name {
+    flex: 0 0 auto;
+    max-width: 100%;
+    color: var(--land-fg);
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.side-where .where-branch {
+    gap: 6px;
+}
+.side-where .where-branch .ico {
+    width: 13px;
+    height: 13px;
+    flex-shrink: 0;
+    margin-left: -19px;
+}
+.side-where .where-text {
+    min-width: 0;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
+.git-detached {
+    flex-shrink: 0;
+    padding: 0 5px;
+    border-radius: 999px;
+    background-color: var(--land-warn-bg);
+    color: var(--land-warn);
+    font-family: var(--land-ui-font);
+    font-size: 10.5px;
+}
+
 .land-logo {
-    width: 2.15rem;
-    height: 2.15rem;
-    flex-shrink: 0;
     display: block;
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
 }
 
-/* the logo doubles as a "back to homebase" button */
+/* the logo is the way back to the launcher */
 .land-logo-button {
-    border: none;
-    background: none;
-    padding: 0;
+    display: inline-flex;
+    flex-shrink: 0;
     margin: 0;
-    flex-shrink: 0;
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    border-radius: 0.5rem;
-    transition: transform 0.08s linear, opacity 0.08s linear;
-}
-
-.land-logo-button:hover {
-    transform: translateY(-1px);
-    opacity: 0.85;
-}
-
-#land .header-buttons {
-    display: flex;
-    flex-shrink: 0;
-    gap: 0.1rem;
-}
-
-#land .header-button {
+    padding: 0;
+    border: none;
+    border-radius: var(--land-radius);
     background: none;
-    border: none;
-    color: inherit;
-    font: inherit;
-    opacity: 0.5;
-    cursor: pointer;
-    padding: 0.15rem 0.35rem;
-    border-radius: 1000px;
+}
+.land-logo-button {
+    transition: transform 0.18s var(--land-ease);
+}
+.land-logo-button:hover {
+    transform: translateY(-1px) rotate(-6deg);
 }
 
-#land .header-button:hover {
-    opacity: 1;
-    background-color: var(--main-bg-color);
-}
 
-/* sidebar collapse: a "tuck the sidebar away" panel icon (a framed panel with its left rail filled) —
-   UI furniture, not an arrow. Drawn as a mask so it inherits the button's themed color in light + dark. */
-#land .collapse-button {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-}
-#land .collapse-button .collapse-icon {
-    width: 1.2em;
-    height: 1.2em;
-    background-color: currentColor;
-    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='3.25' y='5.25' width='17.5' height='13.5' rx='2.75' fill='none' stroke='black' stroke-width='1.7'/%3E%3Cline x1='9.5' y1='5.25' x2='9.5' y2='18.75' stroke='black' stroke-width='1.6'/%3E%3Crect x='4' y='6' width='4.75' height='12' rx='1' fill='black' opacity='0.4'/%3E%3C/svg%3E") center / contain no-repeat;
-    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='3.25' y='5.25' width='17.5' height='13.5' rx='2.75' fill='none' stroke='black' stroke-width='1.7'/%3E%3Cline x1='9.5' y1='5.25' x2='9.5' y2='18.75' stroke='black' stroke-width='1.6'/%3E%3Crect x='4' y='6' width='4.75' height='12' rx='1' fill='black' opacity='0.4'/%3E%3C/svg%3E") center / contain no-repeat;
-}
-
-#sidebar-reopen {
-    align-self: flex-start;
-    flex-shrink: 0;
-    background-color: var(--code-background);
-    border: none;
-    color: inherit;
-    font: inherit;
-    padding: 0.35rem 0.7rem;
-    border-radius: 1000px;
-    box-shadow: 0 0 0 1px var(--rule-color), -2px 5px 14px 0px #00000022;
-    cursor: pointer;
-}
-
-#sidebar-reopen:hover {
-    box-shadow: 0 0 0 1px var(--rule-color), -2px 6px 16px 0px #00000030;
-}
-
-/* header overflow menu: the ••• trigger is a plain .header-button (identical base to the collapse button);
-   the popover reuses Pluto's exact bubble tokens (--code-background fill, 1px --rule-color ring, soft shadow). */
 .header-menu {
     display: inline-flex;
 }
 
-#land .menu-button {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-}
-#land .menu-button.active {
-    opacity: 1;
-    background-color: var(--main-bg-color);
-}
-#land .menu-button .menu-dots {
-    width: 1.3em;
-    height: 1.3em;
-    /* the circled ellipsis — same glyph Pluto uses for a cell's actions menu (editor.css), so the chrome matches */
-    background-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/ellipsis-horizontal-circle-outline.svg");
-    background-size: contain;
-    background-repeat: no-repeat;
-    background-position: center;
-    filter: var(--image-filters);
-}
-
-.header-menu-popover {
+.land-menu {
     position: absolute;
-    top: calc(100% + 0.4rem);
-    right: 0;
-    z-index: 50;
-    min-width: 11rem;
-    max-width: calc(100% - 0.5rem);
-    padding: 0.3rem;
+    z-index: 60;
+    min-width: 200px;
+    max-width: min(320px, calc(100vw - 16px));
+    padding: 5px;
+    box-sizing: border-box;
     display: flex;
     flex-direction: column;
-    gap: 0.1rem;
-    background-color: var(--code-background);
-    border-radius: 0.8rem;
-    box-shadow: 0 0 0 1px var(--rule-color), -2px 5px 14px 0px #00000022;
+    background-color: var(--land-raised-bg);
+    border-radius: var(--land-tile-radius);
+    box-shadow: var(--land-shadow);
+    animation: land-pop 0.12s ease-out;
 }
-
-.header-menu-item {
+@keyframes land-pop {
+    from {
+        opacity: 0;
+        transform: translateY(-3px) scale(0.98);
+    }
+}
+.header-menu-popover {
+    top: calc(100% - 2px);
+    right: 6px;
+}
+.land-menu.context {
+    position: fixed;
+}
+.land-menu-item {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 8px;
     width: 100%;
+    min-height: var(--land-row);
+    padding: 0 9px;
+    box-sizing: border-box;
+    border: none;
+    border-radius: 7px;
+    background: none;
     text-align: left;
     white-space: nowrap;
-    font: inherit;
-    font-size: 0.8rem;
-    padding: 0.4rem 0.6rem;
-    border: none;
-    background: none;
-    color: inherit;
-    border-radius: 0.5rem;
-    cursor: pointer;
-    transition: background-color 0.08s linear, color 0.08s linear;
 }
-/* Ionicons, as everywhere else in the UI (Pluto's cell menu uses the same set): a currentColor mask,
-   so the icon takes the item's text colour — including the danger red. */
-.header-menu-item .menu-icon {
-    flex-shrink: 0;
-    width: 1.1em;
-    height: 1.1em;
-    background-color: currentColor;
-    -webkit-mask: center / contain no-repeat;
-    mask: center / contain no-repeat;
+.land-menu-item .ico {
+    width: 14px;
+    height: 14px;
+    color: var(--land-muted);
 }
-.header-menu-item .menu-icon.terminal {
-    -webkit-mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/terminal-outline.svg");
-    mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/terminal-outline.svg");
+.land-menu-item .keys {
+    margin-left: auto;
+    padding-left: 16px;
+    color: var(--land-faint);
+    font-size: 11.5px;
 }
-.header-menu-item .menu-icon.power {
-    -webkit-mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/power-outline.svg");
-    mask-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/power-outline.svg");
+.land-menu-item:hover:not(:disabled),
+.land-menu-item:focus-visible {
+    background-color: var(--land-hover);
 }
-.header-menu-item:hover {
-    background-color: var(--main-bg-color);
-}
-.header-menu-item:disabled {
-    opacity: 0.5;
+.land-menu-item:disabled {
+    color: var(--land-faint);
     cursor: default;
 }
-.header-menu-item:disabled:hover {
-    background-color: transparent;
+.land-menu-item.danger,
+.land-menu-item.danger .ico {
+    color: var(--land-danger);
 }
-.header-menu-item.danger {
-    color: #d65f5f;
+.land-menu-item.danger:hover {
+    background-color: var(--land-danger-bg);
 }
-.header-menu-item.danger:hover {
-    color: #e06c6c;
-    background-color: var(--main-bg-color);
-}
-
-.bubble {
-    background-color: var(--code-background);
-    border-radius: 0.8rem;
-    box-shadow: 0 0 0 1px var(--rule-color), -2px 5px 14px 0px #00000022;
-    padding: 0.8rem;
+.land-menu hr {
+    width: 100%;
+    margin: 4px 0;
+    border: none;
+    border-top: 1px solid var(--land-border);
 }
 
-#land > aside header.bubble {
-    padding: 1rem;
-    position: relative; /* anchor the overflow-menu popover to the header card, so it drops down-and-right inside the sidebar */
+#land > aside section {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
 }
-
-#land > aside h1 {
-    margin: 0;
-    font-size: 1.1rem;
+#land > aside section.files {
+    flex: 1;
 }
-
-#land > aside h1 .land-accent {
-    opacity: 0.55;
-}
-
-#land > aside .workspace-root {
-    margin: 0.15rem 0 0 0;
-    font-size: 0.72rem;
-    opacity: 0.6;
-    font-family: var(--julia-mono-font-stack, monospace);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+#land > aside section.running {
+    flex-shrink: 0;
+    max-height: 34%;
+    margin-top: 4px;
+    padding-top: 4px;
+    border-top: 1px solid var(--land-border);
 }
 
 #land > aside h2 {
-    font-size: 0.68rem;
-    text-transform: uppercase;
-    letter-spacing: 0.09em;
-    opacity: 0.5;
-    margin: 0 0 0.4rem 0.4rem;
+    flex-shrink: 0;
+    height: 28px;
+    padding: 0 8px 0 var(--land-pad);
+}
+#land > aside h2 .section-actions {
+    display: flex;
+    margin-left: auto;
+    opacity: 0;
+    transition: opacity 0.1s linear;
+}
+#land > aside section:hover h2 .section-actions,
+#land > aside h2 .section-actions:focus-within {
+    opacity: 1;
+}
+#land > aside h2 .icon-button {
+    width: 22px;
+    height: 22px;
+}
+#land > aside h2 .count {
+    font-weight: 600;
+    color: var(--land-faint);
 }
 
 #land > aside ul {
@@ -313,246 +594,167 @@ body.resizing #frames iframe {
     margin: 0;
     padding: 0;
 }
-
-#land > aside ul ul {
-    padding-left: 0.85rem;
-}
-
-#land > aside section.files {
+#land > aside ul.tree,
+#land > aside section.running > ul {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
+    padding-bottom: 8px;
+    scrollbar-width: thin;
 }
 
-/* the Workspace heading becomes a row: WORKSPACE label, then the git-branch chip,
-   then the + action pinned right (margin-left: auto on .h2-action above) */
-#land > aside section.files > h2 {
+/* A row spans the sidebar, so its hover and selection do too; depth is indentation inside it. */
+.entry-row {
     display: flex;
     align-items: center;
+    height: var(--land-row);
+    margin: 0 6px;
+    padding-right: 3px;
+    border-radius: var(--land-radius);
+    transition: background-color 0.12s ease-out, box-shadow 0.12s ease-out;
 }
-
-/* git branch indicator: quiet, mixed-case (not uppercased like the label), sits next
-   to the WORKSPACE heading. Shown only when the workspace folder is inside a git repo. */
-#land .git-branch {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.25em;
-    margin-left: 0.5rem;
-    min-width: 0;
-    max-width: 58%;
-    font-size: 0.72rem;
-    text-transform: none; /* branch names are case-sensitive */
-    letter-spacing: 0;
-    font-family: var(--julia-mono-font-stack, monospace);
+.entry-row:hover {
+    background-color: var(--land-hover);
 }
-
-#land .git-branch-name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+#land li.current > .entry-row .entry-name {
+    font-weight: 600;
+    color: var(--land-fg);
 }
-
-#land .git-branch-icon {
-    flex-shrink: 0;
-    width: 0.95em;
-    height: 0.95em;
-    background-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/git-branch-outline.svg");
-    background-size: contain;
-    background-repeat: no-repeat;
-    background-position: center;
-    filter: var(--image-filters);
+#land li.current > .entry-row {
+    background-color: var(--land-selected);
 }
 
 .entry {
-    display: block;
-    width: 100%;
-    text-align: left;
-    background: none;
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 100%;
+    padding: 0 4px 0 calc(6px + min(var(--depth, 0), 10) * 14px); /* past ten levels the names would have no room */
     border: none;
-    color: inherit;
-    font: inherit;
-    font-size: 0.85rem;
-    padding: 0.28rem 0.7rem;
-    margin: 0.1rem 0;
-    border-radius: 1000px; /* pill, like the welcome page buttons */
-    cursor: pointer;
+    background: none;
+    text-align: left;
+}
+.entry-name {
+    min-width: 0;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    transition: background-color 0.08s linear, box-shadow 0.08s linear;
 }
-
-.entry:hover {
-    background-color: var(--main-bg-color);
-    box-shadow: -1px 2px 5px 0px #00000014;
+.entry .ico {
+    width: 16px;
+    height: 16px;
+    color: var(--land-muted);
 }
-
-#land li.notebook > .entry {
-    font-weight: 600;
+.entry .ico.chevron {
+    width: 11px;
+    height: 11px;
+    color: var(--land-faint);
+    transition: transform 0.12s ease-out;
+}
+#land li.dir.open > .entry-row .chevron {
+    transform: rotate(90deg);
+}
+/* a file has no chevron: leave its width, so names line up under the folder's */
+.entry .no-chevron {
+    width: 11px;
+    flex-shrink: 0;
+}
+#land li.file > .entry-row .entry-name {
+    color: var(--land-muted);
+}
+/* files nobody opens by hand (caches, locks, logs) step back */
+#land li.file.quiet > .entry-row .entry-name {
+    color: var(--land-faint);
+}
+#land li.file > .entry-row:hover .entry-name,
+#land li.file.current > .entry-row .entry-name {
+    color: var(--land-fg);
+}
+.entry .running-mark {
+    margin-left: auto;
+}
+#land section.running .entry .dot {
+    margin: 0 4px;
 }
 
 .entry.plain {
     cursor: default;
-    opacity: 0.5;
-}
-
-.entry.plain:hover {
-    background: none;
-    box-shadow: none;
-}
-
-/* rows that stand in for entries: a folder being read, or one the server stopped listing */
-#land li.truncated > .entry-row > .entry,
-#land li.pending > .entry-row > .entry {
+    color: var(--land-faint);
     font-style: italic;
 }
-
-/* the placeholder while a folder's listing is in flight — a slow link shouldn't look like an
-   empty folder, but it also shouldn't flash on a local server that answers in a millisecond */
-#land li.pending > .entry-row > .entry {
-    animation: land-fade-in 0.25s ease-in both;
+#land li.pending > .entry-row,
+#land li.truncated > .entry-row {
+    background: none;
 }
-
+/* a slow link should not look like an empty folder, and a fast one should not flash */
+#land li.pending > .entry-row > .entry {
+    animation: land-fade-in 0.25s ease-in 0.15s both;
+}
 @keyframes land-fade-in {
     from {
         opacity: 0;
     }
-    to {
-        opacity: 0.5;
-    }
 }
-
-.entry.quiet {
-    opacity: 0.6;
-}
-
-.entry.quiet:hover {
-    opacity: 1;
-}
-
-/* tree rows: the entry + a hover-revealed action button */
-.entry-row {
-    display: flex;
-    align-items: center;
-}
-
-.entry-row .entry {
-    flex: 1;
-    min-width: 0;
+.tree-empty {
+    margin: 0;
+    padding: 6px 12px;
+    color: var(--land-faint);
 }
 
 .row-action {
-    flex-shrink: 0;
-    background: none;
-    border: none;
-    color: inherit;
-    font: inherit;
-    font-size: 0.85rem;
-    padding: 0.1rem 0.45rem;
-    border-radius: 1000px;
-    cursor: pointer;
+    display: inline-flex;
     opacity: 0;
-    transition: opacity 0.08s linear, background-color 0.08s linear;
-}
-
-.entry-row:hover .row-action,
-#land h2 .row-action.h2-action {
-    opacity: 0.45;
-}
-
-.row-action:hover {
-    opacity: 1 !important;
-    background-color: var(--main-bg-color);
-}
-
-.row-action.danger:hover {
-    color: rgb(var(--error-color, 240, 168, 168));
-}
-
-#land h2 .row-action.h2-action {
-    font-size: 0.9rem;
-    padding: 0 0.4rem;
-    margin-left: auto; /* keep the + pinned to the far right, past the branch chip */
-}
-
-.icon {
-    display: inline-block;
-    width: 1.1em;
-    margin-right: 0.3em;
-    opacity: 0.75;
-}
-
-#land li.dir > .entry .chevron::before {
-    content: "▸";
-}
-
-#land li.dir.open > .entry .chevron::before {
-    content: "▾";
-}
-
-#land li.notebook .pluto-dot::before {
-    content: "🎈";
-    font-size: 0.85em;
-}
-
-#land section.running .running-dot::before {
-    content: "●";
-    color: #71a07c;
-}
-
-#land section.running li {
-    display: flex;
     align-items: center;
-}
-
-#land section.running li .entry {
-    flex: 1;
-    min-width: 0;
-}
-
-#land section.running .shutdown {
+    justify-content: center;
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: none;
+    border-radius: 6px;
     background: none;
-    border: none;
-    color: inherit;
-    opacity: 0.4;
-    cursor: pointer;
-    padding: 0.2rem 0.55rem;
-    border-radius: 1000px;
+    color: var(--land-muted);
 }
-
-#land section.running .shutdown:hover {
+.row-action .ico {
+    width: 14px;
+    height: 14px;
+}
+.entry-row:hover .row-action,
+.entry-row:focus-within .row-action {
     opacity: 1;
-    background-color: var(--main-bg-color);
+}
+.row-action:hover {
+    background-color: var(--land-active);
+    color: var(--land-fg);
+}
+.row-action.danger:hover {
+    background-color: var(--land-danger-bg);
+    color: var(--land-danger);
 }
 
-.new-notebook {
-    width: 100%;
-    font: inherit;
-    font-size: 0.85rem;
-    font-weight: 600;
-    padding: 0.55rem;
-    border-radius: 1000px;
-    border: none;
-    background-color: var(--code-background);
-    box-shadow: 0 0 0 1px var(--rule-color), -2px 5px 14px 0px #00000022;
-    color: inherit;
-    cursor: pointer;
-    transition: box-shadow 0.08s linear, transform 0.08s linear;
-}
-
-.new-notebook:hover {
-    box-shadow: 0 0 0 1px var(--rule-color), -2px 6px 16px 0px #00000030;
-    transform: translateY(-1px);
-}
-
-/* ---- main: tab bubbles + a rounded frame card ---- */
+/* ---- main: tab strip, editor, terminal ---- */
 
 #land > main {
     flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 0.6rem;
     min-width: 0;
+}
+
+.main-split {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+    min-width: 0;
+}
+.main-split.dock-bottom,
+.main-split.dock-tab {
+    flex-direction: column;
+}
+.main-split.dock-right {
+    flex-direction: row;
 }
 
 .editor-card {
@@ -561,146 +763,155 @@ body.resizing #frames iframe {
     flex-direction: column;
     min-width: 0;
     min-height: 0;
-    background-color: var(--code-background);
-    border-radius: 0.8rem;
-    /* hairline ring + deep shadow: make it obvious where the notebook ends and the page begins */
-    box-shadow: 0 0 0 1px var(--rule-color), -2px 6px 18px 0px #00000030;
-    overflow: hidden;
+    background: var(--land-bg);
 }
 
 #tabs {
     display: flex;
-    flex-wrap: nowrap;
-    gap: 0.45rem;
-    min-height: 2.4rem;
     align-items: center;
     flex-shrink: 0;
-    padding: 0.4rem 0.6rem;
-    box-shadow: inset 0 -1px 0 var(--rule-color);
+    height: var(--land-strip);
+    box-sizing: border-box;
+    background-color: var(--land-sidebar-bg);
+    border-bottom: 1px solid var(--land-border);
 }
 
-/* the tabs scroll in their own strip; the terminal toggles stay pinned on the far right */
-#tabs .tab-scroller {
+#tabs .strip-lead,
+#tabs .tab-actions {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    gap: 2px;
+    padding: 0 8px;
+}
+#tabs .tab-actions {
+    align-self: stretch;
+    margin: 8px 0;
+    padding: 0 8px;
+    border-left: 1px solid var(--land-border);
+}
+
+/* the tabs scroll in their own strip; the actions stay pinned at the far right */
+.tab-scroller {
     flex: 1;
     min-width: 0;
     display: flex;
-    flex-wrap: nowrap;
-    gap: 0.45rem;
     align-items: center;
+    gap: 4px;
+    height: 100%;
+    padding: 0 8px;
     overflow-x: auto;
-    scrollbar-width: thin;
-    padding: 0.2rem 0; /* room for the tab shadows */
+    scrollbar-width: none;
+}
+#tabs .strip-lead + .tab-scroller {
+    padding-left: 0;
+}
+.tab-scroller::-webkit-scrollbar {
+    display: none;
 }
 
-.terminal-toggle {
-    flex-shrink: 0;
-    background-color: var(--main-bg-color);
-    border: none;
-    color: inherit;
-    font: inherit;
-    font-size: 0.85rem;
-    font-weight: 600;
-    padding: 0.35rem 0.9rem;
-    border-radius: 1000px;
-    cursor: pointer;
-    opacity: 0.8;
-    transition: opacity 0.08s linear, box-shadow 0.08s linear;
-}
-
-.terminal-toggle:hover {
-    opacity: 1;
-}
-
-.terminal-toggle.active {
-    opacity: 1;
-    box-shadow: -2px 4px 9px 0px #00000012, inset 0 0 0 2px var(--cm-color-builtin, #5e7be1);
-}
-
-#tabs .tab {
+.tab {
+    position: relative;
     display: flex;
     align-items: center;
     flex-shrink: 0;
-    max-width: 16rem;
-    border-radius: 1000px;
-    background-color: var(--main-bg-color);
-    opacity: 0.75;
-    transition: opacity 0.08s linear, box-shadow 0.08s linear;
+    max-width: 220px;
+    height: 28px;
+    border-radius: var(--land-radius);
+    color: var(--land-muted);
+    transition: background-color 0.12s ease-out, color 0.12s ease-out, box-shadow 0.12s ease-out;
 }
-
-#tabs .tab:hover {
-    opacity: 1;
+.tab:hover {
+    background-color: var(--land-hover);
+    color: var(--land-fg);
 }
-
-#tabs .tab.active {
-    opacity: 1;
-    box-shadow: inset 0 0 0 2px var(--cm-color-builtin, #5e7be1);
+/* the open tab is raised, with the ring: Pluto's pill */
+.tab.active {
+    background: var(--land-raised-sheen), var(--land-raised-bg);
+    color: var(--land-fg);
+    box-shadow: var(--land-ring), var(--land-lift);
 }
-
-#tabs .tab .title {
-    background: none;
+.tab .title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    height: 100%;
+    padding: 0 2px 0 11px;
     border: none;
-    color: inherit;
-    font: inherit;
-    font-size: 0.85rem;
+    background: none;
     font-weight: 600;
-    padding: 0.4rem 0.15rem 0.4rem 0.95rem;
-    cursor: pointer;
+}
+.tab .tab-name {
+    min-width: 0;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
-
-#tabs .tab .close {
-    background: none;
-    border: none;
-    color: inherit;
-    opacity: 0.4;
-    cursor: pointer;
-    padding: 0.4rem 0.7rem 0.4rem 0.3rem;
+.tab .title .ico {
+    width: 14px;
+    height: 14px;
 }
-
-#tabs .tab .close:hover {
-    opacity: 1;
-}
-
-/* terminal pills look like notebook tabs, with a keyboard glyph — used in the editor tab strip
-   (when the terminal is embedded as a tab) and in the terminal panel's own tab strip */
-.tab.terminal-tab .title {
+.tab .close {
     display: inline-flex;
     align-items: center;
-}
-.tab-term-icon {
-    opacity: 0.7;
-    margin-right: 0.4rem;
-    font-size: 0.95em;
-}
-
-/* the "⌨ +" button that opens a new terminal */
-.new-terminal-tab {
+    justify-content: center;
     flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+    margin: 0 5px 0 1px;
+    padding: 0;
+    border: none;
+    border-radius: 6px;
+    background: none;
+    color: var(--land-muted);
+}
+.tab .close .ico {
+    width: 13px;
+    height: 13px;
+    opacity: 0;
+}
+.tab:hover .close .ico,
+.tab.active .close .ico,
+.tab .close:focus-visible .ico {
+    opacity: 1;
+}
+.tab .close:hover {
+    background-color: var(--land-active);
+    color: var(--land-fg);
+}
+/* unsaved: a dot where the close mark is, until the pointer is over the tab */
+.tab.dirty:not(:hover) .close .ico {
+    opacity: 1;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background-color: var(--land-fg);
+}
+.tab.dirty:not(:hover) .close .ico use {
+    display: none;
+}
+
+.terminal-toggle {
     display: inline-flex;
     align-items: center;
-    gap: 0.1rem;
-    background-color: var(--main-bg-color);
+    gap: 6px;
+    height: 28px;
+    padding: 0 11px;
     border: none;
-    color: inherit;
-    font: inherit;
-    font-size: 0.85rem;
-    line-height: 1;
-    opacity: 0.75;
-    cursor: pointer;
-    padding: 0.38rem 0.7rem;
-    border-radius: 1000px;
-    transition: opacity 0.08s linear, box-shadow 0.08s linear;
+    border-radius: var(--land-radius);
+    background: none;
+    color: var(--land-muted);
+    font-weight: 600;
+    transition: background-color 0.12s ease-out, color 0.12s ease-out, box-shadow 0.12s ease-out;
 }
-.new-terminal-tab:hover {
-    opacity: 1;
-    box-shadow: inset 0 0 0 1.5px var(--cm-color-builtin, #5e7be1);
+.terminal-toggle:hover {
+    background-color: var(--land-hover);
+    color: var(--land-fg);
 }
-.new-terminal-tab .nt-plus {
-    font-size: 0.95em;
-    opacity: 0.85;
-    margin-left: -0.05rem;
+.terminal-toggle.active {
+    background-color: var(--land-accent-tint);
+    color: var(--land-fg);
 }
 
 #frames {
@@ -709,7 +920,7 @@ body.resizing #frames iframe {
     min-height: 0;
     position: relative;
     overflow: hidden;
-    background-color: var(--main-bg-color);
+    background-color: var(--land-bg);
 }
 
 #frames iframe,
@@ -720,12 +931,75 @@ body.resizing #frames iframe {
     height: 100%;
     border: none;
     display: none;
-    background-color: var(--main-bg-color);
+    background-color: var(--land-bg);
 }
-
 #frames iframe.active,
 #frames .pane.active {
     display: block;
+}
+
+#frames .empty-state {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    padding: 24px;
+    text-align: center;
+    color: var(--land-muted);
+}
+#frames .empty-state img {
+    width: 56px;
+    height: 56px;
+}
+#frames .empty-state p {
+    margin: 0;
+    max-width: 34em;
+}
+#frames .empty-state .lede {
+    font-size: 17px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    color: var(--land-fg);
+}
+#frames .empty-state .empty-actions {
+    display: flex;
+    gap: 8px;
+}
+#frames .empty-state .hint {
+    font-size: 12px;
+    color: var(--land-faint);
+}
+#frames .empty-state code {
+    font-family: var(--julia-mono-font-stack);
+    font-size: 0.95em;
+}
+
+/* ---- a notice across the top of the editor: the workspace's server is busy, or gone ---- */
+
+.workspace-status {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--land-border);
+    background-color: var(--land-warn-bg);
+}
+.workspace-status .ico {
+    color: var(--land-warn);
+}
+.workspace-status.down {
+    background-color: var(--land-danger-bg);
+}
+.workspace-status.down .ico {
+    color: var(--land-danger);
+}
+.workspace-status span.text {
+    flex: 1;
+    min-width: 0;
 }
 
 /* ---- plain-file editor pane (Pluto's bundled CodeMirror) ---- */
@@ -739,48 +1013,32 @@ body.resizing #frames iframe {
 .file-toolbar {
     display: flex;
     align-items: center;
-    gap: 0.6rem;
-    padding: 0.45rem 0.9rem;
-    box-shadow: inset 0 -1px 0 var(--rule-color);
+    gap: 10px;
     flex-shrink: 0;
+    height: 30px;
+    padding: 0 8px 0 14px;
+    border-bottom: 1px solid var(--land-border);
+    color: var(--land-muted);
+    font-size: 12px;
 }
-
 .file-toolbar .file-path {
     flex: 1;
     min-width: 0;
-    font-family: var(--julia-mono-font-stack, monospace);
-    font-size: 0.78rem;
-    opacity: 0.65;
+    font-family: var(--julia-mono-font-stack);
+    font-size: 11.5px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    direction: rtl; /* keep the filename end visible */
     text-align: left;
 }
-
 .file-toolbar .file-status {
-    font-size: 0.78rem;
-    opacity: 0.7;
     flex-shrink: 0;
 }
-
+.file-toolbar .file-status.error {
+    color: var(--land-danger);
+}
 .file-toolbar .file-save {
-    flex-shrink: 0;
-    background-color: var(--code-background);
-    border: none;
-    color: inherit;
-    font: inherit;
-    font-size: 0.8rem;
-    font-weight: 600;
-    padding: 0.25rem 0.9rem;
-    border-radius: 1000px;
-    cursor: pointer;
-    opacity: 0.7;
-}
-
-.file-toolbar .file-save.dirty {
-    opacity: 1;
-    box-shadow: inset 0 0 0 2px var(--cm-color-builtin, #5e7be1);
+    height: 22px;
 }
 
 .file-editor {
@@ -788,684 +1046,141 @@ body.resizing #frames iframe {
     min-height: 0;
     overflow: auto;
 }
-
 .file-editor .cm-editor {
     height: 100%;
-    background-color: var(--main-bg-color);
+    background-color: var(--land-bg);
     color: var(--cm-color-editor-text, inherit);
-    font-size: 0.85rem;
+    font-size: 13px;
 }
-
 .file-editor .cm-editor.cm-focused {
     outline: none;
 }
-
+.file-editor .cm-scroller {
+    font-family: var(--julia-mono-font-stack);
+    line-height: 1.5;
+}
 .file-editor .cm-gutters {
-    background-color: var(--main-bg-color);
-    color: var(--cm-color-line-numbers, inherit);
+    background-color: var(--land-bg);
+    color: var(--land-faint);
     border: none;
-    opacity: 0.7;
+    padding: 0 6px 0 8px;
+}
+.file-editor .cm-activeLine,
+.file-editor .cm-activeLineGutter {
+    background-color: var(--land-hover);
+}
+
+/* ---- the integrated terminal (docked at the bottom, at the right, or as an editor tab) ----
+
+   The island IS the terminal: its strip of tabs and its body are one colour, the one xterm paints
+   with, out to the island's corners. So the rows that do not divide the height evenly leave a strip
+   of terminal rather than a strip of page, and a dark terminal in a light app is a dark island, not
+   a dark box in a light frame. The terminal has its own light/dark switch, so everything inside
+   takes its colours from these, never from the page's. */
+
+.terminal-surface {
+    --term-bg: var(--terminal-bg);
+    background-image: none;
+    --term-fg: var(--terminal-fg);
+    --term-muted: rgba(255, 255, 255, 0.5);
+    --term-hover: rgba(255, 255, 255, 0.07);
+    --term-active: rgba(255, 255, 255, 0.13);
+    --term-ring: rgba(255, 255, 255, 0.07);
+    background-color: var(--term-bg);
+    color: var(--term-fg);
+}
+.terminal-surface.scheme-light {
+    --term-bg: var(--terminal-light-bg);
+    --term-fg: var(--terminal-light-fg);
+    --term-muted: rgba(20, 25, 35, 0.64);
+    --term-hover: rgba(20, 25, 35, 0.06);
+    --term-active: rgba(20, 25, 35, 0.1);
+    --term-ring: rgba(20, 25, 35, 0.08);
+}
+.terminal-surface.island {
+    box-shadow: var(--land-glass-on-dark);
+}
+.terminal-surface.scheme-light.island {
+    box-shadow: var(--land-glass-on-light);
 }
 
-.file-editor .cm-activeLine {
-    background-color: var(--code-background);
-}
-
-#frames .empty-state {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    opacity: 0.6;
-}
-
-#frames .empty-state .hint {
-    font-size: 0.85rem;
-    opacity: 0.8;
-}
-
-/* ---- the "Open Folder" homepage (no workspace yet) ---- */
-
-.workspace-opener {
-    height: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 1.5rem;
-    box-sizing: border-box;
-}
-
-.opener-card {
-    width: 44rem;
-    max-width: 95vw;
-    max-height: 92vh;
-    overflow-y: auto;
-    padding: 2rem !important;
-    box-sizing: border-box;
-}
-
-.opener-card header {
-    position: relative;
-}
-
-/* round icon button with a clean close mark (not an arrow) — dismisses the homebase overlay back to your workspace */
-.opener-card .opener-cancel {
-    position: absolute;
-    top: 0;
-    right: 0;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    background: none;
-    border: none;
-    opacity: 0.6;
-    cursor: pointer;
-    padding: 0.35rem;
-    border-radius: 1000px;
-}
-
-.opener-card .opener-cancel:hover {
-    opacity: 1;
-    background-color: var(--main-bg-color);
-}
-
-.opener-card .opener-cancel .opener-cancel-icon {
-    width: 1.3em;
-    height: 1.3em;
-    background-image: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/close-outline.svg");
-    background-size: contain;
-    background-repeat: no-repeat;
-    background-position: center;
-    filter: var(--image-filters);
-}
-
-.opener-card header h1 {
-    margin: 0;
-    font-size: 2rem;
-}
-
-.opener-card h1 .land-accent {
-    opacity: 0.55;
-}
-
-.opener-card .opener-logo {
-    width: 4.2rem;
-    height: 4.2rem;
-    margin-bottom: 0.4rem;
-}
-
-.opener-card .subtitle {
-    opacity: 0.65;
-    margin: 0.35rem 0 0 0;
-}
-
-.opener-card .subtitle.small {
-    font-size: 0.78rem;
-    margin: 0 0.15rem 0.5rem 0.15rem;
-}
-
-.opener-card h2 {
-    font-size: 0.68rem;
-    text-transform: uppercase;
-    letter-spacing: 0.09em;
-    opacity: 0.5;
-    margin: 1.4rem 0 0.5rem 0.15rem;
-}
-
-/* recent workspaces: little cards, like the welcome page's featured grid */
-.recent-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
-    gap: 0.6rem;
-}
-
-.recent-card {
-    text-align: left;
-    border: none;
-    color: inherit;
-    font: inherit;
-    background-color: var(--main-bg-color);
-    border-radius: 0.6rem;
-    padding: 0.7rem 0.85rem;
-    cursor: pointer;
-    box-shadow: 0 0 0 1px var(--rule-color), -2px 5px 14px 0px #00000022;
-    transition: box-shadow 0.08s linear, transform 0.08s linear;
-    overflow: hidden;
-}
-
-.recent-card:hover {
-    box-shadow: 0 0 0 1px var(--rule-color), -2px 6px 16px 0px #00000030;
-    transform: translateY(-1px);
-}
-
-.recent-card .recent-icon {
-    display: block;
-    font-size: 1.2rem;
-}
-
-.recent-card .recent-name {
-    display: block;
-    font-weight: 700;
-    margin-top: 0.25rem;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.recent-card .recent-path {
-    display: block;
-    font-size: 0.68rem;
-    opacity: 0.55;
-    font-family: var(--julia-mono-font-stack, monospace);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-/* running workspaces: a recent-card with the open area on the left and a shutdown ✕ on the right */
-.running-card {
-    display: flex;
-    align-items: stretch;
-    gap: 0;
-    padding: 0; /* the inner link owns the padding so the whole left area is the click target */
-}
-
-.running-open {
-    flex: 1;
-    min-width: 0;
-    display: block;
-    padding: 0.7rem 0.85rem;
-    color: inherit;
-    text-decoration: none;
-}
-
-.running-open.is-busy {
-    opacity: 0.7;
-    cursor: default;
-    animation: remote-pulse 1.4s ease-in-out infinite;
-}
-
-.running-shutdown {
-    flex-shrink: 0;
-    border: none;
-    background: none;
-    color: inherit;
-    opacity: 0.4;
-    cursor: pointer;
-    font-size: 0.95rem;
-    line-height: 1;
-    padding: 0 0.8rem;
-    border-radius: 0 0.6rem 0.6rem 0;
-    transition: opacity 0.08s linear, background-color 0.08s linear;
-}
-
-.running-shutdown:hover {
-    opacity: 1;
-    background-color: rgba(var(--error-color, 240, 168, 168), 0.18);
-}
-
-/* breadcrumbs: each segment is clickable */
-.breadcrumbs {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.1rem;
-    margin: 0 0 0.7rem 0;
-    font-family: var(--julia-mono-font-stack, monospace);
-    font-size: 0.85rem;
-}
-
-.breadcrumbs .crumb {
-    background: none;
-    border: none;
-    color: inherit;
-    font: inherit;
-    padding: 0.15rem 0.35rem;
-    border-radius: 6px;
-    cursor: pointer;
-    opacity: 0.7;
-}
-
-.breadcrumbs .crumb:hover {
-    background-color: var(--main-bg-color);
-    opacity: 1;
-}
-
-.breadcrumbs .crumb.current {
-    font-weight: 700;
-    opacity: 1;
-}
-
-.breadcrumbs .crumb-sep {
-    opacity: 0.35;
-}
-
-/* subfolders: a tidy grid of folder pills */
-.ssh-timeout {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 0.35em;
-    font-size: 0.78rem;
-    opacity: 0.7;
-    margin: 0 0.15rem 0.7rem 0.15rem;
-}
-
-.ssh-timeout input {
-    width: 3.6em;
-    font: inherit;
-    text-align: right;
-    color: inherit;
-    background-color: var(--main-bg-color);
-    border: 1px solid var(--rule-color, #8884);
-    border-radius: 6px;
-    padding: 0.12em 0.3em;
-}
-
-.ssh-timeout .unit {
-    margin-left: -0.15em;
-}
-
-.ssh-timeout .ssh-timeout-hint {
-    flex-basis: 100%;
-    opacity: 0.8;
-    font-style: italic;
-}
-
-.dir-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(11.5rem, 1fr));
-    gap: 0.45rem;
-    max-height: 16rem;
-    overflow-y: auto;
-    padding: 0.1rem;
-}
-
-.dir-pill {
-    text-align: left;
-    border: none;
-    color: inherit;
-    font: inherit;
-    font-size: 0.88rem;
-    background-color: var(--main-bg-color);
-    border-radius: 1000px;
-    padding: 0.45rem 0.9rem;
-    cursor: pointer;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    transition: box-shadow 0.08s linear, transform 0.08s linear;
-}
-
-.dir-pill:hover {
-    box-shadow: -2px 4px 9px 0px #0000001f;
-    transform: translateY(-1px);
-}
-
-.dir-pill .dir-icon {
-    margin-right: 0.4em;
-}
-
-a.dir-pill {
-    text-decoration: none;
-    box-sizing: border-box;
-    display: block;
-}
-
-.dir-pill.remote-busy {
-    opacity: 0.7;
-    animation: remote-pulse 1.4s ease-in-out infinite;
-}
-
-@keyframes remote-pulse {
-    50% {
-        opacity: 0.4;
-    }
-}
-
-.dir-pill.remote-error {
-    box-shadow: inset 0 0 0 2px rgba(var(--error-color, 240, 168, 168), 0.7);
-}
-
-.dir-pill.remote-ready {
-    box-shadow: inset 0 0 0 2px var(--cm-color-builtin, #5e7be1);
-}
-
-/* a multi-minute operation deserves an UNMISSABLE banner: fixed to the viewport,
-   immune to card scrolling */
-.remote-progress {
-    position: fixed;
-    bottom: 1.5rem;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 200;
-    width: min(42rem, 92vw);
-    box-sizing: border-box;
-    display: flex;
-    align-items: flex-start;
-    gap: 0.9rem;
-    padding: 1rem 1.2rem;
-    border-radius: 0.8rem;
-    background-color: var(--code-background);
-    box-shadow: 0 0 0 2.5px var(--cm-color-builtin, #5e7be1), -2px 8px 28px 0px #00000055;
-}
-
-.remote-progress-text {
-    display: flex;
-    flex-direction: column;
-    gap: 0.15rem;
-    font-size: 0.85rem;
-}
-
-.remote-progress-text strong {
-    font-size: 1.05rem;
-}
-
-.remote-progress-note {
-    opacity: 0.65;
-    font-size: 0.78rem;
-}
-
-.remote-spinner {
-    flex-shrink: 0;
-    width: 1.5rem;
-    height: 1.5rem;
-    margin-top: 0.2rem;
-    border-radius: 50%;
-    border: 3px solid var(--rule-color);
-    border-top-color: var(--cm-color-builtin, #5e7be1);
-    animation: remote-spin 0.9s linear infinite;
-}
-
-@keyframes remote-spin {
-    to {
-        transform: rotate(360deg);
-    }
-}
-
-/* Cancel button on the in-flight connect banner */
-.remote-cancel {
-    margin-left: auto;
-    align-self: center;
-    flex-shrink: 0;
-    border: none;
-    background-color: var(--main-bg-color);
-    color: inherit;
-    font: inherit;
-    font-size: 0.8rem;
-    padding: 0.35rem 0.85rem;
-    border-radius: 1000px;
-    cursor: pointer;
-    opacity: 0.85;
-    box-shadow: inset 0 0 0 1px var(--rule-color);
-    transition: opacity 0.08s linear, box-shadow 0.08s linear;
-}
-
-.remote-cancel:hover {
-    opacity: 1;
-    box-shadow: inset 0 0 0 1.5px rgba(var(--error-color, 240, 168, 168), 0.8);
-}
-
-.opener-actions {
-    display: flex;
-    gap: 0.7rem;
-    align-items: center;
-    margin-top: 1.1rem;
-    flex-wrap: wrap;
-}
-
-.open-this-folder {
-    font: inherit;
-    font-size: 0.95rem;
-    padding: 0.6rem 1.3rem;
-    border-radius: 1000px;
-    border: none;
-    color: inherit;
-    background-color: var(--main-bg-color);
-    box-shadow: -2px 4px 9px 0px #00000012, inset 0 0 0 2px var(--cm-color-builtin, #5e7be1);
-    cursor: pointer;
-    transition: box-shadow 0.08s linear, transform 0.08s linear;
-}
-
-.open-this-folder:hover {
-    box-shadow: -2px 5px 14px 0px #00000026, inset 0 0 0 2px var(--cm-color-builtin, #5e7be1);
-    transform: translateY(-1px);
-}
-
-.paste-path {
-    flex: 1;
-    min-width: 14rem;
-}
-
-.paste-path input {
-    width: 100%;
-    box-sizing: border-box;
-    font: inherit;
-    font-size: 0.82rem;
-    font-family: var(--julia-mono-font-stack, monospace);
-    color: inherit;
-    background-color: var(--main-bg-color);
-    border: none;
-    border-radius: 1000px;
-    padding: 0.55rem 1rem;
-    outline: none;
-}
-
-.paste-path input:focus {
-    box-shadow: inset 0 0 0 2px var(--cm-color-builtin, #5e7be1);
-}
-
-.opener-card .opener-error {
-    margin-top: 0.8rem;
-    font-size: 0.8rem;
-    color: rgb(var(--error-color, 240, 168, 168));
-}
-
-/* ---- the integrated terminal panel (dockable: bottom or right) ---- */
-
-.main-split {
-    flex: 1;
-    display: flex;
-    gap: 0.6rem;
-    min-height: 0;
-    min-width: 0;
-}
-
-.main-split.bottom {
-    flex-direction: column;
-}
-
-.main-split.right {
-    flex-direction: row;
-}
-
-#terminal-resizer {
-    flex-shrink: 0;
-    border-radius: 1000px;
-    transition: background-color 0.1s linear;
-}
-
-.main-split.bottom > #terminal-resizer {
-    height: 6px;
-    margin: -0.3rem 0;
-    cursor: row-resize;
-}
-
-.main-split.right > #terminal-resizer {
-    width: 6px;
-    margin: 0 -0.3rem;
-    cursor: col-resize;
-}
-
-#terminal-resizer:hover {
-    background-color: var(--cm-color-builtin, #5e7be1);
-    opacity: 0.5;
-}
-
-.terminal-toggle.dock-toggle {
-    padding: 0.35rem 0.55rem;
-}
-
-body.resizing-v,
-body.resizing-v * {
-    cursor: row-resize !important;
-}
-
-body.resizing-v #frames iframe {
-    pointer-events: none;
-}
-
-/* the terminal panel (bottom/right dock) and the embedded editor "Terminal" pane share the same
-   terminals UI: a tab strip of terminals + their bodies */
 #terminal-panel {
     flex-shrink: 0;
-    padding: 0 !important;
-    overflow: hidden;
-    box-sizing: border-box;
     display: flex;
     flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    box-sizing: border-box;
 }
 
-/* "tab" dock — the terminal lives inside an editor tab; the editor fills the split */
-.main-split.tab {
-    flex-direction: column;
-}
 #frames .terminal-area-pane.active {
     display: flex;
     flex-direction: column;
-    background-color: var(--main-bg-color);
+    background-color: var(--term-bg);
 }
 
 .terminal-tabs {
-    flex-shrink: 0;
     display: flex;
     align-items: center;
-    padding: 0.45rem 0.55rem 0.3rem;
-    overflow: hidden;
-}
-/* Sits after the (flex: 1) scroller, so it parks at the right edge of the tab strip. */
-.terminal-scheme-toggle {
     flex-shrink: 0;
-    margin-left: 0.4rem;
-    background: none;
-    border: none;
-    color: inherit;
-    font: inherit;
-    font-size: 0.95rem;
-    line-height: 1;
-    opacity: 0.55;
-    cursor: pointer;
-    padding: 0.3rem 0.45rem;
-    border-radius: 1000px;
-    transition: opacity 0.08s linear, background-color 0.08s linear;
+    height: var(--land-strip);
+    padding: 0 8px;
+    gap: 4px;
 }
-.terminal-scheme-toggle:hover {
-    opacity: 1;
-    background-color: var(--main-bg-color);
-}
-
-/* the APP-wide light/dark/auto toggle (the terminal's scheme toggle above stays its own thing) */
-.app-scheme-toggle {
-    flex-shrink: 0;
-    margin-left: 0.4rem;
-    background: none;
-    border: none;
-    color: inherit;
-    font: inherit;
-    font-size: 0.95rem;
-    line-height: 1;
-    opacity: 0.55;
-    cursor: pointer;
-    padding: 0.3rem 0.45rem;
-    border-radius: 1000px;
-    transition: opacity 0.08s linear, background-color 0.08s linear;
-}
-.app-scheme-toggle:hover {
-    opacity: 1;
-    background-color: var(--main-bg-color);
-}
-/* in the launcher card it sits in the top-right corner (left of the ✕ when that is shown) */
-.app-scheme-toggle.opener-corner {
-    position: absolute;
-    top: 0;
-    right: 0;
-}
-.app-scheme-toggle.opener-corner.beside-cancel {
-    right: 2.6rem;
-}
-
-/* desktop only: back to the Julia picker (outside macOS there is no app menu to reach it) */
-.opener-julia-version {
-    background: none;
-    border: none;
-    color: inherit;
-    font: inherit;
-    font-size: 0.78rem;
-    opacity: 0.55;
-    cursor: pointer;
-    padding: 0;
-    margin-top: 0.3rem;
-    text-decoration: underline;
-    text-underline-offset: 0.15em;
-}
-.opener-julia-version:hover {
-    opacity: 1;
-}
-
 .terminal-tab-scroller {
     flex: 1;
     min-width: 0;
     display: flex;
-    gap: 0.4rem;
     align-items: center;
+    gap: 4px;
+    height: 100%;
     overflow-x: auto;
-    scrollbar-width: thin;
-    padding: 0.15rem 0;
+    scrollbar-width: none;
+}
+.terminal-tab-scroller::-webkit-scrollbar {
+    display: none;
 }
 .terminal-tabs .tab {
+    max-width: 200px;
+    color: var(--term-muted);
+}
+.terminal-tabs .tab:hover {
+    background-color: var(--term-hover);
+    color: var(--term-fg);
+}
+.terminal-tabs .tab.active {
+    background-color: var(--term-active);
+    color: var(--term-fg);
+    box-shadow: inset 0 0 0 1px var(--term-ring);
+}
+.terminal-tabs .tab .title {
+    padding-left: 11px;
+}
+.terminal-tabs .tab .close {
+    color: inherit;
+}
+.terminal-tabs .tab .close:hover {
+    background-color: var(--term-hover);
+    color: var(--term-fg);
+}
+.terminal-tabs .icon-button {
+    width: 24px;
+    height: 24px;
+    color: var(--term-muted);
+}
+.terminal-tabs .icon-button:hover {
+    background-color: var(--term-hover);
+    color: var(--term-fg);
+}
+.terminal-tabs .panel-actions {
     display: flex;
     align-items: center;
     flex-shrink: 0;
-    max-width: 13rem;
-    border-radius: 1000px;
-    background-color: var(--code-background);
-    opacity: 0.7;
-    transition: opacity 0.08s linear, box-shadow 0.08s linear;
+    gap: 2px;
 }
-.terminal-tabs .tab:hover {
-    opacity: 1;
-}
-.terminal-tabs .tab.active {
-    opacity: 1;
-    box-shadow: inset 0 0 0 2px var(--cm-color-builtin, #5e7be1);
-}
-.terminal-tabs .tab .title {
-    background: none;
-    border: none;
-    color: inherit;
-    font: inherit;
-    font-size: 0.78rem;
-    font-weight: 600;
-    padding: 0.3rem 0.1rem 0.3rem 0.7rem;
-    cursor: pointer;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    display: inline-flex;
-    align-items: center;
-}
-.terminal-tabs .tab .close {
-    background: none;
-    border: none;
-    color: inherit;
-    opacity: 0.4;
-    cursor: pointer;
-    padding: 0.3rem 0.55rem 0.3rem 0.25rem;
-}
-.terminal-tabs .tab .close:hover {
-    opacity: 1;
+.terminal-tabs .ico {
+    width: 14px;
+    height: 14px;
 }
 
 .terminal-bodies {
@@ -1475,8 +1190,9 @@ body.resizing-v #frames iframe {
 }
 .terminal-body {
     position: absolute;
-    inset: 0 0.6rem 0.6rem;
+    inset: 2px 4px 8px 14px;
     display: none;
+    overflow: hidden;
 }
 .terminal-body.active {
     display: block;
@@ -1485,190 +1201,739 @@ body.resizing-v #frames iframe {
     width: 100%;
     height: 100%;
     overflow: hidden;
-    border-radius: 0.4rem;
-    /* the interior is always dark (matches the xterm theme), even in light mode — covers the padding
-       and prevents a light flash before xterm paints its own canvas */
-    background-color: var(--terminal-bg);
 }
 .terminal-body .xterm {
     height: 100%;
-    padding: 0.2rem;
 }
-
-#land-error {
-    position: fixed;
-    bottom: 0;
-    right: 0;
-    margin: 0.75rem;
-    padding: 0.5rem 0.8rem;
-    border-radius: 0.8rem;
-    background-color: var(--code-background);
-    border: 2px solid rgba(var(--error-color, 240, 168, 168), 0.8);
-    box-shadow: -2px 4px 9px 0px #00000012;
-    font-size: 0.8rem;
-    max-width: 32rem;
+/* xterm paints its own viewport; the island behind it is already that colour */
+.terminal-body .xterm .xterm-viewport {
+    background-color: transparent !important;
 }
-
-/* The hub's confirmation dialog (ask_confirm in land.js) — replaces window.confirm, which
-   browsers can silently suppress, leaving destructive buttons apparently dead. */
-dialog.land-confirm {
-    background: var(--main-bg-color);
-    color: var(--pluto-output-color);
-    border: 1px solid var(--rule-color);
-    border-radius: 0.6rem;
-    padding: 1.1rem 1.3rem;
-    max-width: 26rem;
-    box-shadow: 0 12px 40px #00000055;
-}
-
-dialog.land-confirm::backdrop {
-    background: #00000066;
-}
-
-dialog.land-confirm p {
-    margin: 0 0 1rem;
-    white-space: pre-line; /* the messages use \n\n paragraph breaks */
-    line-height: 1.45;
-}
-
-dialog.land-confirm .buttons {
+.terminal-note {
+    position: absolute;
+    inset: auto 12px 12px auto;
+    z-index: 3;
     display: flex;
-    justify-content: flex-end;
-    gap: 0.5rem;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 7px 5px 11px;
+    border-radius: var(--land-tile-radius);
+    background-color: var(--land-raised-bg);
+    box-shadow: var(--land-shadow);
+    color: var(--land-fg);
+    font-size: 12px;
 }
 
-dialog.land-confirm button {
-    font: inherit;
-    padding: 0.3rem 0.9rem;
-    border-radius: 0.4rem;
-    border: 1px solid var(--rule-color);
-    background: var(--main-bg-color);
-    color: inherit;
-    cursor: pointer;
+/* ---- notices above the page ---- */
+
+.land-toasts {
+    position: fixed;
+    right: 12px;
+    bottom: 12px;
+    z-index: 80;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: min(440px, calc(100vw - 24px));
+}
+.land-toast {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 9px 7px 9px 11px;
+    border-radius: var(--land-tile-radius);
+    background-color: var(--land-raised-bg);
+    box-shadow: var(--land-shadow);
+    animation: land-pop 0.14s ease-out;
+}
+.land-toast > .ico {
+    margin-top: 1px;
+    color: var(--land-danger);
+}
+.land-toast p {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    overflow-wrap: anywhere;
+    user-select: text;
+}
+.land-toast .icon-button {
+    width: 20px;
+    height: 20px;
 }
 
-dialog.land-confirm button.go {
-    background: var(--code-background);
-    font-weight: 600;
-}
-
-dialog.land-confirm button.go.danger {
-    color: rgb(var(--error-color, 240, 168, 168));
-    border-color: rgba(var(--error-color, 240, 168, 168), 0.6);
-}
-
-/* Shown while our own origin is unreachable — for an SSH workspace, the normal state after the
-   laptop has been closed. The hub's watchdog rebuilds the tunnel on the same port, so this is a
-   wait, not a dead end. Non-blocking on purpose: what is already on screen stays readable. */
 .reconnect-overlay {
     position: fixed;
-    inset: auto 0 0 0;
+    inset: auto 0 16px 0;
+    z-index: 70;
     display: flex;
     justify-content: center;
-    padding: 0 0 1.1rem 0;
     pointer-events: none;
-    z-index: 40;
 }
-
 .reconnect-card {
     pointer-events: auto;
     display: flex;
-    gap: 0.7rem;
     align-items: flex-start;
-    max-width: 30rem;
-    padding: 0.75rem 1rem;
-    border-radius: 0.7rem;
-    background-color: var(--main-bg-color);
-    box-shadow: 0 6px 26px rgba(0, 0, 0, 0.35);
-    border: 1px solid var(--cm-color-builtin, #5e7be1);
-    font-size: 0.82rem;
-    line-height: 1.45;
+    gap: 10px;
+    max-width: 420px;
+    padding: 11px 15px;
+    border-radius: var(--land-tile-radius);
+    background-color: var(--land-raised-bg);
+    box-shadow: var(--land-shadow);
 }
-
+.reconnect-card .spinner {
+    margin-top: 3px;
+}
 .reconnect-card p {
-    margin: 0.25rem 0 0 0;
-    opacity: 0.75;
+    margin: 2px 0 0;
+    color: var(--land-muted);
 }
 
-.reconnect-spinner {
-    flex-shrink: 0;
-    width: 1rem;
-    height: 1rem;
-    margin-top: 0.15rem;
-    border-radius: 50%;
-    border: 2px solid var(--cm-color-builtin, #5e7be1);
-    border-top-color: transparent;
-    animation: reconnect-spin 0.8s linear infinite;
+/* ---- dialogs (ask_confirm / ask_text in land.js): never the browser's own, which a page can lose ---- */
+
+dialog.land-dialog {
+    width: min(420px, calc(100vw - 32px));
+    padding: 20px;
+    box-sizing: border-box;
+    border: none;
+    border-radius: var(--land-island-radius);
+    background-color: var(--land-raised-bg);
+    color: var(--land-fg);
+    box-shadow: var(--land-shadow);
+    animation: land-pop 0.16s var(--land-ease);
+}
+dialog.land-dialog::backdrop {
+    background-color: var(--land-backdrop);
+}
+dialog.land-dialog h3 {
+    margin: 0 0 6px;
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: -0.005em;
+}
+dialog.land-dialog p {
+    margin: 0 0 14px;
+    color: var(--land-muted);
+    white-space: pre-line; /* the messages use \n\n paragraph breaks */
+    overflow-wrap: anywhere;
+}
+dialog.land-dialog input[type="text"] {
+    width: 100%;
+    height: 30px;
+    margin: 0 0 6px;
+    padding: 0 8px;
+    box-sizing: border-box;
+    border: 1px solid var(--land-border-strong);
+    border-radius: var(--land-radius);
+    background-color: var(--land-bg);
+    font-family: var(--julia-mono-font-stack);
+    font-size: 12.5px;
+}
+dialog.land-dialog input[type="text"]:focus {
+    border-color: var(--land-accent);
+    outline: 1px solid var(--land-accent);
+    outline-offset: 0;
+}
+dialog.land-dialog .field-note {
+    min-height: 1.4em;
+    margin: 0 0 10px;
+    font-size: 12px;
+    color: var(--land-faint);
+}
+dialog.land-dialog .field-note.error {
+    color: var(--land-danger);
+}
+dialog.land-dialog .buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+dialog.land-dialog .buttons .text-button {
+    height: 28px;
+    padding: 0 12px;
 }
 
-@keyframes reconnect-spin {
-    to {
-        transform: rotate(360deg);
+/* ---- the launcher: one column, one scroll ---- */
+
+.workspace-opener {
+    height: 100%;
+    overflow-y: auto;
+    box-sizing: border-box;
+}
+.opener-page {
+    width: min(820px, calc(100vw - 32px));
+    margin: 0 auto;
+    padding: 56px 0 72px;
+}
+
+.opener-head {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 12px;
+}
+.opener-head .opener-logo {
+    width: 52px;
+    height: 52px;
+}
+.opener-head .opener-title {
+    flex: 1;
+    min-width: 0;
+}
+.opener-head h1 {
+    margin: 2px 0 0;
+    font-size: 34px;
+    line-height: 1.05;
+}
+.opener-head .opener-head-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+/* a pill on the canvas: raised, like a tile */
+.opener-head .text-button {
+    height: 32px;
+    background: var(--land-raised-sheen), var(--land-raised-bg);
+    box-shadow: var(--land-raised-shadow);
+}
+.opener-head .text-button .ico {
+    width: 15px;
+    height: 15px;
+}
+/* light / dark / the system's: three in a pill, the one in use marked */
+.scheme-switch {
+    display: inline-flex;
+    gap: 2px;
+    padding: 3px;
+    border-radius: 999px;
+    background: var(--land-raised-sheen), var(--land-raised-bg);
+    box-shadow: var(--land-raised-shadow);
+}
+.scheme-switch button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 26px;
+    padding: 0;
+    border: none;
+    border-radius: 999px;
+    background: none;
+    color: var(--land-muted);
+    transition: background-color 0.12s ease-out, color 0.12s ease-out;
+}
+.scheme-switch button:hover {
+    color: var(--land-fg);
+    background-color: var(--land-hover);
+}
+.scheme-switch button.active {
+    color: var(--land-fg);
+    background-color: var(--land-accent-tint);
+    box-shadow: var(--land-ring);
+}
+.scheme-switch .ico {
+    width: 15px;
+    height: 15px;
+}
+
+.opener-section {
+    margin-top: 32px;
+}
+.opener-section > h2 {
+    min-height: 24px;
+    margin: 0 0 8px var(--land-pad);
+}
+.opener-section > h2 .spacer {
+    flex: 1;
+}
+.opener-section > h2 .icon-button {
+    width: 22px;
+    height: 22px;
+}
+.opener-section > h2 .icon-button .ico {
+    width: 13px;
+    height: 13px;
+}
+.opener-section .refresh.spinning .ico {
+    animation: land-spin 0.8s linear infinite;
+}
+.opener-section .section-note {
+    margin: -2px 0 10px var(--land-pad);
+    color: var(--land-muted);
+    font-size: 12px;
+}
+
+/* Workspaces that are open, and recent ones: uniform tiles in a tray. The tray is an island; a tile
+   is a raised thing on it, as the open tab is in the workspace. Under the pointer or the keyboard a
+   tile grows a little and takes the ring. */
+.tray {
+    --tile: calc((min(820px, 100vw - 32px) - 2 * var(--land-pad) - 3 * var(--land-gap)) / 4);
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--land-gap);
+    /* the tray is as wide as what is on it: one tile, a tray of one; four fill the column */
+    width: fit-content;
+    max-width: 100%;
+    box-sizing: border-box;
+    padding: var(--land-pad);
+    overflow: visible;
+}
+.tray > .ws-card {
+    flex: 0 0 var(--tile);
+    width: var(--tile);
+}
+@media (max-width: 700px) {
+    .tray {
+        --tile: calc((100vw - 32px - 2 * var(--land-pad) - var(--land-gap)) / 2);
     }
+}
+.ws-card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    border-radius: var(--land-tile-radius);
+    background: var(--land-raised-sheen), var(--land-raised-bg);
+    box-shadow: var(--land-raised-shadow);
+    transition: transform 0.2s var(--land-ease), box-shadow 0.16s ease-out;
+}
+.ws-card:has(.ws-card-open:not(.inert):hover),
+.ws-card:has(.ws-card-open:focus-visible) {
+    transform: scale(1.035);
+    box-shadow: var(--land-ring), var(--land-lift), 0 14px 28px -14px rgba(0, 0, 0, 0.45);
+    z-index: 1;
+}
+.ws-card-open {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1px;
+    min-width: 0;
+    padding: 14px 14px 13px;
+    border: none;
+    border-radius: inherit;
+    background: none;
+    color: inherit;
+    text-align: left;
+    text-decoration: none;
+}
+.ws-card-open:focus-visible {
+    outline: none;
+}
+.ws-card-open.inert {
+    cursor: default;
+}
+.ws-card-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    margin-bottom: 10px;
+    border-radius: 10px;
+    background-color: var(--land-accent-tint);
+    color: var(--land-accent);
+}
+.ws-card-icon.quiet {
+    background-color: var(--land-hover);
+    color: var(--land-muted);
+}
+.ws-card-icon .ico {
+    width: 18px;
+    height: 18px;
+}
+.ws-card .ws-name {
+    max-width: 100%;
+    font-size: 14px;
+    font-weight: 600;
+}
+.ws-card .ws-path {
+    flex: none;
+    width: 100%;
+    max-width: 100%;
+    color: var(--land-muted);
+    direction: ltr;
+}
+.ws-card .ws-state {
+    margin-top: 9px;
+}
+.ws-card-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-height: 26px;
+    padding: 0 10px 11px 14px;
+    margin-top: -4px;
+}
+.ws-card-foot .ws-state {
+    margin-top: 0;
+}
+.ws-card-foot .text-button {
+    height: 24px;
+    padding: 0 10px;
+    font-size: 12px;
+}
+.text-button.stop:hover {
+    background-color: var(--land-danger-bg);
+    color: var(--land-danger);
+}
+.ws-card-corner {
+    position: absolute;
+    top: 9px;
+    right: 9px;
+}
+.ws-card-corner.on-hover {
+    opacity: 0;
+    transition: opacity 0.12s ease-out;
+}
+.ws-card:hover .ws-card-corner.on-hover,
+.ws-card-corner.on-hover:focus-visible {
+    opacity: 1;
+}
+.ws-card-detail {
+    margin: -6px 14px 10px;
+    color: var(--land-muted);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+    user-select: text;
+}
+.ws-card.error .ws-card-detail {
+    color: var(--land-danger);
+}
+.ws-card-actions {
+    display: flex;
+    gap: 6px;
+    padding: 0 14px 13px;
+    margin-top: -4px;
+}
+
+/* A list of places to open: workspaces that are running, recent ones, hosts. One raised panel
+   per list, rows divided by hairlines. */
+.ws-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+.ws-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0 8px;
+    min-height: 44px;
+    padding-right: 10px;
+    border-top: 1px solid var(--land-border);
+}
+.ws-row:first-child {
+    border-top: none;
+}
+.ws-open {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 44px;
+    padding: 0 6px 0 var(--land-pad);
+    border: none;
+    background: none;
+    text-align: left;
+    text-decoration: none;
+    color: inherit;
+}
+.ws-row:has(.ws-open:not(.inert):hover) {
+    background-color: var(--land-hover);
+}
+.ws-open.inert {
+    cursor: default;
+}
+.ws-open > .ico {
+    color: var(--land-muted);
+}
+.ws-name {
+    flex-shrink: 0;
+    max-width: 60%;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.ws-path {
+    flex: 1;
+    min-width: 0;
+    color: var(--land-faint);
+    font-family: var(--julia-mono-font-stack);
+    font-size: 11.5px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    direction: rtl; /* a long path loses its start, not the folder it ends in */
+    text-align: left;
+}
+.ws-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    color: var(--land-muted);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+.ws-row .text-button {
+    height: 24px;
+}
+.ws-row .row-hint {
+    display: none;
+    color: var(--land-faint);
+    font-size: 12px;
+}
+.ws-row:has(.ws-open:hover) .row-hint {
+    display: inline;
+}
+/* what a connect is doing, or why it failed: on the row it belongs to, where it can be read */
+.ws-detail {
+    flex-basis: 100%;
+    margin: -4px 0 12px calc(var(--land-pad) + 26px);
+    padding-right: 4px;
+    color: var(--land-muted);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+    user-select: text;
+}
+.ws-row.error .ws-detail {
+    color: var(--land-danger);
+}
+.ws-detail .note {
+    display: block;
+    margin-top: 2px;
+    color: var(--land-faint);
+}
+.ws-empty {
+    margin: 0;
+    padding: 10px 12px;
+    color: var(--land-faint);
+}
+
+/* the folder browser */
+.browse-panel {
+    display: block;
+}
+.browse-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 40px;
+    padding: 4px 8px 4px calc(var(--land-pad) - 5px);
+    box-sizing: border-box;
+    border-bottom: 1px solid var(--land-border);
+}
+.breadcrumbs {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    font-family: var(--julia-mono-font-stack);
+    font-size: 12px;
+}
+.breadcrumbs .crumb {
+    padding: 2px 5px;
+    border: none;
+    border-radius: 4px;
+    background: none;
+    color: var(--land-muted);
+}
+.breadcrumbs .crumb:hover {
+    background-color: var(--land-hover);
+    color: var(--land-fg);
+}
+.breadcrumbs .crumb.current {
+    color: var(--land-fg);
+    font-weight: 600;
+}
+.breadcrumbs .crumb-sep {
+    color: var(--land-faint);
+}
+.paste-path {
+    display: flex;
+    border-bottom: 1px solid var(--land-border);
+}
+.paste-path input {
+    flex: 1;
+    min-width: 0;
+    height: 34px;
+    padding: 0 var(--land-pad);
+    border: none;
+    background: none;
+    font-family: var(--julia-mono-font-stack);
+    font-size: 12px;
+}
+.paste-path input::placeholder {
+    color: var(--land-faint);
+    font-family: var(--land-ui-font);
+}
+.paste-path input:focus-visible {
+    outline-offset: -2px;
+}
+.dir-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    padding: 6px;
+    max-height: 300px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+}
+.dir-pill {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    height: var(--land-row);
+    padding: 0 9px;
+    border: none;
+    border-radius: var(--land-radius);
+    background: none;
+    text-align: left;
+}
+.dir-pill:hover {
+    background-color: var(--land-hover);
+}
+.dir-pill .ico {
+    width: 15px;
+    height: 15px;
+    color: var(--land-muted);
+}
+.dir-pill .dir-name {
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.dir-grid .ws-empty {
+    grid-column: 1 / -1;
+}
+.opener-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px var(--land-pad);
+    border-top: 1px solid var(--land-border);
+}
+.opener-actions .open-this-folder {
+    height: 32px;
+    padding: 0 16px;
+    max-width: 100%;
+}
+.opener-actions .open-this-folder strong {
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.opener-actions .hint {
+    color: var(--land-faint);
+    font-size: 12px;
+}
+
+.ssh-timeout {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11.5px;
+    font-weight: 400;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--land-muted);
+}
+.ssh-timeout input {
+    width: 44px;
+    height: 22px;
+    padding: 0 4px;
+    box-sizing: border-box;
+    border: 1px solid var(--land-border-strong);
+    border-radius: 4px;
+    background-color: var(--land-raised-bg);
+    text-align: right;
+}
+
+.opener-error {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin: 12px 0 0;
+    padding: 8px 10px;
+    border-radius: var(--land-radius);
+    background-color: var(--land-danger-bg);
+    color: var(--land-danger);
+    overflow-wrap: anywhere;
+}
+
+/* small windows: the sidebar gives way before the editor does */
+@media (max-width: 640px) {
+    .opener-page {
+        padding-top: 20px;
+    }
+    .ws-path {
+        display: none;
+    }
+}
+
+/* a window made smaller must not leave a pane with no editor beside it */
+#land > aside {
+    max-width: calc(100vw - 320px);
+}
+.main-split.dock-bottom > #terminal-panel {
+    max-height: calc(100% - 200px);
+}
+.main-split.dock-right > #terminal-panel {
+    max-width: calc(100% - 280px);
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .reconnect-spinner {
-        animation-duration: 2.4s;
+    .ws-card,
+    .text-button,
+    .land-logo-button,
+    .land-menu,
+    dialog.land-dialog,
+    .land-toast {
+        transition: none;
+        animation: none;
+    }
+    .ws-card:has(.ws-card-open:not(.inert):hover),
+    .ws-card:has(.ws-card-open:focus-visible),
+    .text-button.primary:hover,
+    .land-logo-button:hover {
+        transform: none;
     }
 }
 
-/* Refresh on the opener's section headers (issue: hosts and folders appearing while the app runs).
-   Same quiet row-action as the + on the workspace heading; the icon spins while a refresh is in flight. */
-.workspace-opener h2 {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-}
-.workspace-opener h2 .row-action.h2-action.refresh {
-    margin-left: 0.1rem;
-    opacity: 0.45;
-    line-height: 0;
-}
-.workspace-opener h2 .row-action.h2-action.refresh:hover {
-    opacity: 1;
-}
-.workspace-opener .refresh-icon {
-    display: inline-block;
-    width: 1em;
-    height: 1em;
-    background-color: currentColor;
-    -webkit-mask: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/refresh-outline.svg") center / contain no-repeat;
-    mask: url("https://cdn.jsdelivr.net/gh/ionic-team/ionicons@5.5.1/src/svg/refresh-outline.svg") center / contain no-repeat;
-}
-.workspace-opener .refresh.spinning .refresh-icon {
-    animation: opener-refresh-spin 0.8s linear infinite;
-}
-@keyframes opener-refresh-spin {
-    to {
-        transform: rotate(360deg);
+/* A narrow window: the sidebar lies over the page instead of squeezing it to nothing. */
+@media (max-width: 720px) {
+    #land > aside {
+        position: fixed;
+        z-index: 30;
+        inset: var(--land-gap) auto var(--land-gap) var(--land-gap);
+        max-width: calc(100vw - 56px);
+        box-shadow: var(--land-glass), var(--land-shadow);
+    }
+    #sidebar-resizer {
+        display: none;
     }
 }
 
-
-/* The relay's verdict on this workspace's child server (src/webserver/Proxy.jl): busy, or gone. */
-.workspace-status {
-    position: fixed;
-    top: 0.5rem;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 40;
-    display: flex;
-    gap: 0.75rem;
-    align-items: center;
-    max-width: min(90vw, 44rem);
-    padding: 0.5rem 0.9rem;
-    border-radius: 0.6rem;
-    font-size: 0.85rem;
-    background: var(--land-card-bg, #fff8e6);
-    color: var(--land-fg, #333);
-    border: 1px solid var(--land-border, #e6d9b8);
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+/* Windows high contrast and the like: shadows and tints are thrown away, so the things that are
+   only a shadow or a tint get a real outline. (Transparent ones are drawn in this mode.) */
+.island,
+.ws-card,
+.land-menu,
+dialog.land-dialog,
+.tab.active,
+#land li.current > .entry-row {
+    outline: 1px solid transparent;
+    outline-offset: -1px;
 }
-.workspace-status.down {
-    background: var(--land-danger-bg, #fdecec);
-    border-color: var(--land-danger-border, #f0b9b9);
-}
-.workspace-status button {
-    white-space: nowrap;
+@media (forced-colors: active) {
+    .dot {
+        forced-color-adjust: none;
+        background-color: ButtonText;
+    }
 }

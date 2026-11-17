@@ -280,20 +280,12 @@ function _get_or_create_terminal(session::ServerSession, tid::String; requested_
         target = _resolve_terminal_cwd(session, requested_cwd)
         existing = get(COLLAB_TERMINALS, tid, nothing)
         if existing !== nothing && pty_alive(existing.pty)
-            # Reattach to the persistent shell — UNLESS the client is now showing a different
-            # workspace than this shell was started in (the user switched/opened a workspace, or
-            # the shell predates the workspace being set). Then the shell is in the wrong folder:
-            # retire it and start fresh in the open workspace below. A connect that doesn't name a
-            # cwd never disturbs a running shell.
-            if requested_cwd === nothing || existing.cwd == target
-                return existing
-            end
-            delete!(COLLAB_TERMINALS, tid)
-            stale = existing
-            @async try
-                pty_close!(stale.pty)
-            catch
-            end
+            # Reattach to the persistent shell, wherever the client says it is now. A terminal's id is
+            # its own (a page makes a random one per terminal, per workspace), so the same id is the
+            # same terminal. It used to be ended when the client named another folder than the one
+            # it was started in: a terminal opened on a subfolder, reattached after a reload by a
+            # page that had only remembered the workspace's root, lost its shell and its job.
+            return existing
         end
 
         # Per-instance temp dir (the time_ns suffix keeps it unique): switching workspace retires this
@@ -348,7 +340,11 @@ function _get_or_create_terminal(session::ServerSession, tid::String; requested_
             lock(t.lock) do
                 for client in collect(t.clients)
                     try
-                        HTTP.WebSockets.send(client, Vector{UInt8}(codeunits("\r\n\e[2m[shell exited — toggle the terminal to start a new one]\e[0m\r\n")))
+                        # A text frame, like the rest of the attach protocol: the page closes this
+                        # terminal's tab, as any terminal does when its shell ends. Without it a page
+                        # cannot tell "the shell exited" from "the connection dropped", and said the
+                        # second ("still running; reload to reattach") right under the first.
+                        HTTP.WebSockets.send(client, """{"exited":true}""")
                         close(client)
                     catch end
                 end
@@ -394,6 +390,9 @@ function close_terminal!(tid::AbstractString)::Bool
     # removal) then runs. Closing the sockets here is best-effort — the client already unmounted.
     lock(t.lock) do
         for client in collect(t.clients)
+            # tell every page showing it that it is gone, so none takes this for a dropped
+            # connection and brings the terminal back under the same id
+            try HTTP.WebSockets.send(client, """{"exited":true}""") catch end
             try close(client) catch end
         end
         empty!(t.clients)
@@ -448,7 +447,10 @@ function handle_terminal_websocket(ws, session::ServerSession, query::Dict{Strin
         # Spawn failed (e.g. Windows older than 10 1809 has no ConPTY). Say so plainly instead
         # of letting the socket close into the frontend's "reload to reattach" message.
         msg = "\r\n\e[31m[could not start a shell: $(sprint(showerror, e))]\e[0m\r\n"
-        try HTTP.WebSockets.send(ws, Vector{UInt8}(codeunits(msg))) catch end
+        try
+            HTTP.WebSockets.send(ws, Vector{UInt8}(codeunits(msg)))
+            HTTP.WebSockets.send(ws, """{"failed":true}""")   # nothing to re-attach to: the page does not retry
+        catch end
         return
     end
 
