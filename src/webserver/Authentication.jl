@@ -88,9 +88,9 @@ function take_sign_in_code!(code::AbstractString)::Bool
     end
 end
 
-"A page of the shell or the editor, under a hub's workspace prefix or not: showing one changes nothing."
+"A page of the shell or the editor, under a hub's workspace prefix (on this machine, or on a host: `/h/<host>/w/<id>`) or not: showing one changes nothing."
 function is_page_path(path::AbstractString)::Bool
-    m = match(r"^/w/[0-9a-f]{16}(/.*)?$", path)
+    m = match(r"^(?:/h/[A-Za-z0-9._@%-]{1,128})?/w/[0-9a-f]{16}(/.*)?$", path)
     rest = m === nothing ? path : something(m.captures[1], "")
     rest ∈ ("", "/", "/land", "/edit")
 end
@@ -121,6 +121,9 @@ Return whether the `request` was authenticated in one of these ways:
 1. the session's `secret` was included in the URL as a search parameter, or
 2. the session's `secret` was included in a cookie, or
 3. a page was asked for with a sign-in code (`?code=`) that had not been used.
+4. the session's `secret` was sent as `Authorization: Bearer <secret>`. This is how one hub signs
+   in to another (RemoteHosts.jl): a header is not written to logs or history the way a URL is, and
+   a page in a browser cannot set it on a cross-origin request.
 """
 function is_authenticated(session::ServerSession, request::HTTP.Request)
     (
@@ -145,6 +148,10 @@ function is_authenticated(session::ServerSession, request::HTTP.Request)
         catch e
             @warn "Failed to authenticate request using cookies" exception = (e, catch_backtrace())
             false
+        end
+    ) || (
+        secret_in_header = let h = HTTP.header(request, "Authorization", "")
+            startswith(h, "Bearer ") && same_secret(SubString(h, 8), session.secret)
         end
     )
     # that ) || ( kind of looks like Krabs from spongebob

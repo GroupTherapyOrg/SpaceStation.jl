@@ -229,3 +229,43 @@ class PlutoEditorComponent extends HTMLElement {
     }
 }
 customElements.define("pluto-editor", PlutoEditorComponent)
+
+// A notebook of a remote workspace runs in a frame of the LOCAL hub's shell, on another origin
+// (`<host>.localhost`; see src/webserver/RemoteHosts.jl): this page comes from the remote machine,
+// the shell does not, and neither can touch the other's window. The shell used to hook its keys on
+// each notebook frame's window; here the editor tells it instead, by a message to the shell's
+// origin only, and only about the chords that are the shell's (switching tabs, showing the
+// terminal). No other key leaves this page.
+const shell_origin = (() => {
+    try {
+        if (window.parent === window || !window.location.hostname.endsWith(".localhost")) return null
+        return `${window.location.protocol}//localhost${window.location.port === "" ? "" : `:${window.location.port}`}`
+    } catch (e) {
+        return null
+    }
+})()
+if (shell_origin != null) {
+    const mac = navigator.platform.toUpperCase().includes("MAC")
+    const is_shell_chord = (/** @type {KeyboardEvent} */ e) => {
+        if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && e.code === "Backquote") return true
+        if (e.ctrlKey && !e.metaKey && !e.altKey && e.key === "Tab") return true
+        if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && (e.key === "PageUp" || e.key === "PageDown")) return true
+        if (mac && e.metaKey && e.shiftKey && !e.altKey && !e.ctrlKey && (e.code === "BracketLeft" || e.code === "BracketRight")) return true
+        if (mac && e.metaKey && e.altKey && !e.shiftKey && !e.ctrlKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) return true
+        const mod = mac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey
+        return mod && !e.shiftKey && !e.altKey && /^Digit[1-9]$/.test(e.code)
+    }
+    window.addEventListener(
+        "keydown",
+        (e) => {
+            if (e.defaultPrevented || e.isComposing || !is_shell_chord(e)) return
+            e.preventDefault()
+            e.stopPropagation()
+            window.parent.postMessage(
+                { type: "spacestation:key", key: e.key, code: e.code, ctrlKey: e.ctrlKey, metaKey: e.metaKey, altKey: e.altKey, shiftKey: e.shiftKey },
+                shell_origin
+            )
+        },
+        true
+    )
+}

@@ -865,6 +865,10 @@ function register_collab_api!(router, session::ServerSession)
             # server under /w/<id>/ (see Proxy.jl). `wid` names it.
             "hub" => session.options.server.hub,
             "wid" => get(request.context, :workspace_id, nothing),
+            # A workspace on another machine, shown by this hub at /h/<host>/w/<id>/ (RemoteHosts.jl):
+            # which host, and the separate origin (with its unguessable path) its notebooks load from.
+            "host" => get(request.context, :remote_host, nothing),
+            "content_base" => get(request.context, :content_base, nothing),
             # the integrated terminal's pty is ConPTY here — xterm.js needs to know to enable
             # its Windows heuristics (see TerminalView in land.js)
             "windows" => Sys.iswindows(),

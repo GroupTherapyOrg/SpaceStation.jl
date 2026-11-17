@@ -140,7 +140,9 @@ const _proxy_parked_lock = ReentrantLock()
 # Headers that describe this hop, not the message, plus the ones the child must not see: the
 # browser's Host (so the child names its cookie and builds URLs for its own port), the hub's cookie,
 # and the browser Origin (the child's CSRF check accepts a missing Origin; the hub already checked it).
-const _HOP_REQUEST_HEADERS = Set{String}(["host", "cookie", "origin", "connection", "content-length", "transfer-encoding", "keep-alive", "upgrade", "sec-websocket-key", "sec-websocket-version", "sec-websocket-extensions", "accept-encoding"])
+# `Authorization` is how one hub signs in to another (RemoteHosts.jl): it is for the hub that receives
+# it, never for that hub's child.
+const _HOP_REQUEST_HEADERS = Set{String}(["host", "cookie", "origin", "authorization", "connection", "content-length", "transfer-encoding", "keep-alive", "upgrade", "sec-websocket-key", "sec-websocket-version", "sec-websocket-extensions", "accept-encoding"])
 const _HOP_RESPONSE_HEADERS = Set{String}(["set-cookie", "connection", "content-length", "transfer-encoding", "keep-alive", "upgrade", "server"])
 
 "The child-side target: the same path and query, with the child's secret in place of whatever `secret` the browser sent (the hub's)."
@@ -150,6 +152,17 @@ function child_target(rest::AbstractString, secret::AbstractString)
     query["secret"] = secret
     string(HTTP.URI(; path=uri.path, query=query))
 end
+
+# What the relay needs to know about the far end. A workspace's child on this machine (`LocalSession`)
+# is one kind of upstream; a hub on another machine, reached through a loopback port, is the other
+# (`RemoteUpstream`, RemoteHosts.jl). The relay below is the same for both.
+upstream_port(s::LocalSession) = s.port
+upstream_target(s::LocalSession, rest::AbstractString) = child_target(rest, s.secret)
+upstream_headers(::LocalSession) = Pair{String,String}[]
+upstream_dropped_headers(::LocalSession) = _HOP_REQUEST_HEADERS
+upstream_refresh!(s::LocalSession) = _refresh_child_credentials!(s)
+upstream_down_response(s::LocalSession) =
+    _json_response(503, """{"workspace_down": true, "state": $(_json_string(s.state)), "detail": "the server for this workspace is not answering; restart the workspace"}""")
 
 _json_response(status::Integer, body::AbstractString) =
     HTTP.Response(status, ["Content-Type" => "application/json; charset=utf-8"], body * "\n")
@@ -169,14 +182,16 @@ the hub's heap — streaming those is a later step) —
 status, headers (minus this hop's and minus every Set-Cookie) and body. Never follows the child's
 redirects (`/open` answers with one, and it is the browser that must follow it, under the prefix).
 """
-function proxy_http(s::LocalSession, wid::AbstractString, request::HTTP.Request, rest::AbstractString)::HTTP.Response
+function proxy_http(s, wid::AbstractString, request::HTTP.Request, rest::AbstractString; retried::Bool=false)::HTTP.Response
     path = HTTP.URI(rest).path
     if _parked!(wid, 1) > PROXY_PARKED_MAX
         _parked!(wid, -1)
         return _json_response(503, """{"workspace_busy": true, "detail": "too many requests are waiting on this workspace's server"}""")
     end
-    headers = [h for h in request.headers if lowercase(h.first) ∉ _HOP_REQUEST_HEADERS]
-    ask() = HTTP.request(request.method, "http://127.0.0.1:$(s.port)" * child_target(rest, s.secret), headers, request.body;
+    dropped = upstream_dropped_headers(s)
+    headers = [h for h in request.headers if lowercase(h.first) ∉ dropped]
+    # read at each attempt: a refresh between the two changes the port and the secret
+    ask() = HTTP.request(request.method, "http://127.0.0.1:$(upstream_port(s))" * upstream_target(s, rest), vcat(headers, upstream_headers(s)), request.body;
         connect_timeout=3, readtimeout=(path ∈ _PROXY_POLL_PATHS ? PROXY_READ_TIMEOUT[] : 0),
         redirect=false, retry=false, status_exception=false, decompress=false, cookies=false, pool=_proxy_pool(wid))
     # cookies=false: HTTP.jl keeps a client cookie jar by default. With it, the child's Set-Cookie from
@@ -187,10 +202,12 @@ function proxy_http(s::LocalSession, wid::AbstractString, request::HTTP.Request,
         # The hub authenticated this request before relaying it, so a 403 from the child is about the
         # HUB's credentials, never the browser's: re-read the child's connection file, and if it
         # changed, ask again. (A child refusing the path itself answers the same the second time.)
-        r.status == 403 && _refresh_child_credentials!(s) ? ask() : r
+        r.status == 403 && upstream_refresh!(s) ? ask() : r
     catch e
-        if _probe_port(s.port; wait=0.2) == :dead
-            return _json_response(503, """{"workspace_down": true, "state": $(_json_string(s.state)), "detail": "the server for this workspace is not answering; restart the workspace"}""")
+        if _probe_port(upstream_port(s); wait=0.2) == :dead
+            # a remote hub that was restarted answers on another port: look once before giving up
+            (!retried && !(s isa LocalSession) && upstream_refresh!(s)) && return proxy_http(s, wid, request, rest; retried=true)
+            return upstream_down_response(s)
         elseif e isa HTTP.TimeoutError || (e isa HTTP.RequestError && e.error isa HTTP.TimeoutError)
             return _json_response(504, """{"workspace_busy": true, "detail": "the server for this workspace did not answer within $(PROXY_READ_TIMEOUT[])s; it is busy, and this request was dropped"}""")
         else
@@ -213,11 +230,11 @@ handshake (the frontend retries) instead of getting a socket that never answers;
 both ways with no buffering, so a slow reader only slows its own connection. Either side ending
 closes the other's socket outright rather than negotiating a close it might have to wait for.
 """
-function proxy_ws(http::HTTP.Stream, s::LocalSession, rest::AbstractString; retried::Bool=false)
-    url = "ws://127.0.0.1:$(s.port)" * child_target(rest, s.secret)
+function proxy_ws(http::HTTP.Stream, s, rest::AbstractString; retried::Bool=false)
+    url = "ws://127.0.0.1:$(upstream_port(s))" * upstream_target(s, rest)
     opened = Ref(false)
     try
-        HTTP.WebSockets.open(url; suppress_close_error=true, connect_timeout=3, retry=false, cookies=false) do childws
+        HTTP.WebSockets.open(url; headers=upstream_headers(s), suppress_close_error=true, connect_timeout=3, retry=false, cookies=false) do childws
             opened[] = true
             HTTP.WebSockets.upgrade(http; WEBSOCKET_UPGRADE_KWARGS...) do clientws
                 HTTP.WebSockets.isclosed(clientws) && return
@@ -243,7 +260,7 @@ function proxy_ws(http::HTTP.Stream, s::LocalSession, rest::AbstractString; retr
     catch e
         if !opened[]
             # refused rather than unreachable? the hub's credentials may be stale: see proxy_http
-            if !retried && _probe_port(s.port; wait=0.2) != :dead && _refresh_child_credentials!(s)
+            if !retried && (_probe_port(upstream_port(s); wait=0.2) != :dead || !(s isa LocalSession)) && upstream_refresh!(s)
                 return proxy_ws(http, s, rest; retried=true)
             end
             # the child could not be reached: fail the handshake now, the browser retries by itself
@@ -286,14 +303,20 @@ Serve one `/w/<id>/…` request. The hub authenticates the browser (its own secr
 check), then either answers itself (workspace page, assets, sidebar, files, terminal, launcher APIs —
 through the ordinary router, with the workspace recorded in the request context) or relays to the
 workspace's child. `app` is the hub's router with its middleware.
+
+With `remote` (a host name, RemoteHosts.jl) the URL was `/h/<host>/w/<id>/…` and the workspace is on
+another machine. The page, its assets and the launcher's own APIs are still this hub's (so the shell
+is never an older copy served from the node); the upstream is that machine's hub at its `/w/<id>/`,
+and everything the local case answers about a workspace (files, the terminal) is relayed there too.
 """
-function handle_workspace_request(http::HTTP.Stream, session::ServerSession, app, wid::AbstractString, rest::AbstractString)
+function handle_workspace_request(http::HTTP.Stream, session::ServerSession, app, wid::AbstractString, rest::AbstractString; remote::Union{Nothing,AbstractString}=nothing)
     request = http.message
+    prefix = remote === nothing ? WORKSPACE_PREFIX : HOST_PREFIX * HTTP.escapeuri(remote) * WORKSPACE_PREFIX
     if isempty(rest)
         # `/w/<id>` → `/w/<id>/`, keeping the query: relative URLs in the page need the slash
         q = HTTP.URI(request.target).query
         response = HTTP.Response(302, "")
-        HTTP.setheader(response, "Location" => WORKSPACE_PREFIX * wid * "/" * (isempty(q) ? "" : "?" * q))
+        HTTP.setheader(response, "Location" => prefix * wid * "/" * (isempty(q) ? "" : "?" * q))
         HTTP.WebSockets.isupgrade(request) || (request.body = read(http))
         return _write_response!(http, response)
     end
@@ -336,28 +359,35 @@ function handle_workspace_request(http::HTTP.Stream, session::ServerSession, app
         end
     end
 
-    s = resolve_workspace(wid)
+    # A remote workspace is a table lookup, never a connect: a GET must not start an SSH connection.
+    s = remote === nothing ? resolve_workspace(wid) : resolve_remote_workspace(remote, wid)
     if s === nothing
         is_upgrade || (request.body = read(http))
+        remote === nothing || return _write_response!(http, _json_response(404, """{"host_unknown": true, "detail": "no connected host with this name has a workspace with this id"}"""))
         return _write_response!(http, _json_response(404, """{"workspace_unknown": true, "detail": "no workspace with this id is open on this server"}"""))
     end
     # From here the request looks, to the router and to the child, like it was made at the root.
     request.target = rest
-    request.context[:workspace_root] = s.path
     request.context[:workspace_id] = String(wid)
-    request.context[:workspace_session] = s
+    if remote === nothing
+        request.context[:workspace_root] = s.path
+        request.context[:workspace_session] = s
+    else
+        request.context[:remote_host] = s.host.name
+        request.context[:content_base] = content_base_url(session, request, s.host, wid)
+    end
 
     if is_upgrade
-        if startswith(path, "/terminal")
+        if remote === nothing && startswith(path, "/terminal")
             serve_terminal_upgrade(http, session, query)
         else
-            proxy_ws(http, s, rest)
+            proxy_ws(http, s, rest) # a remote workspace's shell runs in the remote hub: its /terminal is relayed like any socket
         end
         return
     end
 
     request.body = read(http)
-    if path == "/api/v1/shutdown"
+    if remote === nothing && path == "/api/v1/shutdown"
         # "shut down" on a workspace page means this workspace's server, never the hub and every
         # other workspace with it (the hub's own shutdown stays at the root)
         @async begin
@@ -369,7 +399,7 @@ function handle_workspace_request(http::HTTP.Stream, session::ServerSession, app
         end
         return _write_response!(http, _json_response(200, """{"status": "shutting_down", "workspace": $(_json_string(s.path))}"""))
     end
-    if hub_serves_natively(path)
+    if remote === nothing ? hub_serves_natively(path) : hub_serves_for_remote(path)
         response = app(request) # the hub's own router + auth middleware, which sets the hub cookie
         return _write_response!(http, response)
     end
@@ -377,7 +407,13 @@ function handle_workspace_request(http::HTTP.Stream, session::ServerSession, app
         # switching the folder in place is what a leaf does; under the prefix the folder IS the workspace
         return _write_response!(http, _json_response(409, """{"error": "this server is a workspace hub: open another folder from the launcher instead"}"""))
     end
-    response = proxy_http(s, wid, request, rest)
+    if remote !== nothing && path == "/edit"
+        # Script from another machine never runs on this hub's origin: the editor of a remote
+        # workspace is only served on that host's content origin (RemoteHosts.jl).
+        return _write_response!(http, _json_response(409, """{"error": "the editor of a remote workspace is served on its own origin", "content_base": $(_json_string(request.context[:content_base]))}"""))
+    end
+    response = proxy_http(s, remote === nothing ? wid : relay_pool_key(s), request, rest)
+    remote === nothing || inert_on_hub_origin!(response)
     auth_required(session, request) && add_set_secret_cookie!(session, request, response)
     _write_response!(http, response)
 end

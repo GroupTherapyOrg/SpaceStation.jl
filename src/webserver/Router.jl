@@ -140,6 +140,7 @@ function http_router_for(session::ServerSession)
     register_collab_api!(router, session)
     register_collab_remote!(router, session)
     register_collab_local!(router, session)
+    register_remote_hosts!(router, session)
 
     
     function serve_sample(request::HTTP.Request)

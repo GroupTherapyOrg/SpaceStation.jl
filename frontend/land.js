@@ -358,6 +358,35 @@ const AppSchemeToggle = ({ classname }) => {
 // the bundler — a string src would 404 in frontend-dist where filenames are hashed.
 const logo_url = new URL("img/spacestation.svg", import.meta.url).href
 
+// Where this page is. The launcher is `/`; a workspace on this machine is `/w/<id>/`; a workspace on
+// another machine is `/h/<host>/w/<id>/` — the same page from the same (local) hub, with that
+// machine's hub behind every `./` request (src/webserver/RemoteHosts.jl). Known from the URL, so
+// nothing waits on a request to know which machine it is talking about.
+const PAGE = (() => {
+    const m = /^\/(?:h\/([^/]+)\/)?w\/([^/]+)\//.exec(window.location.pathname)
+    if (m == null) return { host: null, wid: null }
+    let host = null
+    try {
+        host = m[1] == null ? null : decodeURIComponent(m[1])
+    } catch {}
+    return { host, wid: m[2] }
+})()
+/** `&host=…` for a launcher request about another machine; nothing for this one. */
+const host_param = (host) => (host == null ? "" : `&host=${encodeURIComponent(host)}`)
+/** Where the local hub shows workspace `wid` of `host`. Built here from an id that is checked, not
+ *  taken from what the remote machine answered: a link on this page must not be the remote's to choose. */
+const hosted_url = (host, wid) => (typeof wid === "string" && /^[0-9a-f]{16}$/.test(wid) ? `/h/${encodeURIComponent(host)}/w/${wid}/` : null)
+
+// Everything this page remembers about a workspace is on one browser origin now, the local hub's,
+// for every machine. A folder is only a workspace together with the machine it is on: `/home/me/x`
+// here and `/home/me/x` on a node are two workspaces with two sets of tabs and terminals. The key
+// for a local folder stays its path, so nothing saved before this is lost.
+const ws_key = (path, host = PAGE.host) => (host == null ? path : `ssh://${host}/${path}`)
+const parse_ws_key = (key) => {
+    const m = /^ssh:\/\/([^/]+)\/([\s\S]*)$/.exec(key)
+    return m == null ? { host: null, path: key } : { host: m[1], path: m[2] }
+}
+
 const RECENT_KEY = "spacestation recent workspaces"
 const get_recent_workspaces = () => {
     try {
@@ -638,8 +667,12 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
     // SSH remote — so this opener is "homebase": it never leaves to become a workspace, it launches them.
     const [local_states, set_local_states] = useState(/** @type {Record<String, {state: String, detail: String, url: String?}>} */ ({}))
     const [running, set_running] = useState(
-        /** @type {Array<{kind: String, key: String, name: String, sub: String, state: String, url: String?, path?: String, host?: String}>} */ ([])
+        /** @type {Array<{kind: String, key: String, name: String, sub: String, state: String, url: String?, path?: String, host?: String?}>} */ ([])
     )
+    // Other machines this hub is connected to (RemoteHosts.jl). Their workspaces are tiles beside the
+    // local ones, and the folder browser below can be pointed at any of them.
+    const [hosts, set_hosts] = useState(/** @type {Array<{host: String, label: String, state: String}>} */ ([]))
+    const [browse_host, set_browse_host] = useState(/** @type {String?} */ (null))
     // a connect can be cancelled mid-flight: the poll loops below bail when their key lands in these sets
     const cancelled_hosts = useRef(/** @type {Set<String>} */ (new Set()))
     const cancelled_paths = useRef(/** @type {Set<String>} */ (new Set()))
@@ -699,73 +732,82 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
 
     // Local twin of connect_remote: spawn (or reattach to) the child server for this folder, then open it
     // in a new tab. The homebase tab stays put, so you can launch as many workspaces as you like.
-    const connect_local = useCallback(async (path) => {
-        cancelled_paths.current.delete(path) // a fresh attempt clears any earlier cancel
+    const connect_local = useCallback(async (path, host = null) => {
+        // `host`: the folder is on that machine, and so is the server that gets started for it. Same
+        // requests, with the host named; the page that opens is this hub's, at /h/<host>/w/<id>/.
+        const key = ws_key(path, host)
+        const placed = (st) => (host == null ? st : { ...st, url: st.state === "ready" ? hosted_url(host, st.wid) : null })
+        cancelled_paths.current.delete(key) // a fresh attempt clears any earlier cancel
         try {
-            let status = await get_json(`./api/v1/local/open?path=${encodeURIComponent(path)}`, { method: "POST" })
-            set_local_states((s) => ({ ...s, [path]: status }))
+            let status = placed(await get_json(`./api/v1/local/open?path=${encodeURIComponent(path)}${host_param(host)}`, { method: "POST" }))
+            set_local_states((s) => ({ ...s, [key]: status }))
             while (status.state !== "ready" && status.state !== "error") {
                 await new Promise((r) => setTimeout(r, 1000))
-                if (cancelled_paths.current.has(path)) return // cancelled: stop polling
-                status = await get_json(`./api/v1/local/status?path=${encodeURIComponent(path)}`)
-                set_local_states((s) => ({ ...s, [path]: status }))
+                if (cancelled_paths.current.has(key)) return // cancelled: stop polling
+                status = placed(await get_json(`./api/v1/local/status?path=${encodeURIComponent(path)}${host_param(host)}`))
+                set_local_states((s) => ({ ...s, [key]: status }))
             }
             if (status.state === "ready" && status.url != null) {
-                remember_workspace(path)
+                remember_workspace(key)
                 window.open(open_href(status.url), `spacestation-${status.url}`) // may be blocked: the ready card stays a clickable link either way
             }
         } catch (e) {
-            if (cancelled_paths.current.has(path)) return
-            set_local_states((s) => ({ ...s, [path]: { state: "error", detail: String(e), url: null } }))
+            if (cancelled_paths.current.has(key)) return
+            set_local_states((s) => ({ ...s, [key]: { state: "error", detail: String(e), url: null } }))
         }
+    }, [])
+
+    const forget_local = useCallback((key) => {
+        set_local_states((s) => {
+            const c = { ...s }
+            delete c[key]
+            return c
+        })
+        set_running((rs) => rs.filter((w) => !(w.kind === "local" && w.key === key)))
     }, [])
 
     // Cancel an in-flight (or errored) local spawn — no confirm, nothing's running yet. (Shutting down a
     // READY workspace, which has live notebooks, goes through shutdown_local with its confirm instead.)
-    const cancel_local = useCallback(async (path) => {
-        cancelled_paths.current.add(path)
-        try {
-            await fetch(`./api/v1/local/shutdown?path=${encodeURIComponent(path)}`, { method: "POST" })
-        } catch (e) {}
-        set_local_states((s) => {
-            const c = { ...s }
-            delete c[path]
-            return c
-        })
-        set_running((rs) => rs.filter((w) => !(w.kind === "local" && w.path === path)))
-    }, [])
+    const cancel_local = useCallback(
+        async (path, host = null) => {
+            cancelled_paths.current.add(ws_key(path, host))
+            try {
+                await fetch(`./api/v1/local/shutdown?path=${encodeURIComponent(path)}${host_param(host)}`, { method: "POST" })
+            } catch (e) {}
+            forget_local(ws_key(path, host))
+        },
+        [forget_local]
+    )
 
-    const shutdown_local = useCallback(async (path) => {
-        if (
-            !(await ask_confirm(
-                `Shut down the workspace server for ${basename(path)}?\n\nIts running notebooks will stop. Files stay on disk and outputs are cached in their .pluto-cache.toml sidecars, so reopening restores everything.`,
-                { action: "Shut down" }
-            ))
-        )
-            return
-        try {
-            await fetch(`./api/v1/local/shutdown?path=${encodeURIComponent(path)}`, { method: "POST" })
-        } catch (e) {}
-        set_local_states((s) => {
-            const c = { ...s }
-            delete c[path]
-            return c
-        })
-        set_running((rs) => rs.filter((w) => !(w.kind === "local" && w.path === path)))
-    }, [])
+    const shutdown_local = useCallback(
+        async (path, host = null) => {
+            if (
+                !(await ask_confirm(
+                    `Shut down the workspace server for ${basename(path)}${host == null ? "" : ` on ${host}`}?\n\nIts running notebooks will stop. Files stay on disk and outputs are cached in their .pluto-cache.toml sidecars, so reopening restores everything.`,
+                    { action: "Shut down" }
+                ))
+            )
+                return
+            try {
+                await fetch(`./api/v1/local/shutdown?path=${encodeURIComponent(path)}${host_param(host)}`, { method: "POST" })
+            } catch (e) {}
+            forget_local(ws_key(path, host))
+        },
+        [forget_local]
+    )
 
     // Open a folder as a workspace: spawn (or reattach to) its child server and open the hub's page
     // for it (connect_local). The same over an SSH tunnel: the page is the hub's, under its one
     // forwarded port, and the hub relays to the child on the node — nothing else is forwarded.
-    const open_workspace = useCallback(async (path) => connect_local(path), [connect_local])
+    const open_workspace = useCallback(async (path, host = null) => connect_local(path, host), [connect_local])
 
     // The ✕ on a Running Workspace card: cancel a connecting one, dismiss an errored one, disconnect a
     // ready remote, or shut down a ready local workspace (that one confirms — it has live notebooks).
     const dismiss_running = useCallback(
         (w) => {
             if (w.kind === "remote") return cancel_remote(w.host)
-            if (w.state === "ready") return shutdown_local(w.path)
-            return cancel_local(w.path)
+            if (w.state === "ready") return shutdown_local(w.path, w.host ?? null)
+            return cancel_local(w.path, w.host ?? null)
         },
         [cancel_remote, shutdown_local, cancel_local]
     )
@@ -775,13 +817,35 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
     useEffect(() => {
         let alive = true
         const load = async () => {
-            const [locals, remotes] = await Promise.all([
+            const [locals, remotes, host_list] = await Promise.all([
                 get_json("./api/v1/local/list").catch(() => []),
                 get_json("./api/v1/remote/list").catch(() => []),
+                get_json("./api/v1/hosts").catch(() => []),
             ])
+            // each connected machine is asked for its own workspaces: a slow one delays only its own tiles
+            const hosted = await Promise.all(
+                host_list
+                    .filter((h) => h.state === "connected")
+                    .map((h) =>
+                        get_json(`./api/v1/local/list?host=${encodeURIComponent(h.host)}`)
+                            .then((ws) => ws.map((w) => ({ ...w, host: h.host })))
+                            .catch(() => [])
+                    )
+            )
             if (!alive) return
+            set_hosts(host_list)
             set_running([
-                ...locals.map((w) => ({ kind: "local", key: `local:${w.path}`, name: basename(w.path) || w.path, sub: w.path, state: w.state, url: w.url, path: w.path })),
+                ...locals.map((w) => ({ kind: "local", key: w.path, name: basename(w.path) || w.path, sub: w.path, state: w.state, url: w.url, path: w.path, host: null })),
+                ...hosted.flat().map((w) => ({
+                    kind: "local",
+                    key: ws_key(w.path, w.host),
+                    name: basename(w.path) || w.path,
+                    sub: w.path,
+                    state: w.state,
+                    url: w.state === "ready" ? hosted_url(w.host, w.wid) : null,
+                    path: w.path,
+                    host: w.host,
+                })),
                 ...remotes.map((r) => ({ kind: "remote", key: `remote:${r.host}`, name: r.host, sub: "SSH remote", state: r.state, url: r.url, host: r.host })),
             ])
         }
@@ -795,18 +859,23 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
     }, [])
 
     const browsed_path = useRef(/** @type {String?} */ (null))
-    const browse = useCallback(async (path, { quiet = false } = {}) => {
-        const previous = browsed_path.current
+    const browsed_host = useRef(/** @type {String?} */ (null))
+    // `host`: whose folders. Left out, it is the machine being browsed already (null: this one).
+    const browse = useCallback(async (path, { quiet = false, host = browsed_host.current } = {}) => {
+        const previous = [browsed_path.current, browsed_host.current]
         browsed_path.current = path
+        browsed_host.current = host
         try {
-            set_listing(await get_json(path == null ? "./api/v1/browse" : `./api/v1/browse?path=${encodeURIComponent(path)}`))
+            const query = [path == null ? null : `path=${encodeURIComponent(path)}`, host == null ? null : `host=${encodeURIComponent(host)}`].filter((x) => x != null).join("&")
+            set_listing(await get_json(`./api/v1/browse${query === "" ? "" : `?${query}`}`))
+            set_browse_host(host)
             if (!quiet) set_error(null)
             return true
         } catch (e) {
             // stay where we were: the periodic refresh re-reads `browsed_path`, and a mistyped path
             // must not become the folder it asks for from now on
-            browsed_path.current = previous
-            if (!quiet) set_error(path == null ? "The folders on this machine could not be read." : `${path} is not a folder that can be opened.`)
+            ;[browsed_path.current, browsed_host.current] = previous
+            if (!quiet) set_error(path == null ? `The folders on ${host ?? "this machine"} could not be read.` : `${path} is not a folder that can be opened.`)
         }
     }, [])
 
@@ -867,11 +936,11 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
     // One answer per place: what this page was told while connecting (it has the detail), else what
     // the server lists (it survives a reload of this page).
     const local_rows = [
-        ...running.filter((w) => w.kind === "local").map((w) => ({ path: w.path, st: local_states[w.path] ?? { state: w.state, detail: "", url: w.url } })),
+        ...running.filter((w) => w.kind === "local").map((w) => ({ key: w.key, path: w.path, host: w.host ?? null, st: local_states[w.key] ?? { state: w.state, detail: "", url: w.url } })),
         ...Object.entries(local_states)
-            .filter(([path]) => !running.some((w) => w.kind === "local" && w.path === path))
-            .map(([path, st]) => ({ path, st })),
-    ].map((r) => ({ ...r, st: r.st.state === "ready" && r.st.url == null ? { ...r.st, url: running.find((w) => w.path === r.path)?.url ?? null } : r.st }))
+            .filter(([key]) => !running.some((w) => w.kind === "local" && w.key === key))
+            .map(([key, st]) => ({ key, ...parse_ws_key(key), st })),
+    ].map((r) => ({ ...r, st: r.st.state === "ready" && r.st.url == null ? { ...r.st, url: running.find((w) => w.kind === "local" && w.key === r.key)?.url ?? null } : r.st }))
     const remote_state = (h) => {
         const listed = running.find((w) => w.kind === "remote" && w.host === h)
         return remote_states[h] ?? (listed == null ? null : { state: listed.state, detail: "", url: listed.url })
@@ -884,7 +953,13 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
         return () => clearInterval(iv)
     }, [anything_busy])
 
-    const recent = get_recent_workspaces().filter((p) => !local_rows.some((r) => r.path === p))
+    const recent = get_recent_workspaces().filter((p) => !local_rows.some((r) => r.key === p))
+    // a machine this hub is connected to is listed once, as connected, not also as an ssh alias to connect to
+    const ssh_hosts_to_connect = ssh_hosts.filter((h) => !hosts.some((x) => x.host === h))
+    const browse_on = (host) => {
+        void browse(null, { host })
+        document.querySelector(".workspace-opener .browse-panel")?.scrollIntoView({ block: "nearest", behavior: "smooth" })
+    }
 
     // Built by the server: splitting a path on "/" here turned a Windows one into a single bogus
     // crumb, and joining one back together means knowing about drives and backslashes.
@@ -915,33 +990,34 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                 ? html`<section class="opener-section">
                       <h2 class="section-label">Open workspaces</h2>
                       <div class="island tray">
-                          ${local_rows.map(({ path, st }) => {
+                          ${local_rows.map(({ key, path, host, st }) => {
                               const name = basename(path) || path
-                              const time = elapsed(`local:${path}`, st)
-                              const body = html`<span class="ws-card-icon"><svg class="ico" aria-hidden="true"><use href="#i-folder" /></svg></span>
+                              const time = elapsed(`local:${key}`, st)
+                              const body = html`<span class="ws-card-icon"><svg class="ico" aria-hidden="true"><use href=${host == null ? "#i-folder" : "#i-server"} /></svg></span>
                                   <span class="ws-name">${name}</span>
+                                  ${host == null ? null : html`<span class="ws-host" title=${`This workspace is on ${host}`}>on ${host}</span>`}
                                   <span class="ws-path" title=${path}>${short_path(path)}</span>
                                   ${st.state === "ready"
                                       ? null
                                       : st.state === "error"
                                         ? html`<span class="ws-state"><span class="dot bad"></span>Did not start</span>`
                                         : html`<span class="ws-state"><span class="spinner"></span>${state_label(st)} · ${time}</span>`}`
-                              return html`<div class="ws-card ${st.state === "error" ? "error" : ""} ${is_busy(st) ? "busy" : ""}" key=${path}>
+                              return html`<div class="ws-card ${st.state === "error" ? "error" : ""} ${is_busy(st) ? "busy" : ""}" key=${key} data-host=${host ?? ""}>
                                   ${st.state === "ready" && st.url != null ? open_link(st.url, name, body, "ws-card-open") : html`<div class="ws-card-open inert">${body}</div>`}
                                   ${st.state !== "ready" && st.detail ? html`<p class="ws-card-detail">${st.detail}</p>` : null}
                                   ${st.state === "ready"
                                       ? html`<div class="ws-card-foot">
                                             <span class="ws-state"><span class="dot ok"></span>Running</span>
-                                            <button class="text-button stop" title="Stop this workspace's server and its notebooks. Files stay as they are." onClick=${() => shutdown_local(path)}>
+                                            <button class="text-button stop" title="Stop this workspace's server and its notebooks. Files stay as they are." onClick=${() => shutdown_local(path, host)}>
                                                 Shut down
                                             </button>
                                         </div>`
                                       : st.state === "error"
                                         ? html`<div class="ws-card-actions">
-                                                  <button class="text-button" onClick=${() => open_workspace(path)}>Try again</button>
+                                                  <button class="text-button" onClick=${() => open_workspace(path, host)}>Try again</button>
                                               </div>
-                                              <button class="icon-button ws-card-corner" title="Dismiss" aria-label="Dismiss" onClick=${() => cancel_local(path)}><svg class="ico" aria-hidden="true"><use href="#i-close" /></svg></button>`
-                                        : html`<div class="ws-card-actions"><button class="text-button" onClick=${() => cancel_local(path)}>Cancel</button></div>`}
+                                              <button class="icon-button ws-card-corner" title="Dismiss" aria-label="Dismiss" onClick=${() => cancel_local(path, host)}><svg class="ico" aria-hidden="true"><use href="#i-close" /></svg></button>`
+                                        : html`<div class="ws-card-actions"><button class="text-button" onClick=${() => cancel_local(path, host)}>Cancel</button></div>`}
                               </div>`
                           })}
                           ${connected_hosts.map(({ host, st }) => {
@@ -966,17 +1042,19 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                 ? html`<section class="opener-section">
                       <h2 class="section-label">Recent</h2>
                       <div class="island tray">
-                          ${recent.map(
-                              (p) => html`<div class="ws-card" key=${p}>
-                                  <button class="ws-card-open" title=${`Open ${p}`} onClick=${() => open_workspace(p)}>
-                                      <span class="ws-card-icon quiet"><svg class="ico" aria-hidden="true"><use href="#i-folder" /></svg></span>
-                                      <span class="ws-name">${basename(p) || p}</span>
-                                      <span class="ws-path" title=${p}>${short_path(p)}</span>
+                          ${recent.map((p) => {
+                              const { host, path } = parse_ws_key(p)
+                              return html`<div class="ws-card" key=${p}>
+                                  <button class="ws-card-open" title=${`Open ${path}${host == null ? "" : ` on ${host}`}`} onClick=${() => open_workspace(path, host)}>
+                                      <span class="ws-card-icon quiet"><svg class="ico" aria-hidden="true"><use href=${host == null ? "#i-folder" : "#i-server"} /></svg></span>
+                                      <span class="ws-name">${basename(path) || path}</span>
+                                      ${host == null ? null : html`<span class="ws-host">on ${host}</span>`}
+                                      <span class="ws-path" title=${path}>${short_path(path)}</span>
                                   </button>
                                   <button
                                       class="icon-button ws-card-corner on-hover"
                                       title="Remove from this list"
-                                      aria-label=${`Remove ${basename(p) || p} from recent`}
+                                      aria-label=${`Remove ${basename(path) || path} from recent`}
                                       onClick=${() => {
                                           forget_workspace(p)
                                           set_tick((n) => n + 1)
@@ -985,7 +1063,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                                       <svg class="ico" aria-hidden="true"><use href="#i-close" /></svg>
                                   </button>
                               </div>`
-                          )}
+                          })}
                       </div>
                   </section>`
                 : null}
@@ -993,6 +1071,25 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
             <section class="opener-section">
                 <h2 class="section-label">Open a folder <span class="spacer"></span>${refresh_button}</h2>
                 <div class="island browse-panel">
+                    ${hosts.length === 0
+                        ? null
+                        : html`<div class="place-switch" role="radiogroup" aria-label="Which machine's folders">
+                              <button role="radio" aria-checked=${browse_host == null} class=${browse_host == null ? "active" : ""} onClick=${() => browse(null, { host: null })}>
+                                  <svg class="ico" aria-hidden="true"><use href="#i-folder" /></svg>This computer
+                              </button>
+                              ${hosts.map(
+                                  (h) => html`<button
+                                      role="radio"
+                                      aria-checked=${browse_host === h.host}
+                                      class=${browse_host === h.host ? "active" : ""}
+                                      disabled=${h.state !== "connected"}
+                                      title=${h.state === "connected" ? `Browse the folders on ${h.host}` : `${h.host} is not answering`}
+                                      onClick=${() => browse(null, { host: h.host })}
+                                  >
+                                      <svg class="ico" aria-hidden="true"><use href="#i-server" /></svg>${h.host}
+                                  </button>`
+                              )}
+                          </div>`}
                     ${listing == null
                         ? html`<p class="ws-empty">${error == null ? "Reading…" : "This folder could not be read."}</p>`
                         : html`
@@ -1024,10 +1121,10 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                                   ${listing.entries.length === 0 ? html`<p class="ws-empty">No folders in here.</p>` : null}
                               </div>
                               <div class="opener-actions">
-                                  <button class="text-button primary open-this-folder" onClick=${() => open_workspace(listing.path)}>
+                                  <button class="text-button primary open-this-folder" onClick=${() => open_workspace(listing.path, browse_host)}>
                                       Open <strong>${basename(listing.path) || listing.path}</strong>
                                   </button>
-                                  <span class="hint">as a workspace</span>
+                                  <span class="hint">as a workspace${browse_host == null ? "" : ` on ${browse_host}`}</span>
                               </div>
                           `}
                 </div>
@@ -1036,7 +1133,7 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                     : html`<p class="opener-error" role="alert"><svg class="ico" aria-hidden="true"><use href="#i-alert" /></svg><span>${error}</span></p>`}
             </section>
 
-            ${!tunneled && ssh_hosts.length > 0
+            ${!tunneled && (ssh_hosts_to_connect.length > 0 || hosts.length > 0)
                 ? html`<section class="opener-section">
                       <h2 class="section-label">
                           Remote hosts
@@ -1048,12 +1145,32 @@ const WorkspaceOpener = ({ on_cancel, tunneled }) => {
                           </label>
                           ${refresh_button}
                       </h2>
-                      <p class="section-note">
-                          From <code>~/.ssh/config</code>. The files, notebooks and terminal all run on that machine, over an SSH tunnel. The first connection installs
-                          SpaceStation there; after that it reconnects at once.
-                      </p>
+                      ${hosts.length > 0
+                          ? html`<p class="section-note">
+                                A connected machine's workspaces open here, at this address: its files, notebooks and terminal run there, and this page stays the one on this
+                                computer.
+                            </p>`
+                          : null}
+                      ${ssh_hosts_to_connect.length > 0
+                          ? html`<p class="section-note">
+                                From <code>~/.ssh/config</code>. The files, notebooks and terminal all run on that machine, over an SSH tunnel. The first connection installs
+                                SpaceStation there; after that it reconnects at once.
+                            </p>`
+                          : null}
                       <ul class="island ws-list">
-                          ${ssh_hosts.map((h) => {
+                          ${hosts.map(
+                              (h) => html`<li class="ws-row" key=${`host:${h.host}`} data-host=${h.host}>
+                                  ${h.state === "connected"
+                                      ? html`<button class="ws-open" title=${`Browse the folders on ${h.host}`} onClick=${() => browse_on(h.host)}>
+                                                <svg class="ico" aria-hidden="true"><use href="#i-server" /></svg><span class="ws-name">${h.host}</span>
+                                            </button>
+                                            <span class="ws-state"><span class="dot ok"></span>Connected</span>
+                                            <button class="text-button" onClick=${() => browse_on(h.host)}>Open a folder</button>`
+                                      : html`<div class="ws-open inert"><svg class="ico" aria-hidden="true"><use href="#i-server" /></svg><span class="ws-name">${h.host}</span></div>
+                                            <span class="ws-state"><span class="dot bad"></span>Not answering</span>`}
+                              </li>`
+                          )}
+                          ${ssh_hosts_to_connect.map((h) => {
                               const st = remote_state(h)
                               const time = elapsed(`remote:${h}`, st)
                               const body = html`<svg class="ico" aria-hidden="true"><use href="#i-server" /></svg><span class="ws-name">${h}</span>`
@@ -1956,7 +2073,7 @@ const Land = () => {
     const tabs_restored_for = useRef(/** @type {String?} */ (null))
     useEffect(() => {
         const root = workspace?.root
-        if (root != null && tabs_restored_for.current === root) save_tabs(root, tabs, active, running.map((nb) => nb.notebook_id))
+        if (root != null && tabs_restored_for.current === root) save_tabs(ws_key(root), tabs, active, running.map((nb) => nb.notebook_id))
     }, [tabs, active, running, workspace?.root])
     // This server may be reached over an SSH tunnel (when it's a remote workspace). If so, its child
     // workspace ports aren't forwarded to the browser, so workspaces open IN-PLACE rather than in new tabs.
@@ -1964,7 +2081,12 @@ const Land = () => {
     // This page is a workspace on a hub, under /w/<id>/ (src/webserver/Proxy.jl): the notebooks live
     // in a child server the hub relays to; the hub itself never freezes with them. Known
     // synchronously from the URL, so nothing waits on the config fetch to behave right.
-    const [hub, set_hub] = useState(/^\/w\/[^/]+\//.test(window.location.pathname))
+    const [hub, set_hub] = useState(PAGE.wid != null)
+    // A workspace on another machine: its notebooks are that machine's pages, so they load from a
+    // separate origin of this hub (`http://<host>.localhost:<port>/<unguessable>/`), where this
+    // hub's own API is out of their reach. The hub says where; until it has, no notebook frame is made.
+    const [content_base, set_content_base] = useState(/** @type {String?} */ (null))
+    const content_origin = content_base == null ? null : new URL(content_base).origin
     // Nothing is answering on our own origin. For an SSH workspace this is the ordinary consequence
     // of the laptop having been shut — see the recovery loop further down.
     const [offline, set_offline] = useState(false)
@@ -1978,6 +2100,7 @@ const Land = () => {
             .then((c) => {
                 set_tunneled(!!(c && c.tunneled))
                 set_hub(!!(c && c.hub && c.wid != null))
+                if (PAGE.host != null && typeof c?.content_base === "string") set_content_base(c.content_base)
                 if (Array.isArray(c?.notebook_extensions) && c.notebook_extensions.length > 0) set_notebook_extensions(c.notebook_extensions)
             })
             .catch(() => {})
@@ -1990,7 +2113,11 @@ const Land = () => {
     // Tab title tells the homebase apart from workspaces in the browser's tab strip: the launcher reads
     // "SpaceStation (launcher)"; a workspace reads "SpaceStation — <folder>".
     useEffect(() => {
-        document.title = no_workspace ? "SpaceStation (launcher)" : workspace?.root ? `SpaceStation — ${basename(workspace.root)}` : "SpaceStation"
+        document.title = no_workspace
+            ? "SpaceStation (launcher)"
+            : workspace?.root
+              ? `SpaceStation — ${basename(workspace.root)}${PAGE.host == null ? "" : ` on ${PAGE.host}`}`
+              : "SpaceStation"
     }, [no_workspace, workspace])
 
     // The logo: the launcher, shown over this workspace, with a way back. (It used to ask the
@@ -2020,7 +2147,7 @@ const Land = () => {
     useEffect(() => {
         const root = workspace?.root ?? null
         if (root == null || terminals_workspace.current === root) return
-        const remembered = restore_terminals(root)
+        const remembered = restore_terminals(ws_key(root))
         terminals_workspace.current = root
         let superseded = false
         ;(async () => {
@@ -2078,7 +2205,7 @@ const Land = () => {
 
     useEffect(() => {
         const root = workspace?.root ?? null
-        if (root != null && terminals_workspace.current === root && terminals_loaded_for === root) save_terminals(root, terminals)
+        if (root != null && terminals_workspace.current === root && terminals_loaded_for === root) save_terminals(ws_key(root), terminals)
     }, [terminals, terminals_loaded_for, workspace?.root])
 
     // Warn before a browser close/reload discards unsaved FILE edits. File buffers are client-only
@@ -2216,7 +2343,7 @@ const Land = () => {
     // the filesystem that holds the workspace's files is not answering (the hub says 504 filesystem_busy):
     // the last listing stays on screen, and everything that is not a file listing keeps working
     const [files_status, set_files_status] = useState(/** @type {{since: number, detail: String}?} */ (null))
-    const [workspace_status, set_workspace_status] = useState(/** @type {{kind: "busy" | "down", since: number, detail: String}?} */ (null))
+    const [workspace_status, set_workspace_status] = useState(/** @type {{kind: "busy" | "down" | "host", since: number, detail: String}?} */ (null))
     const refreshing = useRef(false)
     const unreachable = useRef(0) // polls in a row that nothing answered
     const refresh = useCallback(async () => {
@@ -2247,6 +2374,12 @@ const Land = () => {
                 set_workspace(null)
                 set_poll_error(null)
                 return // the launcher has no notebooks to list (a hub's root list would poll every workspace's child)
+            } else if (ws_response.status === 503 && PAGE.host != null) {
+                // the hub answered, the machine the workspace is on did not: say so, and keep asking
+                const info = await ws_response.json().catch(() => ({}))
+                set_workspace_status((prev) => ({ kind: "host", since: prev?.since ?? Date.now(), detail: String(info.detail ?? "") }))
+                set_poll_error(null)
+                return
             } else if (ws_response.status === 504) {
                 const info = await ws_response.json().catch(() => ({}))
                 set_files_status((prev) => ({ since: prev?.since ?? Date.now(), detail: String(info.detail ?? "") }))
@@ -2293,7 +2426,7 @@ const Land = () => {
             // time shows its running notebooks as tabs (e.g. one passed via Pluto.run(notebook=…)).
             if (!auto_tabbed.current) {
                 auto_tabbed.current = true
-                const saved = root_now == null ? null : restore_tabs(root_now)
+                const saved = root_now == null ? null : restore_tabs(ws_key(root_now))
                 if (saved == null) running_now.forEach((nb) => add_tab(nb.notebook_id, nb.path))
                 else {
                     const still_running = new Set(running_now.map((nb) => nb.notebook_id))
@@ -2331,10 +2464,10 @@ const Land = () => {
         if (root == null) return
         set_workspace_status((prev) => ({ kind: "busy", since: prev?.since ?? Date.now(), detail: "restarting the workspace server…" }))
         try {
-            let status = await get_json(`./api/v1/local/restart?path=${encodeURIComponent(root)}`, { method: "POST" })
+            let status = await get_json(`./api/v1/local/restart?path=${encodeURIComponent(root)}${host_param(PAGE.host)}`, { method: "POST" })
             while (status.state !== "ready" && status.state !== "error") {
                 await new Promise((r) => setTimeout(r, 1000))
-                status = await get_json(`./api/v1/local/status?path=${encodeURIComponent(root)}`)
+                status = await get_json(`./api/v1/local/status?path=${encodeURIComponent(root)}${host_param(PAGE.host)}`)
             }
             if (status.state === "ready") window.location.reload()
             else set_error(String(status.detail ?? "the workspace server did not start"))
@@ -2562,14 +2695,37 @@ const Land = () => {
     // of this file). Only our own origin, and only the frame that sent it.
     useEffect(() => {
         const on_message = (/** @type {MessageEvent} */ e) => {
-            if (e.origin !== location.origin || e.data?.type !== "spacestation:close-notebook-tab") return
+            if (e.origin !== location.origin && e.origin !== content_origin) return
             const frame = [...document.querySelectorAll("#frames iframe")].find((f) => /** @type {HTMLIFrameElement} */ (f).contentWindow === e.source)
-            const id = frame == null ? undefined : /** @type {HTMLIFrameElement} */ (frame).dataset.tabId
-            if (id != null) close_tab(id)
+            if (frame == null) return
+            if (e.data?.type === "spacestation:close-notebook-tab") {
+                const id = /** @type {HTMLIFrameElement} */ (frame).dataset.tabId
+                if (id != null) close_tab(id)
+            } else if (e.data?.type === "spacestation:key" && e.origin === content_origin && typeof e.data.key === "string" && typeof e.data.code === "string") {
+                // A frame on another origin cannot have its keys hooked (attach_tab_keys): its editor
+                // tells us about the chords that are the shell's. Only the fields a chord is made of.
+                const k = e.data
+                handle_tab_keys(
+                    /** @type {any} */ ({
+                        key: k.key,
+                        code: k.code,
+                        ctrlKey: k.ctrlKey === true,
+                        metaKey: k.metaKey === true,
+                        altKey: k.altKey === true,
+                        shiftKey: k.shiftKey === true,
+                        defaultPrevented: false,
+                        isComposing: false,
+                        view: null,
+                        target: null,
+                        preventDefault() {},
+                        stopPropagation() {},
+                    })
+                )
+            }
         }
         window.addEventListener("message", on_message)
         return () => window.removeEventListener("message", on_message)
-    }, [close_tab])
+    }, [close_tab, content_origin, handle_tab_keys])
 
     /** Make a notebook or a file in `dir`, asking for its name. `kind` only decides what the dialog
      *  proposes: a name with a notebook extension makes a notebook either way. */
@@ -3118,6 +3274,11 @@ const Land = () => {
                           </span>
                           ${workspace?.root
                               ? html`<div class="side-where">
+                                    ${PAGE.host == null
+                                        ? null
+                                        : html`<span class="where-line where-host" title=${`This workspace is on ${PAGE.host}. Its files, notebooks and terminal run there.`}>
+                                              <svg class="ico" aria-hidden="true"><use href="#i-server" /></svg><span class="where-text">${PAGE.host}</span>
+                                          </span>`}
                                     <button
                                         class="where-line where-path"
                                         title=${`${workspace.root}\nClick to copy the path`}
@@ -3287,7 +3448,13 @@ const Land = () => {
                             : null}
                         ${workspace_status != null && !offline
                             ? html`<div class="workspace-status ${workspace_status.kind}" role="status" aria-live="polite">
-                                  ${workspace_status.kind === "down"
+                                  ${workspace_status.kind === "host"
+                                      ? html`<svg class="ico" aria-hidden="true"><use href="#i-alert" /></svg>
+                                            <span class="text"
+                                                >${PAGE.host} is not answering (${seconds_since(workspace_status.since)}s). What runs there keeps running; this page reconnects by itself when
+                                                it is back.</span
+                                            >`
+                                      : workspace_status.kind === "down"
                                       ? html`<svg class="ico" aria-hidden="true"><use href="#i-alert" /></svg>
                                             <span class="text">The server for this workspace stopped, and its notebooks with it. The files and the terminal are fine.</span>
                                             <button class="text-button primary" onClick=${restart_workspace}>Start it again</button>`
@@ -3304,12 +3471,14 @@ const Land = () => {
                                     ? html`<div key=${t.id} class="pane ${t.id === active ? "active" : ""}">
                                           <${FileEditorPane} path=${t.path} label=${relative_path(t.path)} visible=${t.id === active} on_dirty=${set_tab_dirty} />
                                       </div>`
-                                    : // every notebook tab is the stock Pluto editor; iframes stay mounted so switching tabs never loses state
+                                    : PAGE.host != null && content_base == null
+                                      ? null // a remote notebook's page is the remote's: not before the hub says which origin it gets
+                                      : // every notebook tab is the stock Pluto editor; iframes stay mounted so switching tabs never loses state
                                       html`<iframe
                                           key=${t.id}
                                           data-tab-id=${t.id}
                                           title=${basename(t.path)}
-                                          src=${`./edit?id=${t.id}`}
+                                          src=${`${PAGE.host == null ? "./" : content_base}edit?id=${encodeURIComponent(t.id)}`}
                                           class=${t.id === active ? "active" : ""}
                                           onLoad=${(/** @type {Event} */ e) => attach_tab_keys(/** @type {HTMLIFrameElement} */ (e.target).contentWindow)}
                                       ></iframe>`
