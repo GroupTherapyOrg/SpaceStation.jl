@@ -1440,6 +1440,11 @@ const TerminalView = ({ tid, cwd, root, visible, scheme, notebook_env, on_exit }
                 // around ConPTY's full-viewport repaints) or redraw-in-place TUIs — Claude Code, vim,
                 // anything Ink-style — leave stale duplicated frames stacked above the live one.
                 ...(config?.windows ? { windowsPty: { backend: "conpty" } } : {}),
+                // A program that takes the mouse (Claude Code, vim, tmux, less) gets every drag, and the
+                // terminal selects nothing. Everywhere else Shift+drag selects all the same; on a Mac
+                // xterm leaves that to the Option key, and only with this: without it there was no way
+                // at all to select text in such a program's screen.
+                macOptionClickForcesSelection: true,
                 theme: terminal_theme_for(scheme_ref.current),
             })
             const fit = new FitAddon()
@@ -1460,6 +1465,27 @@ const TerminalView = ({ tid, cwd, root, visible, scheme, notebook_env, on_exit }
 
             // Assigned when the websocket opens (below); the paste handler needs it, so it lives out here.
             let socket = null
+
+            // A program that takes the mouse draws its own selection (the terminal's stays empty) and
+            // puts the text on the clipboard itself, the only way a program on another machine can:
+            // OSC 52, `ESC ] 52 ; c ; <base64> BEL`. Nothing here listened for it, so a drag in Claude
+            // Code showed a selection, copied nothing, and ⌘C after it found nothing selected.
+            // It is written to the clipboard when it arrives (a moment after the mouse was let go,
+            // which browsers still count as the user's doing) and kept, so that the copy key gives it
+            // again when the browser refused the first write. Only a write: a program that ASKS for the
+            // clipboard (`?`) is not answered, what the user copied elsewhere is not a program's to read.
+            let program_copy = { text: "", at: 0 }
+            term.parser.registerOscHandler(52, (data) => {
+                const at = data.indexOf(";")
+                const payload = at < 0 ? "" : data.slice(at + 1)
+                if (payload === "" || payload === "?" || payload.length > 4_000_000) return true
+                try {
+                    const text = new TextDecoder().decode(Uint8Array.from(atob(payload), (c) => c.charCodeAt(0)))
+                    program_copy = { text, at: Date.now() }
+                    copy_text(text)
+                } catch {}
+                return true
+            })
 
             // Copy and paste, by each platform's own convention:
             //   macOS            ⌘C / ⌘V
@@ -1488,6 +1514,9 @@ const TerminalView = ({ tid, cwd, root, visible, scheme, notebook_env, on_exit }
                         copy_text(term.getSelection())
                         // off macOS the same key is the interrupt: once copied, let the next press be one
                         if (!is_mac) term.clearSelection()
+                    } else if (program_copy.text !== "" && Date.now() - program_copy.at < 120_000) {
+                        // what the program in the terminal selected and copied itself, a moment ago (see OSC 52)
+                        copy_text(program_copy.text)
                     }
                     e.preventDefault() // Ctrl+Shift+C opens the inspector in Chromium
                     return false
