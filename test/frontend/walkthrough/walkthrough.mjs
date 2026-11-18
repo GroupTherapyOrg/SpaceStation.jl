@@ -466,6 +466,29 @@ await step("terminal: Ctrl+C with nothing selected stops what is running", true,
     await page.keyboard.press("Enter")
     return (await saw("after-interrupt-ok", 2, 25000)).slice(-4)
 })
+// A program that takes the mouse (Claude Code, vim) selects by itself and copies with OSC 52.
+// (Not on Windows: older ConPTY does not pass the sequence on.)
+await step("terminal: what a program copies itself (OSC 52) reaches the clipboard", !win, async () => {
+    await clip_write("nothing yet")
+    await focus_terminal()
+    await page.keyboard.type(`printf '\\033]52;c;%s\\007' "$(printf program-copy-ok | base64)"`)
+    await page.keyboard.press("Enter")
+    await until(async () => (await clip_read()) === "program-copy-ok", { timeout: 15000, what: "the program's text on the clipboard" })
+    // a program that asks for the clipboard is not answered, and changes nothing
+    await page.keyboard.type(`printf '\\033]52;c;?\\007'; echo asked-ok`)
+    await page.keyboard.press("Enter")
+    await saw("asked-ok", 2, 15000)
+    expect((await clip_read()) === "program-copy-ok", "a clipboard query changed the clipboard")
+    if (process.platform === "linux") {
+        // the copy key with nothing selected in the terminal: what the program copied, again
+        await clip_write("something else")
+        await focus_terminal()
+        await chord(["Control", "Shift", "C"])
+        await wait(600)
+        const got = await clip_read()
+        expect(got === "program-copy-ok", `the copy key gave ${JSON.stringify(got.slice(0, 80))}`)
+    }
+})
 await step("terminal: a second one; closing it while a program runs asks first, then closes", true, async () => {
     await page.evaluate(() => document.querySelector("button.new-terminal-tab").click())
     await until(() => page.evaluate(() => document.querySelectorAll(".terminal-tab").length === 2), { timeout: 20000, what: "two terminal tabs" })
