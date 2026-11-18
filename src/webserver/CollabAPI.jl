@@ -153,6 +153,14 @@ function legacy_registry_dir()::Union{Nothing,String}
     legacy == collab_registry_dir() ? nothing : legacy
 end
 
+# The installed version this server was started from, when its launcher named one
+# (SPACESTATION_APP_COMMIT, CollabRemote.jl "installed versions"). A later connect reads it to know
+# whether the server here is the current version; a server that does not say counts as an older one.
+function _registry_commit_field()::String
+    c = get(ENV, "SPACESTATION_APP_COMMIT", "")
+    occursin(r"^[0-9a-f]{7,64}$", c) ? "\"commit\": \"$(c)\", " : ""
+end
+
 "Write the connection file that lets external tools discover this live server (port + secret). Flat JSON, greppable with sed — clients need no JSON parser. Mode 0o600: it holds the access secret."
 function write_collab_registry_file(session::ServerSession, port::Integer; announce_legacy::Bool=false)
     dir = collab_registry_dir()
@@ -163,7 +171,7 @@ function write_collab_registry_file(session::ServerSession, port::Integer; annou
     end
     path = collab_registry_path(port)
     ws = session.options.server.workspace_folder
-    _write_private_file(path, """{"pid": $(getpid()), "host": $(_json_string(session.options.server.host)), "port": $(port), "node": $(_json_string(gethostname())), "secret": $(_json_string(session.secret)), "workspace": $(ws === nothing ? "null" : _json_string(tamepath(ws))), "hub": $(session.options.server.hub ? "true" : "false"), "spacestation_version": $(_json_string(PLUTO_VERSION_STR)), "pluto_version": $(_json_string(PLUTO_VERSION_STR)), "started_at": $(time())}\n""")
+    _write_private_file(path, """{"pid": $(getpid()), "host": $(_json_string(session.options.server.host)), "port": $(port), "node": $(_json_string(gethostname())), "secret": $(_json_string(session.secret)), "workspace": $(ws === nothing ? "null" : _json_string(tamepath(ws))), "hub": $(session.options.server.hub ? "true" : "false"), $(_registry_commit_field())"spacestation_version": $(_json_string(PLUTO_VERSION_STR)), "pluto_version": $(_json_string(PLUTO_VERSION_STR)), "started_at": $(time())}\n""")
     legacy = announce_legacy ? legacy_registry_dir() : nothing
     if legacy !== nothing
         try

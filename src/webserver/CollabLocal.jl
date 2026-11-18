@@ -39,7 +39,8 @@ _local_session_url(s::LocalSession) = "$(WORKSPACE_PREFIX)$(workspace_id(s.path)
 # workspace in its connection file (CollabAPI.write_collab_registry_file); we match on that, restrict to
 # this node (shared $HOME on a cluster holds other nodes' files too), and confirm it actually answers.
 # The whole scan runs off the serving thread: it is a directory walk plus a read per file on $HOME.
-_find_local_server(path::String; pid::Union{Nothing,Integer}=nothing) = offload_blocking(() -> _find_local_server_now(path; pid))
+_find_local_server(path::String; pid::Union{Nothing,Integer}=nothing, other_version::Union{Nothing,Ref{String}}=nothing) =
+    offload_blocking(() -> _find_local_server_now(path; pid, other_version))
 
 # A child on another SpaceStation version than this hub is never adopted: the hub serves the editor
 # and relays the protocol, and the two would disagree. Said once a minute per folder, not per request.
@@ -52,7 +53,8 @@ function _warn_version_mismatch(path::String, theirs::AbstractString)
     end
 end
 
-_find_local_server_now(path::String; pid::Union{Nothing,Integer}=nothing) = (want = tamepath(path); _scan_registry_now(p -> p == want; pid))
+_find_local_server_now(path::String; pid::Union{Nothing,Integer}=nothing, other_version::Union{Nothing,Ref{String}}=nothing) =
+    (want = tamepath(path); _scan_registry_now(p -> p == want; pid, other_version))
 
 "Is a process with this pid running on this machine? (Unix: signal 0. Elsewhere we cannot tell cheaply, so: yes.)"
 function _pid_alive(pid::Integer)::Bool
@@ -73,8 +75,12 @@ other file. Without this the hub adopted a dead child's file while the new child
 relayed every request with the dead child's secret: 403, forever. A dead process's file is skipped,
 not deleted: the next server for the port renames its own file over that very name, and a delete
 decided on text read a moment ago could remove the new file instead.
+
+`other_version` is set to the version of a live server that matched in everything but its version
+(with `pid`: the very process the caller started), so the caller can say that, and not "it did not
+come up".
 """
-function _scan_registry_now(matches::Function; pid::Union{Nothing,Integer}=nothing)
+function _scan_registry_now(matches::Function; pid::Union{Nothing,Integer}=nothing, other_version::Union{Nothing,Ref{String}}=nothing)
     me = gethostname()
     dir = collab_registry_dir()
     isdir(dir) || return nothing
@@ -106,6 +112,7 @@ function _scan_registry_now(matches::Function; pid::Union{Nothing,Integer}=nothi
         version_m = match(r"\"spacestation_version\": \"([^\"]+)\"", txt)
         if version_m !== nothing && String(version_m.captures[1]) != PLUTO_VERSION_STR
             _warn_version_mismatch(ws_path, version_m.captures[1])
+            other_version === nothing || (other_version[] = String(version_m.captures[1]))
             continue
         end
         port = parse(Int, port_m.captures[1])
@@ -173,12 +180,23 @@ function _local_spawn_task!(s::LocalSession)
                 return
             end
             # only the file written by the process we spawned: see _scan_registry_now
-            found = _find_local_server(s.path; pid=child_pid)
+            other = Ref("")
+            found = _find_local_server(s.path; pid=child_pid, other_version=other)
             if found !== nothing
                 s.port = found.port
                 s.secret = found.secret
                 s.state = "ready"
                 s.detail = "ready — workspace runs on this machine"
+                return
+            end
+            # The server we started is up, and it is another version than this one: the installation
+            # it was started from changed while this server ran. It will never be adopted, so waiting
+            # out the clock only delays the answer, and leaving it running left one server behind per
+            # attempt. Stop it, and say what happened and what gets out of it.
+            if !isempty(other[])
+                _stop_child!(s.proc)
+                s.state = "error"
+                s.detail = "the workspace server for $(basename(s.path)) started as SpaceStation $(other[]), and this server is $(PLUTO_VERSION_STR): the installation was changed while this server was running. Restart this SpaceStation server (on another machine: disconnect from it and connect again once nothing is running there), then open the workspace again."
                 return
             end
             if s.proc !== nothing && process_exited(s.proc)
@@ -193,6 +211,20 @@ function _local_spawn_task!(s::LocalSession)
         s.state = "error"
         s.detail = sprint(showerror, e)
     end
+end
+
+"Stop a process this hub started and make sure it is gone: SIGTERM can leave a Julia process spinning in its exit-time finalizers, still bound to its port."
+function _stop_child!(proc)
+    proc === nothing && return nothing
+    try
+        if !process_exited(proc)
+            kill(proc)
+            timedwait(() -> process_exited(proc), 5.0; pollint=0.1)
+            process_exited(proc) || kill(proc, Base.SIGKILL)
+        end
+    catch
+    end
+    nothing
 end
 
 """
@@ -216,7 +248,9 @@ every package a notebook adds. The tunneled flags are the hub's too: a local chi
 function _child_env(path::AbstractString)::Dict{String,String}
     env = user_env() # what the user launched from, not this hub's cut-down environment (UserEnv.jl)
     # where this hub keeps its node-local state is the hub's to say
-    for name in ("SPACESTATION_STATE_HOME", "SPACESTATION_NODE_DIR")
+    # ...and so is the installed version it was started from: a workspace server writes it into its
+    # connection file like the hub does, so a connect can tell which servers belong to which version
+    for name in ("SPACESTATION_STATE_HOME", "SPACESTATION_NODE_DIR", "SPACESTATION_APP_COMMIT")
         haskey(ENV, name) && (env[name] = ENV[name])
     end
     depot = get(ENV, "SPACESTATION_USER_DEPOT_PATH", "")

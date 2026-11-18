@@ -67,6 +67,26 @@ end
     @test occursin("\"\$nd\"/state/pluto/servers/*.json", Pluto._SCAN_REMOTE_SERVERS_SNIPPET)
 end
 
+# A hub keeps frontend files in memory, and the error page was built by taking those very bytes:
+# the first error a server sent had its page, every later one had no body at all, and a browser then
+# shows its own "problem with this site" instead of ours, which says what to do.
+@testset "an error page is whole every time, not only the first" begin
+    was = Pluto.ASSET_CACHE_ALL[]
+    Pluto.ASSET_CACHE_ALL[] = true
+    try
+        withenv("SPACESTATION_DEV_ASSETS" => nothing) do
+            page() = String(copy(Pluto.error_response(403, "Not yet authenticated", "Open the link.").body))
+            first_page = page()
+            @test occursin("Not yet authenticated", first_page) && occursin("<style>", first_page) && length(first_page) > 1000
+            @test page() == first_page
+            @test page() == first_page
+            @test !isempty(something(Pluto.asset_bytes(Pluto.project_relative_path("frontend", "error.css")), UInt8[]))
+        end
+    finally
+        Pluto.ASSET_CACHE_ALL[] = was
+    end
+end
+
 @testset "a workspace child never inherits the hub marker" begin
     withenv("SPACESTATION_HUB" => "1", "SPACESTATION_TUNNELED" => "1", "JULIA_LOAD_PATH" => "@") do
         env = Pluto._child_env("/some/folder")
@@ -311,7 +331,13 @@ end
                 lock(() -> empty!(Pluto.LOCAL_SESSIONS), Pluto.LOCAL_SESSIONS_LOCK)
                 lock(() -> empty!(Pluto._adopt_misses), Pluto._adopt_misses_lock)
                 @test hget("$base/api/v1/notebooks?secret=$hub_secret").status == 404
+                # ...and whoever started it is told which version it turned out to be, so it can say
+                # that (and stop it) instead of waiting for a server that will never be adopted
+                other = Ref("")
+                @test Pluto._find_local_server(Pluto.tamepath(ws); pid=getpid(), other_version=other) === nothing && other[] == "v0.0.1"
                 write(regfile, original)
+                other[] = ""
+                @test Pluto._find_local_server(Pluto.tamepath(ws); pid=getpid(), other_version=other) !== nothing && other[] == ""
                 lock(() -> empty!(Pluto._adopt_misses), Pluto._adopt_misses_lock)
                 @test hget("$base/api/v1/notebooks?secret=$hub_secret").status == 200
 
