@@ -1310,6 +1310,7 @@ function _ready_remote_version!(r::RemoteSession, prep::PreparedVersion)::Union{
     end
     if !installed
         r.state = "installing"
+        occursin("repairing", r.detail) || (r.detail = "installing SpaceStation on $(r.host)")
         ok, out = _ssh_try(r.host, _install_version_script(r.julia, commit))
         if !ok || !(occursin("__LAUNCHED__", out) || occursin("__ATTACHED__", out))
             r.state = "error"
@@ -1383,11 +1384,11 @@ function _launch_remote_hub!(r::RemoteSession, commit::AbstractString)::Union{No
     # kept as server.log.1. The trailing ":" on the depot path keeps Julia's bundled depot
     # (the stdlib compile caches) on the stack. SLURM_TMPDIR is preferred when a job sets it:
     # /tmp on a compute node can be a small tmpfs, and packages a notebook adds land here.
-    _ssh_run(r.host, _remote_launch_script(r.julia; app=_version_dir_sh(commit), commit))
     # The first launch of a version on a cluster builds the node-local runtime (a few minutes,
     # once); every later one restores or reuses it in seconds. The launch script does that before
-    # it starts the hub, so this wait covers both.
+    # it starts the hub (and returns only then), so this is said first, and the wait covers both.
     r.detail = "starting the SpaceStation server on $(r.host) (the first start of a new version prepares its runtime on the node's own disk: a few minutes, once)"
+    _ssh_run(r.host, _remote_launch_script(r.julia; app=_version_dir_sh(commit), commit))
     for i in 1:480 # a little longer than node/runtime.sh waits for a build already under way
         sleep(2)
         _remote_bail(r) && return nothing
