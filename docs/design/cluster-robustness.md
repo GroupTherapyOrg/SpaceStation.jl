@@ -83,6 +83,47 @@ How established tools answer the same problem (sources in the research notes at 
    assert worst-case latency while the trees are hung. A change that reaches shared storage from a
    hub fails CI. Verification on a real cluster never launches Julia from shared storage in bulk.
 
+## More than one node (2026-11-18)
+
+A cluster's home directory is one directory for every node. Two failures came from treating what is
+in it as if it belonged to the node being connected to; both showed with two nodes connected at once.
+
+**A connection file is a claim.** It outlives the server that wrote it (a job that ended), and the
+next server on the node takes the same port. The scan counted a file as a live server when something
+answered `/ping` on its port: a hub that had just been started was "found" through the record of the
+hub before it, whose copy in the shared home is rewritten seconds later than the node's own. The
+host was "connected" with a secret the hub refused, every page was a 403, and nothing left that
+state by itself.
+
+8. **A secret is proven before it is used, and again while it is used.** On the node the scan asks
+   the server on a file's port with the file's own secret; a file that is refused is stale and is
+   not a server (not a candidate, not "busy"). The node's own directory is read before the shared
+   home. On the client a host becomes "ready" only with a secret that the server at the end of the
+   tunnel accepted (`_attach_verified!`), and the watchdog asks again every few seconds: a server
+   that refuses the session's secret twice is looked for again, like a dead tunnel. Slow is not
+   refused: a server that does not answer is still the server.
+
+**An installation that is updated in place is updated under every node.** A hub starts its workspace
+servers from the installation for as long as it runs. The clone in the shared home was moved to the
+new commit when a connect found nothing busy on ITS node; the hub on another node then started
+workspaces of a version it was not, refused them ("did not come up in time"), and left one server
+behind per attempt. No check made on one node can know what the others run.
+
+9. **An installed version is never changed.** The clone is only where commits are fetched to. Each
+   commit that runs is exported once to `~/.spacestation/versions/<commit>` (whole, or not there;
+   one export at a time across nodes) and never written to again. A hub is started from one and
+   names it to everything it starts, and writes it into its connection file. An update is a new
+   directory. A hub moves to a newer version by being replaced, only while nothing on its node is
+   busy, and only after the new version is installed and loads. Versions that nothing has used for
+   a month are removed, never the three newest. `SPACESTATION_NODE_VERSIONS=0` is the old in-place
+   arrangement. (Prior art: an editor's remote server, one directory per commit.)
+10. **A hub that finds its own workspace server on another version says so and stops it**, at once,
+    instead of waiting out the clock and leaving it behind.
+
+Tests: `test/RemoteTunnels.jl` ("A server's secret is proven before it is used", "An installed
+version is never changed") run the node's scripts for real, against a home directory and servers
+made for the test.
+
 ## Delivery order
 
 1. Test harness and scenarios (done: `test/hangfs`, workflow).

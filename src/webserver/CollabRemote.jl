@@ -6,7 +6,9 @@
 #   1. reuse: if this host already has a live tunnel, or a SpaceStation server already runs
 #      remotely (its connection file says so), just (re)attach. Nothing repeats.
 #   2. bootstrap (first contact only): clone the fork to ~/.spacestation/Pluto.jl on the
-#      remote and instantiate it.
+#      remote. What RUNS is never the clone: each commit is exported once to its own directory,
+#      ~/.spacestation/versions/<commit>, instantiated there, and never changed afterwards
+#      (see "installed versions": the home is shared by every node of a cluster).
 #   3. start: launch the remote server headless, read its connection file for port+secret.
 #   4. tunnel: ssh -N -L 127.0.0.1:<local>:127.0.0.1:<remote>, probe /ping, hand the browser
 #      http://localhost:<local>/?secret=… — the ENTIRE Land (files, kernels, terminal,
@@ -562,45 +564,122 @@ end
 # The trailing marker separates "scanned, found nothing" from "ssh never ran the scan": the two used
 # to be the same empty string, so an SSH hiccup during discovery also counted as "no server here".
 #
+# What "busy" means for a server on the node, as shell functions shared by everything that would
+# replace code or stop a process there. A server is doing something for someone when it has a notebook
+# open, OR when a terminal it started has something running in it. The second half was missing: the
+# hub's notebook list knows nothing of terminals, so a hub with a training run or a coding agent in its
+# terminal and no notebook open looked idle, and an update of `main` shut it down, taking the shells and
+# everything in them along. A shell that sits at its prompt is not work; a shell with a child is.
+#   hub_has_running_terminal <pid>   0 when a shell that <pid> started has a child process
+#   server_busy <port> <secret> <pid>   0 when that server is busy, or is alive and cannot say
+#   node_busy                        0 when any server of this user on this node is
+const _NODE_BUSY_SH = raw"""
+# http_status <port> <path?query>: the status a server on this node answers with, 000 when none comes.
+# The path can carry a secret: curl reads it from stdin, never from argv (visible in `ps` on a shared
+# node). Without curl, bash speaks the one request itself.
+http_status() {
+    if command -v curl >/dev/null 2>&1; then
+        _code=$(printf 'url = "http://127.0.0.1:%s%s"\n' "$1" "$2" | curl -s -m 4 -o /dev/null -w '%{http_code}' -K - 2>/dev/null)
+    else
+        _code=$( (exec 3<>"/dev/tcp/127.0.0.1/$1" && printf 'GET %s HTTP/1.0\r\nHost: 127.0.0.1:%s\r\n\r\n' "$2" "$1" >&3 && read -r -t 4 _ _c _ <&3 && printf '%s' "$_c") 2>/dev/null )
+    fi
+    case "$_code" in [1-5][0-9][0-9]) echo "$_code" ;; *) echo 000 ;; esac
+}
+hub_has_running_terminal() {
+    [ -n "$1" ] || return 1
+    ps -A -o pid= -o ppid= -o comm= 2>/dev/null | awk -v hub="$1" '
+        { pid[NR] = $1; ppid[NR] = $2; comm[NR] = $3 }
+        END {
+            for (i = 1; i <= NR; i++) if (ppid[i] == hub && comm[i] ~ /^-?([^ ]*\/)?(ba|z|da|k|tc|c|fi)?sh$/) shell[pid[i]] = 1
+            for (i = 1; i <= NR; i++) if (ppid[i] in shell) exit 0
+            exit 1
+        }'
+}
+server_busy() {
+    if [ "$(http_status "$1" /ping)" = 200 ]; then
+        # the server on that port refuses this file's secret: the port was taken over, the file is
+        # stale and stands for no server (it used to count as "alive and cannot say", for ever)
+        case "$(http_status "$1" "/api/v1/config?secret=$2")" in 401|403) return 1 ;; esac
+        command -v curl >/dev/null 2>&1 || return 0
+        _open=$(printf 'url = "http://127.0.0.1:%s/api/v1/notebooks?secret=%s"\n' "$1" "$2" | curl -fsS -m 5 -K - 2>/dev/null) || return 0
+        [ "$_open" = "[]" ] || return 0
+    else
+        # no answer: gone (its file is stale: not busy), or alive and too busy to answer (or there is no curl to ask with)
+        [ -n "$3" ] && kill -0 "$3" 2>/dev/null && ps -o args= -p "$3" 2>/dev/null | grep -q SpaceStation || return 1
+        return 0
+    fi
+    hub_has_running_terminal "$3"
+}
+node_busy() {
+    _me=$(hostname)
+    _nd=$(cat "$HOME/.spacestation/nodedir-$_me" 2>/dev/null)
+    for _f in "$HOME"/.local/state/pluto/servers/*.json ${_nd:+"$_nd"/state/pluto/servers/*.json}; do
+        [ -e "$_f" ] || continue
+        _node=$(sed -n 's/.*"node": *"\([^"]*\)".*/\1/p' "$_f")
+        [ -n "$_node" ] && [ "$_node" != "$_me" ] && continue
+        server_busy "$(sed -n 's/.*"port": *\([0-9]*\).*/\1/p' "$_f")" "$(sed -n 's/.*"secret": *"\([^"]*\)".*/\1/p' "$_f")" "$(sed -n 's/.*"pid": *\([0-9]*\).*/\1/p' "$_f")" && return 0
+    done
+    return 1
+}
+"""
+
 # Node matching: a "<host>-<port>.json" records its node; files from other nodes are skipped. Without
 # this, two nodes that both took port 1234 each write a file saying "port": 1234, curling 127.0.0.1:1234
 # here answers (OUR server) for either file, and the tunnel would inherit a sibling's secret and
 # auth-fail. Old bare "<port>.json" files (no node field) are judged by liveness alone.
-const _SCAN_REMOTE_SERVERS_SNIPPET = raw"""
+#
+# And a file is a CLAIM. It outlives the server that wrote it (a job that was killed, a node that was
+# rebooted), and the next server on the node takes the same port. "Something answers /ping on the port
+# in the file" then says the dead server is alive, and hands out its secret: the connect that followed
+# was "ready" with a secret the server refused, the page was a 403, and nothing got out of that state
+# by itself. So the server on the port is asked with the file's OWN secret, and a file it refuses is
+# STALE: not a server. (CollabLocal.jl does the same for a hub's workspace servers.)
+#
+# The node's own directory is read first. A hub writes its file there itself before it answers
+# anything; the copy in the shared home is written later, by a helper, and until then that name can
+# still hold the previous hub's record.
+const _SCAN_REMOTE_SERVERS_SNIPPET = _NODE_BUSY_SH * raw"""
 me=$(hostname)
 nd=$(cat "$HOME/.spacestation/nodedir-$me" 2>/dev/null)
-for f in "$HOME"/.local/state/pluto/servers/*.json ${nd:+"$nd"/state/pluto/servers/*.json}; do
+for f in ${nd:+"$nd"/state/pluto/servers/*.json} "$HOME"/.local/state/pluto/servers/*.json; do
     [ -e "$f" ] || continue
     p=$(sed -n 's/.*"port": *\([0-9]*\).*/\1/p' "$f")
     [ -n "$p" ] || continue
     node=$(sed -n 's/.*"node": *"\([^"]*\)".*/\1/p' "$f")
     [ -n "$node" ] && [ "$node" != "$me" ] && continue
     pid=$(sed -n 's/.*"pid": *\([0-9]*\).*/\1/p' "$f")
+    s=$(sed -n 's/.*"secret": *"\([^"]*\)".*/\1/p' "$f")
     status=DEAD
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsS -m 3 -o /dev/null "http://127.0.0.1:$p/ping" 2>/dev/null && status=LIVE
-    else
-        (exec 3<>/dev/tcp/127.0.0.1/"$p") 2>/dev/null && status=LIVE
-    fi
-    if [ "$status" = DEAD ] && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && ps -o args= -p "$pid" 2>/dev/null | grep -q SpaceStation; then
+    if [ "$(http_status "$p" /ping)" = 200 ]; then
+        status=LIVE
+        case "$(http_status "$p" "/api/v1/config?secret=$s")" in 401|403) status=STALE ;; esac
+    elif [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && ps -o args= -p "$pid" 2>/dev/null | grep -q SpaceStation; then
         status=BUSY
     fi
     echo "__CANDIDATE__ $status $pid"
     cat "$f"; echo
+    # the version a server here runs from is in use (see gc_versions)
+    if [ "$status" = LIVE ] || [ "$status" = BUSY ]; then
+        c=$(sed -n 's/.*"commit": *"\([0-9a-f]*\)".*/\1/p' "$f")
+        [ -n "$c" ] && touch "$HOME/.spacestation/versions/.used-$c" 2>/dev/null
+    fi
 done
+if node_busy; then echo __NODE_BUSY__; else echo __NODE_IDLE__; fi
 echo __SCAN_DONE__
 """
 
 struct RemoteCandidate
-    status::Symbol      # :live | :busy | :dead
+    status::Symbol      # :live | :busy | :dead | :stale (a server answers on its port and refuses its secret)
     port::Int
     secret::String
     pid::Int
     has_workspace::Bool # a folder is open in it: the one somebody is working in, given a choice
     is_hub::Bool        # a workspace hub (Proxy.jl): the one to tunnel to — its children are behind it
     node::String        # the machine it runs on, as its connection file says ("" when it does not)
+    commit::String      # the installed version it runs from ("" for a server from before versions)
 end
-RemoteCandidate(status, port, secret, pid, has_workspace, is_hub) = RemoteCandidate(status, port, secret, pid, has_workspace, is_hub, "")
+RemoteCandidate(status, port, secret, pid, has_workspace, is_hub) = RemoteCandidate(status, port, secret, pid, has_workspace, is_hub, "", "")
+RemoteCandidate(status, port, secret, pid, has_workspace, is_hub, node) = RemoteCandidate(status, port, secret, pid, has_workspace, is_hub, node, "")
 
 "Parse a scan's output. `nothing` when the scan did not run to completion — an SSH failure is not a verdict about the node."
 function _parse_remote_candidates(out::AbstractString)::Union{Vector{RemoteCandidate},Nothing}
@@ -612,14 +691,16 @@ function _parse_remote_candidates(out::AbstractString)::Union{Vector{RemoteCandi
         rest = i === nothing ? "" : String(block[nextind(block, i):end])
         words = split(strip(head))
         isempty(words) && continue
-        status = words[1] == "LIVE" ? :live : words[1] == "BUSY" ? :busy : :dead
+        status = words[1] == "LIVE" ? :live : words[1] == "BUSY" ? :busy : words[1] == "STALE" ? :stale : :dead
         pid = length(words) >= 2 ? something(tryparse(Int, words[2]), 0) : 0
         reg = _parse_remote_registry(rest)
         reg === nothing && continue
-        # one server can show up twice: it announces itself in the shared directory too (legacy_registry_dir)
+        # one server can show up twice: it announces itself in the shared directory too (legacy_registry_dir).
+        # The first one read is kept, and that is the node's own copy (see the scan).
         any(c -> c.pid == pid && c.port == reg.port, cands) && continue
         push!(cands, RemoteCandidate(status, reg.port, reg.secret, pid, occursin(r"\"workspace\": \"", rest), occursin(r"\"hub\": true", rest),
-            (m = match(r"\"node\": \"([^\"\t\n]+)\"", rest); m === nothing ? "" : String(m.captures[1]))))
+            (m = match(r"\"node\": \"([^\"\t\n]+)\"", rest); m === nothing ? "" : String(m.captures[1])),
+            (m = match(r"\"commit\": \"([0-9a-f]+)\"", rest); m === nothing ? "" : String(m.captures[1]))))
     end
     cands
 end
@@ -630,10 +711,11 @@ busy, so a reconnect lands the open tabs — whose URLs carry that secret — ba
 notebooks; otherwise a live hub (every workspace on the node is behind it), then a live server with
 a workspace open (a leaf from before hubs), then any live one, then a busy one.
 `nothing` only when no server process exists on the node: that, and nothing else, is the case for
-starting one.
+starting one. A stale file is not a server, and neither is one whose secret the server behind the
+tunnel has already refused (`refused`).
 """
-function _choose_remote_server(cands::Vector{RemoteCandidate}, secret::AbstractString)
-    usable = [c for c in cands if c.status != :dead]
+function _choose_remote_server(cands::Vector{RemoteCandidate}, secret::AbstractString; refused=())
+    usable = [c for c in cands if c.status ∈ (:live, :busy) && c.secret ∉ refused]
     if !isempty(secret)
         i = findfirst(c -> c.secret == secret, usable)
         i === nothing || return usable[i]
@@ -693,89 +775,227 @@ end
 _clone_command(; dir::AbstractString=REMOTE_BOOTSTRAP_DIR, url::AbstractString=REMOTE_FORK_URL, branch::AbstractString=REMOTE_FORK_BRANCH) =
     "if [ -d $(dir)/.git ]; then echo __HAVE_CLONE__; else mkdir -p ~/.spacestation && rm -rf $(dir).new && git clone --depth 1 --branch $(branch) $(url) $(dir).new && rm -rf $(dir) && mv $(dir).new $(dir); fi"
 
-"Scan `host`. Returns `(scanned, chosen)`: `scanned == false` means the scan itself failed and nothing can be concluded from it."
-function _find_remote_server(host::String, secret::AbstractString)
+"""
+Scan `host`: `(scanned, cands, idle)`. `scanned == false` means the scan itself failed and nothing can
+be concluded from it. `idle` is true only when the node said that none of this user's servers there
+is doing anything for anybody (no notebook open, nothing running in a terminal).
+"""
+function _scan_remote(host::String)
     out = try
         _ssh_run(host, _SCAN_REMOTE_SERVERS_SNIPPET)
     catch
         ""
     end
     cands = _parse_remote_candidates(out)
-    cands === nothing && return (false, nothing)
-    (true, _choose_remote_server(cands, secret))
+    cands === nothing && return (scanned=false, cands=RemoteCandidate[], idle=false)
+    (scanned=true, cands=cands, idle=occursin("__NODE_IDLE__", out))
 end
 
-# What "busy" means for a server on the node, as shell functions shared by everything that would
-# replace code or stop a process there. A server is doing something for someone when it has a notebook
-# open, OR when a terminal it started has something running in it. The second half was missing: the
-# hub's notebook list knows nothing of terminals, so a hub with a training run or a coding agent in its
-# terminal and no notebook open looked idle, and an update of `main` shut it down, taking the shells and
-# everything in them along. A shell that sits at its prompt is not work; a shell with a child is.
-#   hub_has_running_terminal <pid>   0 when a shell that <pid> started has a child process
-#   server_busy <port> <secret> <pid>   0 when that server is busy, or is alive and cannot say
-#   node_busy                        0 when any server of this user on this node is
-const _NODE_BUSY_SH = raw"""
-hub_has_running_terminal() {
-    [ -n "$1" ] || return 1
-    ps -A -o pid= -o ppid= -o comm= 2>/dev/null | awk -v hub="$1" '
-        { pid[NR] = $1; ppid[NR] = $2; comm[NR] = $3 }
-        END {
-            for (i = 1; i <= NR; i++) if (ppid[i] == hub && comm[i] ~ /^-?([^ ]*\/)?(ba|z|da|k|tc|c|fi)?sh$/) shell[pid[i]] = 1
-            for (i = 1; i <= NR; i++) if (ppid[i] in shell) exit 0
-            exit 1
-        }'
-}
-server_busy() {
-    if curl -fsS -m 3 -o /dev/null "http://127.0.0.1:$1/ping" 2>/dev/null; then
-        _open=$(printf 'url = "http://127.0.0.1:%s/api/v1/notebooks?secret=%s"\n' "$1" "$2" | curl -fsS -m 5 -K - 2>/dev/null) || return 0
-        [ "$_open" = "[]" ] || return 0
-    else
-        # no answer: gone (its file is stale: not busy), or alive and too busy to answer (or there is no curl to ask with)
-        [ -n "$3" ] && kill -0 "$3" 2>/dev/null && ps -o args= -p "$3" 2>/dev/null | grep -q SpaceStation || return 1
-        return 0
-    fi
-    hub_has_running_terminal "$3"
-}
-node_busy() {
-    _me=$(hostname)
-    _nd=$(cat "$HOME/.spacestation/nodedir-$_me" 2>/dev/null)
-    for _f in "$HOME"/.local/state/pluto/servers/*.json ${_nd:+"$_nd"/state/pluto/servers/*.json}; do
-        [ -e "$_f" ] || continue
-        _node=$(sed -n 's/.*"node": *"\([^"]*\)".*/\1/p' "$_f")
-        [ -n "$_node" ] && [ "$_node" != "$_me" ] && continue
-        server_busy "$(sed -n 's/.*"port": *\([0-9]*\).*/\1/p' "$_f")" "$(sed -n 's/.*"secret": *"\([^"]*\)".*/\1/p' "$_f")" "$(sed -n 's/.*"pid": *\([0-9]*\).*/\1/p' "$_f")" && return 0
+"Scan `host`. Returns `(scanned, chosen)`: `scanned == false` means the scan itself failed and nothing can be concluded from it."
+function _find_remote_server(host::String, secret::AbstractString; refused=())
+    scan = _scan_remote(host)
+    scan.scanned || return (false, nothing)
+    (true, _choose_remote_server(scan.cands, secret; refused))
+end
+
+# --- installed versions ---------------------------------------------------------------------------
+#
+# ~/.spacestation/Pluto.jl is a git clone, and on a cluster it is on the shared home: ONE directory
+# for every node. A hub starts its workspace servers from the installation, and their notebook workers
+# load PlutoRunner from it, for as long as the hub runs. The update used to move that directory to the
+# new commit in place (`git reset --hard`), after checking that nothing was busy ON THE NODE BEING
+# CONNECTED TO. Connecting a second node moved the code under the first node's hub: every workspace
+# opened there afterwards started on the new version, the hub (still the old one) did not recognise
+# its own child, and the workspace "did not come up in time", once per attempt, each attempt leaving
+# a server behind. No check made on one node can know what the others run.
+#
+# So nothing runs from the clone any more, and nothing that runs is ever changed. The clone is only
+# where commits are fetched to. Each commit that is run gets its own directory,
+# ~/.spacestation/versions/<commit>, exported once (whole, or not there) and never written to again.
+# A hub is started from one of them and names it to everything it starts; an update is a NEW directory
+# beside the others, which a running hub does not notice. A hub moves to a newer version by being
+# replaced, and only while it is doing nothing for anybody. (The arrangement of an editor's remote
+# server, which keeps one directory per commit under ~/.vscode-server/bin/.)
+#
+# Markers live beside the version directories, not in them: `.installed-<commit>` (its packages are
+# there and it loads), `.used-<commit>` (touched by every launch, and by every connect that finds a
+# server running it), `.install-<commit>-<node>.pid|.log` (an install under way ON THAT NODE: the home
+# is shared, and a pid means something on its own node only).
+#
+# SPACESTATION_NODE_VERSIONS=0 (in the node's shell profile) is the old arrangement: the clone is
+# moved in place while the node is idle, and "the version" is a link to it. An export that fails falls
+# back to the same, for the commit the clone already holds.
+const _NODE_VERSIONS_SH = raw"""
+ss_clone="$HOME/.spacestation/Pluto.jl"
+ss_versions="$HOME/.spacestation/versions"
+version_there() { [ -f "$ss_versions/$1/.commit" ] || [ -L "$ss_versions/$1" ]; }
+# export_version <commit>: $ss_versions/<commit> holds that commit, whole, or does not exist.
+# One export at a time, whichever node asks: two nodes connected at once ask at once, and the clone
+# they fetch into is one directory (two fetches into it at the same moment fail each other).
+export_version() {
+    version_there "$1" && return 0
+    mkdir -p "$ss_versions" || return 1
+    _lock="$ss_versions/.lock-export"; _i=0
+    until mkdir "$_lock" 2>/dev/null; do
+        version_there "$1" && return 0
+        # a lock nobody has touched for five minutes was left by an export that died
+        [ -n "$(find "$_lock" -maxdepth 0 -mmin +5 2>/dev/null)" ] && { rmdir "$_lock" 2>/dev/null; continue; }
+        _i=$((_i + 1)); [ "$_i" -gt 120 ] && return 1
+        sleep 1
     done
-    return 1
+    if ! version_there "$1"; then
+        # the commit is fetched here, under the lock, and only when the clone does not hold it yet
+        git -C "$ss_clone" cat-file -e "$1^{commit}" 2>/dev/null || git -C "$ss_clone" fetch --depth 1 origin "$branch" >/dev/null 2>&1
+        _tmp="$ss_versions/.tmp-$1.$(hostname).$$"
+        rm -rf "$_tmp" "$ss_versions/$1"
+        mkdir -p "$_tmp" && git -C "$ss_clone" archive --format=tar "$1" 2>/dev/null | tar -xf - -C "$_tmp" 2>/dev/null \
+            && [ -f "$_tmp/Project.toml" ] && echo "$1" > "$_tmp/.commit" && mv "$_tmp" "$ss_versions/$1"
+        rm -rf "$_tmp"
+    fi
+    rmdir "$_lock" 2>/dev/null
+    version_there "$1"
+}
+# link_version <commit>: the old arrangement, "the version" is the clone itself
+link_version() { mkdir -p "$ss_versions" && { version_there "$1" || ln -s "$ss_clone" "$ss_versions/$1"; }; }
+# gc_versions <keep>: the three newest stay, and so does <keep> and every one used in the last 30 days
+gc_versions() {
+    _n=0
+    for _d in $(ls -dt "$ss_versions"/*/ 2>/dev/null); do
+        _d=${_d%/}; _c=${_d##*/}; _n=$((_n + 1))
+        [ "$_c" = "$1" ] && continue
+        [ "$_n" -le 3 ] && continue
+        [ -n "$(find "$ss_versions/.used-$_c" -mtime -30 2>/dev/null)" ] && continue
+        if [ -L "$_d" ]; then rm -f "$_d"; else rm -rf "$_d"; fi
+        rm -f "$ss_versions/.used-$_c" "$ss_versions/.installed-$_c" "$ss_versions"/.install-"$_c"-*
+    done
 }
 """
 
-# Keep the remote install in lockstep with `main`: fast-forward the existing clone and report whether
-# anything actually changed. This is what makes "the remote always matches your local SpaceStation" —
-# the VS Code Remote-SSH feel. No clone yet, or no internet on the node (common for HPC compute
-# nodes), is a silent no-op — we keep whatever is already there.
-#
-# And so is a node where a server is busy (`_NODE_BUSY_SH`). The clone is not only where the next hub
-# is built from: a RUNNING hub starts its workspace servers from it, and notebook workers load
-# PlutoRunner from it. Replacing it under a hub that is kept running gave that hub children of another
-# version: with a new Manifest nothing instantiates, and after a version bump the hub does not recognise
-# the child it just started and the workspace times out. The update waits for a connect that finds the
-# node idle.
-function _maybe_update_remote_clone!(host::String)::Bool
-    snippet = _NODE_BUSY_SH * """
-    d="\$HOME/.spacestation/Pluto.jl"
-    [ -d "\$d/.git" ] || { echo __NOCLONE__; exit 0; }
-    cd "\$d" || { echo __NOCLONE__; exit 0; }
-    before=\$(git rev-parse HEAD 2>/dev/null)
-    git fetch --depth 1 origin $(REMOTE_FORK_BRANCH) >/dev/null 2>&1 || { echo __OFFLINE__; exit 0; }
-    [ "\$before" = "\$(git rev-parse FETCH_HEAD 2>/dev/null)" ] && { echo __UPTODATE__; exit 0; }
-    node_busy && { echo __BUSY__; exit 0; }
-    git reset --hard FETCH_HEAD >/dev/null 2>&1 || { echo __RESETFAIL__; exit 0; }
-    after=\$(git rev-parse HEAD 2>/dev/null)
-    [ "\$before" = "\$after" ] && echo __UPTODATE__ || echo __UPDATED__
-    """
-    _, out = _ssh_try(host, snippet)
-    occursin("__UPDATED__", out)
+"A commit id as git prints it, and nothing that could be read as a path or as shell."
+_valid_commit(c::AbstractString) = occursin(r"^[0-9a-f]{7,64}$", c)
+"The directory of an installed version, as one shell word."
+_version_dir_sh(commit::AbstractString) = (@assert _valid_commit(commit); "\"\$HOME/.spacestation/versions/$(commit)\"")
+
+# Which version a hub started now would run, made ready to install: what `origin` has when the node
+# can reach it; without a network the newest version that is installed here; failing that, what the
+# clone holds. Additive, so it needs no "is anything busy" check: it writes a new directory or nothing.
+_prepare_version_script(; branch::AbstractString=REMOTE_FORK_BRANCH) = _NODE_BUSY_SH * _NODE_VERSIONS_SH * "branch=$(_shquote(String(branch)))\n" * raw"""
+[ -d "$ss_clone/.git" ] || { echo __NOCLONE__; exit 0; }
+# what `origin` has now: asked over the network, nothing in the clone is written (or locked) for it
+want=$(git -C "$ss_clone" ls-remote origin "refs/heads/$branch" 2>/dev/null | cut -f1)
+case "$want" in *[!0-9a-f]*) want="" ;; esac
+fresh=1
+if [ "${SPACESTATION_NODE_VERSIONS:-1}" = 0 ]; then
+    # the old arrangement: the clone moves, and only while nothing on this node is busy
+    [ -n "$want" ] || fresh=0
+    if [ -n "$want" ] && [ "$want" != "$(git -C "$ss_clone" rev-parse HEAD 2>/dev/null)" ] && ! node_busy; then
+        git -C "$ss_clone" fetch --depth 1 origin "$branch" >/dev/null 2>&1 && git -C "$ss_clone" reset --hard FETCH_HEAD >/dev/null 2>&1
+    fi
+    want=$(git -C "$ss_clone" rev-parse HEAD 2>/dev/null)
+    case "$want" in ""|*[!0-9a-f]*) echo __NOVERSION__; exit 0 ;; esac
+    link_version "$want" || { echo __NOVERSION__; exit 0; }
+elif [ -z "$want" ] || ! export_version "$want"; then
+    # `origin` cannot be reached from here, or its commit could not be exported: the newest version
+    # that is installed here; failing that, what the clone holds (exported, or as it stands)
+    fresh=0; want=""
+    for _m in $(ls -t "$ss_versions"/.installed-* 2>/dev/null); do
+        _c=${_m##*.installed-}
+        version_there "$_c" && { want=$_c; break; }
+    done
+    if [ -z "$want" ]; then
+        want=$(git -C "$ss_clone" rev-parse HEAD 2>/dev/null)
+        case "$want" in ""|*[!0-9a-f]*) echo __NOVERSION__; exit 0 ;; esac
+        export_version "$want" || link_version "$want" || { echo __NOVERSION__; exit 0; }
+    fi
+fi
+[ "$fresh" = 1 ] || echo __OFFLINE__ # not a version to replace a running server for
+touch "$ss_versions/.used-$want" 2>/dev/null
+gc_versions "$want"
+[ -f "$ss_versions/.installed-$want" ] && echo __INSTALLED__
+echo "__VERSION__ $want"
+"""
+
+"`state` is `:ok` (with `commit`), `:noclone`, `:failed` (a clone, and no version could be made of it) or `:unknown` (the node did not answer). `fresh`: the commit is what `origin` has now."
+const PreparedVersion = @NamedTuple{state::Symbol, commit::String, fresh::Bool, installed::Bool}
+
+function _parse_prepared_version(out::AbstractString)::PreparedVersion
+    m = match(r"__VERSION__ ([0-9a-f]{7,64})\b", out)
+    m !== nothing && return (state=:ok, commit=String(m.captures[1]), fresh=!occursin("__OFFLINE__", out), installed=occursin("__INSTALLED__", out))
+    state = occursin("__NOCLONE__", out) ? :noclone : occursin("__NOVERSION__", out) ? :failed : :unknown
+    (state=state, commit="", fresh=false, installed=false)
 end
+
+_prepare_remote_version(host::String)::PreparedVersion = _parse_prepared_version(_ssh_try(host, _prepare_version_script())[2])
+
+# The slow step of an install, DETACHED on the node (nohup + pidfile + log): it survives connection
+# drops and local restarts, and the connect only polls for the marker. An install of the same version
+# already under way on this node is attached to. Another node may be installing the same version at
+# the same moment (the home is shared): both run, Pkg takes its own locks, and the marker of
+# whichever finishes first counts for both.
+function _install_version_script(julia::AbstractString, commit::AbstractString)::String
+    "c=$(commit)\nj=$(_shquote(String(julia)))\n" * raw"""
+    v="$HOME/.spacestation/versions"; me=$(hostname)
+    pidf="$v/.install-$c-$me.pid"; log="$v/.install-$c-$me.log"
+    if kill -0 "$(cat "$pidf" 2>/dev/null)" 2>/dev/null; then echo __ATTACHED__; exit 0; fi
+    rm -f "$v/.installed-$c"
+    ln -sfn "$log" "$HOME/.spacestation/install.log" 2>/dev/null
+    nohup sh -c 'cd "$1" && "$2" --project=. -e "import Pkg; Pkg.instantiate(); import SpaceStation" && touch "$3"' sh "$v/$c" "$j" "$v/.installed-$c" > "$log" 2>&1 < /dev/null &
+    echo $! > "$pidf"
+    echo __LAUNCHED__
+    """
+end
+
+# Fence the tail behind a __LOG__ marker and extract only that — a ProxyJump login node reprints its
+# post-quantum warning on every hop (LogLevel can't reach it), and without the fence that client
+# chatter would land in the banner instead of the real progress line.
+_install_poll_script(commit::AbstractString)::String = "c=$(commit)\n" * raw"""
+    v="$HOME/.spacestation/versions"; me=$(hostname)
+    [ -f "$v/.installed-$c" ] && echo __DONE__
+    kill -0 "$(cat "$v/.install-$c-$me.pid" 2>/dev/null)" 2>/dev/null && echo __ALIVE__
+    printf '__LOG__%s' "$(tail -n 1 "$v/.install-$c-$me.log" 2>/dev/null)"
+    """
+
+# Stop this node's servers that run another version than `target`, when NOTHING of this user's on the
+# node is busy (`_NODE_BUSY_SH`: a notebook open, something running in a terminal, a server too busy to
+# say). A reconnect must never cost someone the notebook that has been computing on the node all
+# night: a busy node keeps what it runs and is attached to as it is, and moves on the next time it is
+# found idle. Node-matched (a sibling node's same-port file on a shared $HOME is not ours to touch),
+# so the pid is a process on this very node. The secret goes to curl through a config on stdin, never
+# through argv (visible in `ps` on a shared node).
+_retire_idle_servers_script(target::AbstractString)::String = _NODE_BUSY_SH * "target=$(target)\n" * raw"""
+    me=$(hostname)
+    command -v curl >/dev/null 2>&1 || exit 0
+    node_busy && { echo __BUSY__; exit 0; }
+    nd=$(cat "$HOME/.spacestation/nodedir-$me" 2>/dev/null)
+    for f in ${nd:+"$nd"/state/pluto/servers/*.json} "$HOME"/.local/state/pluto/servers/*.json; do
+        [ -e "$f" ] || continue
+        p=$(sed -n 's/.*"port": *\([0-9]*\).*/\1/p' "$f")
+        pid=$(sed -n 's/.*"pid": *\([0-9]*\).*/\1/p' "$f")
+        node=$(sed -n 's/.*"node": *"\([^"]*\)".*/\1/p' "$f")
+        s=$(sed -n 's/.*"secret": *"\([^"]*\)".*/\1/p' "$f")
+        c=$(sed -n 's/.*"commit": *"\([0-9a-f]*\)".*/\1/p' "$f")
+        [ -n "$node" ] && [ "$node" != "$me" ] && continue
+        [ -n "$c" ] && [ "$c" = "$target" ] && continue
+        [ "$(http_status "$p" /ping)" = 200 ] || continue
+        open=$(printf 'url = "http://127.0.0.1:%s/api/v1/notebooks?secret=%s"\n' "$p" "$s" | curl -fsS -m 5 -K - 2>/dev/null) || continue
+        [ "$open" = "[]" ] || continue
+        hub_has_running_terminal "$pid" && continue
+        # both copies of its file (the node's own and the one in the shared home), if they are this server's
+        for g in "$f" "$HOME/.local/state/pluto/servers/${f##*/}" ${nd:+"$nd/state/pluto/servers/${f##*/}"}; do
+            [ "$(sed -n 's/.*"pid": *\([0-9]*\).*/\1/p' "$g" 2>/dev/null)" = "$pid" ] && rm -f "$g"
+        done
+        # Its own shutdown first (it removes its files and stops cleanly), then SIGTERM, then
+        # SIGKILL. A Julia 1.12 process can deadlock in its exit-time finalizers after SIGTERM
+        # and spin at 100% CPU forever, still bound to its port — one did, for 21 hours.
+        printf 'url = "http://127.0.0.1:%s/api/v1/shutdown?secret=%s"\nrequest = "POST"\n' "$p" "$s" | curl -fsS -m 5 -o /dev/null -K - 2>/dev/null
+        [ -n "$pid" ] || continue
+        for i in 1 2 3 4 5 6 7 8; do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+        kill -0 "$pid" 2>/dev/null && kill -TERM "$pid" 2>/dev/null
+        for i in 1 2 3 4 5; do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+        kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
+    done
+    echo __RETIRED__
+    """
 
 # The UI can cancel an in-flight connect. The connect task can't be interrupted mid-`_ssh_run`, but it
 # checks this between phases and inside its poll loops — so a cancel lands within a couple seconds, tears
@@ -854,16 +1074,25 @@ function _tunnel_node(local_port::Integer)::String
     end
 end
 
-"One authenticated request through the tunnel: is the server on the other end the one that owns `secret`?"
-function _tunnel_reaches_server(local_port::Integer, secret::AbstractString; timeout::Integer=20)::Bool
+"""
+One authenticated request through the tunnel: does the server on the other end own `secret`?
+`:ok` it does, `:denied` it says no, `:unknown` it did not say (busy, or the path is gone). The
+difference between the last two is the point: a server that is slow is still the server, and one
+that refuses the secret is not the one the secret came from.
+"""
+function _tunnel_auth(local_port::Integer, secret::AbstractString; timeout::Integer=20)::Symbol
+    isempty(secret) && return :denied
     try
         resp = HTTP.get("http://127.0.0.1:$(local_port)/api/v1/config?secret=$(HTTP.escapeuri(secret))";
             connect_timeout=3, readtimeout=timeout, retry=false, redirect=false, status_exception=false, cookies=false)
-        resp.status == 200
+        resp.status == 200 ? :ok : resp.status ∈ (401, 403) ? :denied : :unknown
     catch
-        false
+        :unknown
     end
 end
+
+"One authenticated request through the tunnel: is the server on the other end the one that owns `secret`?"
+_tunnel_reaches_server(local_port::Integer, secret::AbstractString; timeout::Integer=20)::Bool = _tunnel_auth(local_port, secret; timeout) == :ok
 
 """
 Try the server this host gave us last time. True when the task is finished (ready, or cancelled);
@@ -895,26 +1124,34 @@ function _reconnect_known_remote!(r::RemoteSession; known=get(_read_known_remote
     false
 end
 
-# Discovery fast-forwards the node's clone on every connect, and then REPLACES the idle server that
-# was loaded from the old source. A reconnect that skips discovery must not do the first half alone:
-# new source under a running hub means its next child loads another version than the hub, and the
-# hub refuses it. So this only LOOKS (`git ls-remote`, nothing on the node changes). When the node
-# is behind, the remembered entry is dropped, and the next connect runs discovery, which updates and
-# replaces together as it always has.
-function _remote_clone_is_behind(host::String)::Bool
-    # (a busy node is not updated, so there is nothing a full discovery would do there: it stays on the quick path)
-    snippet = _NODE_BUSY_SH * """
-    d="\$HOME/.spacestation/Pluto.jl"
-    cd "\$d" 2>/dev/null || exit 0
-    here=\$(git rev-parse HEAD 2>/dev/null) || exit 0
-    there=\$(git ls-remote origin refs/heads/$(REMOTE_FORK_BRANCH) 2>/dev/null | cut -f1)
-    [ -n "\$there" ] && [ "\$here" != "\$there" ] || exit 0
+# Discovery replaces an idle server of an older version by one of the current version. A reconnect
+# that skips discovery only LOOKS (`git ls-remote`, nothing on the node changes): when `origin` has
+# moved on from what the hub here runs, and the node is idle, the remembered entry is dropped, and
+# the next connect runs discovery, which does the replacing. A busy node stays on the quick path:
+# there is nothing a discovery would do there.
+_behind_script(; branch::AbstractString=REMOTE_FORK_BRANCH)::String = _NODE_BUSY_SH * "branch=$(_shquote(String(branch)))\n" * raw"""
+    clone="$HOME/.spacestation/Pluto.jl"; me=$(hostname)
+    [ -d "$clone/.git" ] || exit 0
+    nd=$(cat "$HOME/.spacestation/nodedir-$me" 2>/dev/null)
+    here=""
+    for f in ${nd:+"$nd"/state/pluto/servers/*.json} "$HOME"/.local/state/pluto/servers/*.json; do
+        [ -e "$f" ] || continue
+        grep -q '"hub": *true' "$f" || continue
+        node=$(sed -n 's/.*"node": *"\([^"]*\)".*/\1/p' "$f")
+        [ -n "$node" ] && [ "$node" != "$me" ] && continue
+        kill -0 "$(sed -n 's/.*"pid": *\([0-9]*\).*/\1/p' "$f")" 2>/dev/null || continue
+        here=$(sed -n 's/.*"commit": *"\([0-9a-f]*\)".*/\1/p' "$f")
+        break
+    done
+    # the version the hub here runs from is in use (see gc_versions)
+    [ -n "$here" ] && touch "$HOME/.spacestation/versions/.used-$here" 2>/dev/null
+    there=$(git -C "$clone" ls-remote origin "refs/heads/$branch" 2>/dev/null | cut -f1)
+    [ -n "$there" ] && [ "$here" != "$there" ] || exit 0
     node_busy && exit 0
     echo __BEHIND__
     """
-    _, out = _ssh_try(host, snippet)
-    occursin("__BEHIND__", out)
-end
+
+_remote_clone_is_behind(host::String)::Bool = occursin("__BEHIND__", _ssh_try(host, _behind_script())[2])
 
 function _update_remote_clone_later(host::String; behind=_remote_clone_is_behind)
     @async try
@@ -974,12 +1211,15 @@ saved first (`env -0`, on the node's disk) and handed to everything the hub star
 terminals, workspace servers and their notebooks run with the user's julia, depot and PATH
 (UserEnv.jl). When staging is not possible the hub starts as it used to, from the shared install.
 """
-function _remote_launch_script(julia::AbstractString; app::AbstractString=REMOTE_BOOTSTRAP_DIR, code::AbstractString="import SpaceStation; SpaceStation.run(launch_browser=false, hub=true)")::String
+function _remote_launch_script(julia::AbstractString; app::AbstractString=REMOTE_BOOTSTRAP_DIR, commit::AbstractString="", code::AbstractString="import SpaceStation; SpaceStation.run(launch_browser=false, hub=true)")::String
     # (the hub's own markers, SPACESTATION_HUB and SPACESTATION_TUNNELED, go on its command line and are
     # not exported: the saved user environment must not tell a terminal that it is a hub)
-    raw"""
+    # `commit` is the installed version `app` is (see "installed versions"): the hub writes it into its
+    # connection file, which is how a later connect knows what runs here.
+    "commit=$(isempty(commit) ? "" : (@assert _valid_commit(commit); commit))\n" * raw"""
     mkdir -p ~/.spacestation
     chmod 700 ~/.spacestation 2>/dev/null
+    [ -n "$commit" ] && touch "$HOME/.spacestation/versions/.used-$commit" 2>/dev/null
     marker=~/.spacestation/nodedir-$(hostname)
     d=$(cat "$marker" 2>/dev/null)
     if [ -z "$d" ] || [ -L "$d" ] || [ ! -d "$d" ] || [ ! -O "$d" ]; then
@@ -997,7 +1237,7 @@ function _remote_launch_script(julia::AbstractString; app::AbstractString=REMOTE
     # (without a saved copy of this environment the hub could not give terminals and notebooks the user's own)
     if [ -n "$rt" ] && [ -x "$rt/julia/bin/julia" ] && (umask 077; env -0 > "$d/user-env") 2>/dev/null && cd "$rt"; then
         nohup env -u LD_LIBRARY_PATH -u JULIA_PROJECT -u JULIA_LOAD_PATH \
-            SPACESTATION_TUNNELED=1 SPACESTATION_HUB=1 \
+            SPACESTATION_TUNNELED=1 SPACESTATION_HUB=1 SPACESTATION_APP_COMMIT="$commit" \
             HOME="$rt/home" TMPDIR="$rt/tmp" PATH="$rt/julia/bin:/usr/local/bin:/usr/bin:/bin" \
             JULIA_DEPOT_PATH="$rt/depot:" JULIA_CPU_TARGET="$(cat "$rt/cpu-target")" JULIA_PKG_OFFLINE=true \
             SPACESTATION_USER_ENV_FILE="$d/user-env" SPACESTATION_USER_JULIA="$julia" SPACESTATION_USER_PROJECT="$app" \
@@ -1006,12 +1246,215 @@ function _remote_launch_script(julia::AbstractString; app::AbstractString=REMOTE
             -e """ * _shquote(String(code)) * raw""" > "$d/server.log" 2>&1 < /dev/null &
         echo $! > "$d/hub.pid"; disown
     else
-        export JULIA_DEPOT_PATH="$user_depot" SPACESTATION_TUNNELED=1 SPACESTATION_HUB=1
+        export JULIA_DEPOT_PATH="$user_depot" SPACESTATION_TUNNELED=1 SPACESTATION_HUB=1 SPACESTATION_APP_COMMIT="$commit"
         nohup ${SPACESTATION_LAUNCH_WRAPPER:-} "$julia" """ * SERVER_THREAD_FLAGS * raw""" --project="$app" -e """ * _shquote(String(code)) * raw""" > "$d/server.log" 2>&1 < /dev/null &
         echo $! > "$d/hub.pid"; disown
     fi
     true
     """
+end
+
+"The node could not be asked (the SSH hop stalled). That is no answer, and it must not be read as one: say so, and let the watchdog or the user try again."
+function _remote_unanswered!(r::RemoteSession, what::AbstractString)
+    r.state = "error"
+    r.detail = "could not check $(what) on $(r.host) (the SSH hop stalled) — retrying"
+    nothing
+end
+
+"""
+Make the version `prep` names ready to start a hub from: cloned (first contact), exported, its
+packages installed, and loading. Returns its commit, or `nothing` with `r.state`/`r.detail` saying
+what went wrong (or that the connect was cancelled). Everything here ADDS to the node: nothing a
+running server uses is changed, so it is safe to do in front of one.
+"""
+function _ready_remote_version!(r::RemoteSession, prep::PreparedVersion)::Union{Nothing,String}
+    if prep.state == :noclone
+        r.state = "installing"
+        r.detail = "first-time setup on $(r.host): cloning SpaceStation (a minute or two)"
+        # A clone that IS there is never removed to make room for one that may not arrive: the new one
+        # is fetched beside it and only takes its place once it is complete (`_clone_command`).
+        ok, out = _ssh_try(r.host, _clone_command())
+        if !ok
+            hint = occursin(r"resolve host|Could not resolve|unable to access|Connection timed out|Network is unreachable"i, out) ?
+                " — this node looks like it has NO INTERNET ACCESS (common for HPC compute/GPU nodes). Try your LOGIN node instead, or clone SpaceStation to $(REMOTE_BOOTSTRAP_DIR) there manually." : ""
+            r.state = "error"
+            r.detail = "git clone failed on $(r.host): $(_tail(out))$(hint)"
+            return nothing
+        end
+        _remote_bail(r) && return nothing
+        prep = _prepare_remote_version(r.host)
+    end
+    if prep.state != :ok
+        r.state = "error"
+        r.detail = prep.state == :unknown ?
+            "could not check the SpaceStation installation on $(r.host) (the SSH hop stalled) — retrying" :
+            "could not prepare a SpaceStation version on $(r.host) from its clone at $(REMOTE_BOOTSTRAP_DIR) (is there room in the home directory, and does `git -C $(REMOTE_BOOTSTRAP_DIR) status` work there?)"
+        return nothing
+    end
+    commit = prep.commit
+    installed = prep.installed
+    # The marker only says that an earlier instantiate completed. On HPC systems DEPOT_PATH is
+    # commonly shared across nodes, and an artifact can later be garbage-collected, partially
+    # written, or otherwise disappear while the marker remains. Validate the thing we actually
+    # need before trusting it. A failed import invalidates it and falls through to the detached
+    # repair/install below instead of repeatedly launching a server that crashes.
+    if installed
+        r.state = "checking"
+        r.detail = "validating the SpaceStation installation on $(r.host)"
+        healthy, _ = _ssh_try(r.host, "$(_shquote(r.julia)) --project=$(_version_dir_sh(commit)) -e 'import SpaceStation'")
+        _remote_bail(r) && return nothing
+        if !healthy
+            installed = false
+            r.detail = "repairing missing or damaged SpaceStation dependencies on $(r.host)"
+        end
+    end
+    if !installed
+        r.state = "installing"
+        ok, out = _ssh_try(r.host, _install_version_script(r.julia, commit))
+        if !ok || !(occursin("__LAUNCHED__", out) || occursin("__ATTACHED__", out))
+            r.state = "error"
+            r.detail = "could not start the install on $(r.host): $(_tail(out))"
+            return nothing
+        end
+        started = time()
+        while true
+            sleep(5)
+            _remote_bail(r) && return nothing
+            elapsed = round(Int, (time() - started) / 60)
+            # PROOF over promises: stream the live install log line into the banner.
+            _, out = _ssh_try(r.host, _install_poll_script(commit))
+            occursin("__DONE__", out) && break
+            log_m = match(r"__LOG__(.*)", out)
+            log_line = log_m === nothing ? "" : strip(String(log_m.captures[1]))
+            if occursin("Juliaup configuration is locked", out)
+                _ssh_try(r.host, "f=\"\$HOME/.spacestation/versions/.install-$(commit)-\$(hostname).pid\"; kill -9 \"\$(cat \"\$f\" 2>/dev/null)\" 2>/dev/null; rm -f \"\$f\"")
+                r.state = "error"
+                r.detail = "the juliaup shim deadlocked on its config lock on $(r.host) (often a hung self-update on an internet-less node) — retry: the real julia binary will be used directly"
+                return nothing
+            end
+            # No answer is not "the install died": only a poll that came back whole can say that.
+            if occursin("__LOG__", out) && !occursin("__ALIVE__", out)
+                _, log = _ssh_try(r.host, "tail -n 6 ~/.spacestation/install.log 2>/dev/null")
+                r.state = "error"
+                r.detail = "Pkg.instantiate failed on $(r.host): $(_tail(log))"
+                return nothing
+            end
+            r.detail = "installing on $(r.host) ($(elapsed) min): $(isempty(log_line) ? "starting up…" : last(log_line, 110))"
+            if time() - started > 45 * 60
+                r.state = "error"
+                r.detail = "install on $(r.host) still not finished after 45 minutes — check ~/.spacestation/install.log there"
+                return nothing
+            end
+        end
+    end
+    commit
+end
+
+"""
+Start a hub on the node from the installed version `commit`, and wait until it answers there with
+the secret in its own connection file. The candidate to tunnel to, or `nothing` with `r.state` set.
+"""
+function _launch_remote_hub!(r::RemoteSession, commit::AbstractString)::Union{Nothing,RemoteCandidate}
+    r.state = "starting"
+    r.detail = "starting the SpaceStation server on $(r.host)"
+    # SPACESTATION_TUNNELED marks this server as reached over an SSH tunnel: its child workspace
+    # ports aren't forwarded to the browser, so its frontend opens workspaces IN-PLACE instead of
+    # spawning unreachable children (see serve_api_config + land.js).
+    # A hub (SPACESTATION_HUB=1 before the import, hub=true for the run): it never opens a
+    # notebook itself — each workspace gets a child on the node, relayed under /w/<id>/ — and
+    # it never parses the registries.
+    #
+    # Everything it and its children WRITE goes to a node-local directory, not to $HOME or the
+    # depot: on a cluster those are networked filesystems that stall for seconds to minutes,
+    # and Julia's file I/O blocks the calling thread while they do. Worse, Pkg's usage log
+    # takes a pidfile lock (a file watch) and the scratch spaces are walked with stat, and
+    # both happen under Julia's process-wide libuv lock — held across a stall, that stops the
+    # event loop of the whole process, sockets included, even on threads that have nothing
+    # to do. So: a writable depot on the node in FRONT of the shared one (Julia's depot stack
+    # is made for this — packages, registries and compiled caches are still read from the
+    # shared depot, nothing is recompiled; usage logs, scratch spaces and new caches land
+    # locally), and the log there too (a redirected stdout is a plain file stream), and the
+    # servers' connection files (SPACESTATION_STATE_HOME: the hub walks that directory on every
+    # status poll, and ~/.local/state is $HOME; the scans look in both places). The
+    # directory is created once per node with mktemp (never a name someone else could
+    # pre-create in a shared /tmp), remembered per node in $HOME, and reused while it exists
+    # and is ours (a real directory, never a symlink: the marker is readable by other local
+    # users). ~/.spacestation/server.log links to the live log; the previous run's log is
+    # kept as server.log.1. The trailing ":" on the depot path keeps Julia's bundled depot
+    # (the stdlib compile caches) on the stack. SLURM_TMPDIR is preferred when a job sets it:
+    # /tmp on a compute node can be a small tmpfs, and packages a notebook adds land here.
+    _ssh_run(r.host, _remote_launch_script(r.julia; app=_version_dir_sh(commit), commit))
+    # The first launch of a version on a cluster builds the node-local runtime (a few minutes,
+    # once); every later one restores or reuses it in seconds. The launch script does that before
+    # it starts the hub, so this wait covers both.
+    r.detail = "starting the SpaceStation server on $(r.host) (the first start of a new version prepares its runtime on the node's own disk: a few minutes, once)"
+    for i in 1:480 # a little longer than node/runtime.sh waits for a build already under way
+        sleep(2)
+        _remote_bail(r) && return nothing
+        # the server we just launched announces itself by answering on this node, with its own secret
+        scanned, found = _find_remote_server(r.host, "")
+        (scanned && found !== nothing && found.status == :live) && return found
+        # ...unless it is no longer there to answer: say so now, with what it said, instead of waiting out the clock
+        if i % 5 == 0 && scanned && found === nothing
+            state, line = _launched_hub(r.host)
+            if state == :gone
+                r.state = "error"
+                r.detail = _hub_gone_detail(r.host, line)
+                return nothing
+            end
+        end
+    end
+    r.state = "error"
+    r.detail = "the remote server did not come up — see ~/.spacestation/server.log (a link to its node-local log) on $(r.host)"
+    nothing
+end
+
+"""
+Tunnel to `remote` and call the host ready, but only with a secret the server at the other end of
+that very tunnel accepted. This is the one place a session becomes "ready" after a discovery, so it
+is the one place that has to hold: whatever a file on the node claimed, a secret that is refused is
+never handed to the browser, remembered, or registered. A refusal means the file was not that
+server's (the scan checks this on the node too; between the scan and the tunnel a server can be
+replaced): the node is looked at again without it, a few times, and then the connect says what is
+wrong instead of saying "connected". `true` when the host is ready.
+"""
+function _attach_verified!(r::RemoteSession, remote::RemoteCandidate; open_tunnel=_open_tunnel!, auth=_tunnel_auth,
+        rescan=(refused -> _find_remote_server(r.host, ""; refused)), mark_ready=_mark_remote_ready!, pause::Real=2.0)::Bool
+    refused = Set{String}()
+    local_port = 0
+    for _ in 1:3
+        r.state = "tunneling"
+        r.detail = "opening the SSH tunnel"
+        outcome, local_port = open_tunnel(r, remote.port)
+        outcome == :cancelled && return false
+        if outcome != :ok
+            r.state = "error"
+            r.detail = "tunnel did not come up (local port $local_port → $(r.host):$(remote.port))"
+            _hold_port!(r, local_port) # keep answering, so a reload is not a dead end
+            return false
+        end
+        _remote_bail(r) && return false
+        # (no answer is not a refusal: a server that is busy is still the server, as everywhere else here)
+        if auth(local_port, remote.secret) != :denied
+            _remote_bail(r) && return false # disconnected while we were asking: do not mark the host active
+            mark_ready(r, local_port, remote.port, remote.secret, remote.node)
+            return true
+        end
+        push!(refused, remote.secret)
+        _kill_tunnel!(r)
+        _remote_bail(r) && return false
+        r.state = "checking"
+        r.detail = "the server on $(r.host) did not accept the secret in its connection file: looking again"
+        sleep(pause)
+        scanned, again = rescan(refused)
+        (scanned && again !== nothing) || break
+        remote = again
+    end
+    _remote_bail(r) && return false
+    r.state = "error"
+    r.detail = "a server answers on $(r.host), port $(remote.port), and refuses the secret its connection file gives: the file is out of date. Connect again in a moment; if it stays like this, restart SpaceStation on $(r.host)."
+    local_port > 0 && _hold_port!(r, local_port)
+    false
 end
 
 function _remote_connect_task!(r::RemoteSession)
@@ -1041,250 +1484,62 @@ function _remote_connect_task!(r::RemoteSession)
 
         r.state = "checking"
         r.detail = "looking for a running SpaceStation on $(r.host)"
-        scanned, remote = _find_remote_server(r.host, r.secret)
-        if !scanned
-            # The scan is an SSH round trip through whatever ProxyJump the node sits behind. When it
-            # fails we know nothing about the node — and "nothing" must not become "no server", or the
-            # node ends up running two. Say so; the watchdog retries a session that was connected before.
-            r.state = "error"
-            r.detail = "could not check $(r.host) for a running SpaceStation server (the SSH hop stalled) — retrying"
-            return
-        end
-
-        # Auto-update: if the clone is behind main, fast-forward it, then retire the running server +
-        # its install marker so a fresh, UPDATED server boots below. No-op when already current, not
-        # yet cloned, or the node has no internet — so reconnecting always lands you on the latest.
-        if _maybe_update_remote_clone!(r.host)
-            r.state = "checking"
-            r.detail = "updating SpaceStation on $(r.host) to the latest version"
-            # Retire only THIS node's IDLE server(s): match the node field (skip a sibling node's same-port
-            # file on a shared $HOME — see the scan snippet), then ask the server what it has open. One
-            # with notebooks open is left running, on the older code, and is attached to as usual: this
-            # path runs on every automatic reconnect (a laptop waking up), and a reconnect must never cost
-            # someone the notebook that has been computing on the node all night. It picks up the update
-            # the next time it is idle. A server too busy to answer is, by the same rule, left alone.
-            # kill hits a real pid because a node-matched server is a process on this very node. The secret
-            # travels to curl through a config on stdin, never through argv (visible in `ps` on a shared node).
-            # (The update above does not happen at all while a server here is busy, so this finds idle ones.
-            # It keeps its own check, with the same meaning of busy: a server can become busy in between.)
-            _ssh_try(r.host, _NODE_BUSY_SH * raw"""
-            me=$(hostname)
-            rm -f "$HOME/.spacestation/.install_ok"
-            command -v curl >/dev/null 2>&1 || exit 0
-            nd=$(cat "$HOME/.spacestation/nodedir-$me" 2>/dev/null)
-            for f in "$HOME"/.local/state/pluto/servers/*.json ${nd:+"$nd"/state/pluto/servers/*.json}; do
-                [ -e "$f" ] || continue
-                p=$(sed -n 's/.*"port": *\([0-9]*\).*/\1/p' "$f")
-                pid=$(sed -n 's/.*"pid": *\([0-9]*\).*/\1/p' "$f")
-                node=$(sed -n 's/.*"node": *"\([^"]*\)".*/\1/p' "$f")
-                s=$(sed -n 's/.*"secret": *"\([^"]*\)".*/\1/p' "$f")
-                [ -n "$node" ] && [ "$node" != "$me" ] && continue
-                curl -fsS -m 3 -o /dev/null "http://127.0.0.1:$p/ping" 2>/dev/null || continue
-                open=$(printf 'url = "http://127.0.0.1:%s/api/v1/notebooks?secret=%s"\n' "$p" "$s" | curl -fsS -m 5 -K - 2>/dev/null) || continue
-                [ "$open" = "[]" ] || continue
-                hub_has_running_terminal "$pid" && continue
-                rm -f "$f"
-                # Its own shutdown first (it removes its files and stops cleanly), then SIGTERM, then
-                # SIGKILL. A Julia 1.12 process can deadlock in its exit-time finalizers after SIGTERM
-                # and spin at 100% CPU forever, still bound to its port — one did, for 21 hours.
-                printf 'url = "http://127.0.0.1:%s/api/v1/shutdown?secret=%s"\nrequest = "POST"\n' "$p" "$s" | curl -fsS -m 5 -o /dev/null -K - 2>/dev/null
-                [ -n "$pid" ] || continue
-                for i in 1 2 3 4 5 6 7 8; do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
-                kill -0 "$pid" 2>/dev/null && kill -TERM "$pid" 2>/dev/null
-                for i in 1 2 3 4 5; do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
-                kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
-            done
-            """)
-            # Whatever survived the retirement (busy, or with notebooks open) is still the server to use.
-            scanned, remote = _find_remote_server(r.host, r.secret)
-            if !scanned
-                r.state = "error"
-                r.detail = "could not check $(r.host) for a running SpaceStation server (the SSH hop stalled) — retrying"
-                return
-            end
-        end
-
-        if remote === nothing
-            # find julia (absolute path) — checks PATH, juliaup, ~/.local/bin, and an interactive shell (for module/.bashrc setups)
-            r.julia = _find_remote_julia(r.host)
-            if isempty(r.julia)
-                r.state = "error"
-                r.detail = "julia not found on $(r.host) — tried the login-shell PATH, ~/.juliaup/bin, ~/.local/bin, and an interactive shell. Install juliaup there, or add 'module load julia' to your ~/.bash_profile."
-                return
-            end
-
-            # idempotent bootstrap with a COMPLETION MARKER (the VS Code Remote-SSH pattern):
-            # the install only counts once instantiate finished; a clone without the marker
-            # resumes at instantiate, a missing clone starts over.
-            ok, out = _ssh_try(r.host, "test -f ~/.spacestation/.install_ok && echo done; test -d $(REMOTE_BOOTSTRAP_DIR)/.git && echo cloned; echo __CHECKED__")
-            # No answer is not "nothing is there". When this one call stalled, both words were missing,
-            # the code below concluded "not cloned" and ran `rm -rf` on a clone that servers were running
-            # from, then failed to clone again on a node with no internet.
-            if !occursin("__CHECKED__", out)
-                r.state = "error"
-                r.detail = "could not check the SpaceStation installation on $(r.host) (the SSH hop stalled) — retrying"
-                return
-            end
-            install_done = occursin("done", out)
-            cloned = occursin("cloned", out)
-            # The marker only says that an earlier instantiate completed. On HPC systems DEPOT_PATH is
-            # commonly shared across nodes, and an artifact can later be garbage-collected, partially
-            # written, or otherwise disappear while .install_ok remains. Validate the thing we actually
-            # need before trusting the marker. A failed import invalidates it and falls through to the
-            # detached repair/install path below instead of repeatedly launching a server that crashes.
-            if install_done
-                r.state = "checking"
-                r.detail = "validating the SpaceStation installation on $(r.host)"
-                healthy, _ = _ssh_try(r.host,
-                    "$(r.julia) --project=$(REMOTE_BOOTSTRAP_DIR) -e 'import SpaceStation'")
-                if !healthy
-                    _ssh_try(r.host, "rm -f ~/.spacestation/.install_ok")
-                    install_done = false
-                    r.state = "installing"
-                    r.detail = "repairing missing or damaged SpaceStation dependencies on $(r.host)"
-                end
-            end
-            if !install_done
-                r.state = "installing"
-                if !cloned
-                    r.detail = "first-time setup on $(r.host): cloning SpaceStation (a minute or two)"
-                    # ...and a clone that IS there is never removed to make room for one that may not arrive: the
-                    # new one is fetched beside it and only takes its place once it is complete.
-                    ok, out = _ssh_try(r.host, _clone_command())
-                    if !ok
-                        hint = occursin(r"resolve host|Could not resolve|unable to access|Connection timed out|Network is unreachable"i, out) ?
-                            " — this node looks like it has NO INTERNET ACCESS (common for HPC compute/GPU nodes). Try your LOGIN node instead, or clone SpaceStation to $(REMOTE_BOOTSTRAP_DIR) there manually." : ""
-                        r.state = "error"
-                        r.detail = "git clone failed on $(r.host): $(_tail(out))$(hint)"
-                        return
-                    end
-                end
-                # run the slow step DETACHED on the remote (nohup + pidfile + log): it survives
-                # connection drops and local restarts; we just poll for the completion marker.
-                # If an install is already running (e.g. we reconnected), attach to it instead.
-                _, out = _ssh_try(r.host, "kill -0 \$(cat ~/.spacestation/install.pid 2>/dev/null) 2>/dev/null && echo alive || echo dead")
-                if !occursin("alive", out)
-                    launch = """
-                    mkdir -p ~/.spacestation
-                    rm -f ~/.spacestation/.install_ok
-                    nohup sh -c 'cd "\$HOME/.spacestation/Pluto.jl" && $(r.julia) --project=. -e "import Pkg; Pkg.instantiate(); import SpaceStation" && touch "\$HOME/.spacestation/.install_ok"' > ~/.spacestation/install.log 2>&1 < /dev/null &
-                    echo \$! > ~/.spacestation/install.pid
-                    echo launched
-                    """
-                    ok, out = _ssh_try(r.host, launch)
-                    if !ok || !occursin("launched", out)
-                        r.state = "error"
-                        r.detail = "could not start the install on $(r.host): $(_tail(out))"
-                        return
-                    end
-                end
-                started = time()
-                while true
-                    sleep(5)
-                    _remote_bail(r) && return
-                    elapsed = round(Int, (time() - started) / 60)
-                    # PROOF over promises: stream the live install log line into the banner.
-                    # Fence the tail behind a __LOG__ marker and extract only that — a ProxyJump
-                    # login node reprints its post-quantum warning on every hop (LogLevel can't
-                    # reach it), and without the fence that client chatter would land in the
-                    # banner instead of the real progress line.
-                    _, out = _ssh_try(r.host, "test -f ~/.spacestation/.install_ok && echo __DONE__; kill -0 \$(cat ~/.spacestation/install.pid 2>/dev/null) 2>/dev/null && echo __ALIVE__; printf '__LOG__%s' \"\$(tail -n 1 ~/.spacestation/install.log 2>/dev/null)\"")
-                    occursin("__DONE__", out) && break
-                    log_m = match(r"__LOG__(.*)", out)
-                    log_line = log_m === nothing ? "" : strip(String(log_m.captures[1]))
-                    if occursin("Juliaup configuration is locked", out)
-                        _ssh_try(r.host, "kill -9 \$(cat ~/.spacestation/install.pid 2>/dev/null) 2>/dev/null; rm -f ~/.spacestation/install.pid")
-                        r.state = "error"
-                        r.detail = "the juliaup shim deadlocked on its config lock on $(r.host) (often a hung self-update on an internet-less node) — retry: the real julia binary will be used directly"
-                        return
-                    end
-                    if !occursin("__ALIVE__", out)
-                        _, log = _ssh_try(r.host, "tail -n 6 ~/.spacestation/install.log 2>/dev/null")
-                        r.state = "error"
-                        r.detail = "Pkg.instantiate failed on $(r.host): $(_tail(log))"
-                        return
-                    end
-                    r.detail = "installing on $(r.host) ($(elapsed) min): $(isempty(log_line) ? "starting up…" : last(log_line, 110))"
-                    if time() - started > 45 * 60
-                        r.state = "error"
-                        r.detail = "install on $(r.host) still not finished after 45 minutes — check ~/.spacestation/install.log there"
-                        return
-                    end
-                end
-            end
-
-            r.state = "starting"
-            r.detail = "starting the SpaceStation server on $(r.host)"
-            # SPACESTATION_TUNNELED marks this server as reached over an SSH tunnel: its child workspace
-            # ports aren't forwarded to the browser, so its frontend opens workspaces IN-PLACE instead of
-            # spawning unreachable children (see serve_api_config + land.js).
-            # A hub (SPACESTATION_HUB=1 before the import, hub=true for the run): it never opens a
-            # notebook itself — each workspace gets a child on the node, relayed under /w/<id>/ — and
-            # it never parses the registries.
-            #
-            # Everything it and its children WRITE goes to a node-local directory, not to $HOME or the
-            # depot: on a cluster those are networked filesystems that stall for seconds to minutes,
-            # and Julia's file I/O blocks the calling thread while they do. Worse, Pkg's usage log
-            # takes a pidfile lock (a file watch) and the scratch spaces are walked with stat, and
-            # both happen under Julia's process-wide libuv lock — held across a stall, that stops the
-            # event loop of the whole process, sockets included, even on threads that have nothing
-            # to do. So: a writable depot on the node in FRONT of the shared one (Julia's depot stack
-            # is made for this — packages, registries and compiled caches are still read from the
-            # shared depot, nothing is recompiled; usage logs, scratch spaces and new caches land
-            # locally), and the log there too (a redirected stdout is a plain file stream), and the
-            # servers' connection files (SPACESTATION_STATE_HOME: the hub walks that directory on every
-            # status poll, and ~/.local/state is $HOME; the scans look in both places). The
-            # directory is created once per node with mktemp (never a name someone else could
-            # pre-create in a shared /tmp), remembered per node in $HOME, and reused while it exists
-            # and is ours (a real directory, never a symlink: the marker is readable by other local
-            # users). ~/.spacestation/server.log links to the live log; the previous run's log is
-            # kept as server.log.1. The trailing ":" on the depot path keeps Julia's bundled depot
-            # (the stdlib compile caches) on the stack. SLURM_TMPDIR is preferred when a job sets it:
-            # /tmp on a compute node can be a small tmpfs, and packages a notebook adds land here.
-            _ssh_run(r.host, _remote_launch_script(r.julia))
-            # The first launch of a version on a cluster builds the node-local runtime (a few minutes,
-            # once); every later one restores or reuses it in seconds. The launch script does that before
-            # it starts the hub, so this wait covers both.
-            r.detail = "starting the SpaceStation server on $(r.host) (the first start of a new version prepares its runtime on the node's own disk: a few minutes, once)"
-            for i in 1:480 # a little longer than node/runtime.sh waits for a build already under way
-                sleep(2)
-                _remote_bail(r) && return
-                # the server we just launched announces itself by answering /ping on this node
-                scanned, found = _find_remote_server(r.host, "")
-                if scanned && found !== nothing && found.status == :live
-                    remote = found
-                    break
-                end
-                # ...unless it is no longer there to answer: say so now, with what it said, instead of waiting out the clock
-                if i % 5 == 0 && scanned && found === nothing
-                    state, line = _launched_hub(r.host)
-                    if state == :gone
-                        r.state = "error"
-                        r.detail = _hub_gone_detail(r.host, line)
-                        return
-                    end
-                end
-            end
-            if remote === nothing
-                r.state = "error"
-                r.detail = "the remote server did not come up — see ~/.spacestation/server.log (a link to its node-local log) on $(r.host)"
-                return
-            end
-        end
-
-        r.state = "tunneling"
-        r.detail = "opening the SSH tunnel"
-        outcome, local_port = _open_tunnel!(r, remote.port)
-        outcome == :cancelled && return
-        if outcome != :ok
-            r.state = "error"
-            r.detail = "tunnel did not come up (local port $local_port → $(r.host):$(remote.port))"
-            _hold_port!(r, local_port) # keep answering, so a reload is not a dead end
-            return
-        end
+        # Which version a hub started now would run: what `main` is, exported to a directory of its own
+        # if it is not there yet. This changes nothing that runs (see "installed versions"), so it needs
+        # no look at what is busy, here or on any other node that shares this home.
+        prep = _prepare_remote_version(r.host)
+        prep.state == :unknown && return _remote_unanswered!(r, "the SpaceStation installation")
+        # The scan is an SSH round trip through whatever ProxyJump the node sits behind. When it
+        # fails we know nothing about the node — and "nothing" must not become "no server", or the
+        # node ends up running two. Say so; the watchdog retries a session that was connected before.
+        scan = _scan_remote(r.host)
+        scan.scanned || return _remote_unanswered!(r, "for a running SpaceStation server")
+        remote = _choose_remote_server(scan.cands, r.secret)
         _remote_bail(r) && return
 
-        _mark_remote_ready!(r, local_port, remote.port, remote.secret, remote.node)
+        # Auto-update: a server here that runs another version than `main` is replaced by one that runs
+        # it, so reconnecting lands you on the latest. But only a server nobody is using (no notebook
+        # open, nothing running in a terminal, on the whole node): one that is busy is attached to as it
+        # is, on its own version, and is replaced the next time it is found idle. And only when the
+        # version is known to be the newest (`fresh`): a node that could not reach `origin` this time
+        # must not take a newer server down for an older one.
+        outdated = remote !== nothing && remote.status == :live && scan.idle && prep.state == :ok && prep.fresh && remote.commit != prep.commit
+
+        if remote === nothing || outdated
+            # find julia (absolute path) — checks PATH, juliaup, ~/.local/bin, and an interactive shell (for module/.bashrc setups)
+            r.julia = _find_remote_julia(r.host)
+            commit = if isempty(r.julia)
+                r.state = "error"
+                r.detail = "julia not found on $(r.host) — tried the login-shell PATH, ~/.juliaup/bin, ~/.local/bin, and an interactive shell. Install juliaup there, or add 'module load julia' to your ~/.bash_profile."
+                nothing
+            else
+                # The new version is made ready BEFORE anything running is stopped: if it cannot be
+                # installed (no network for its packages, a damaged depot), the server that works stays.
+                _ready_remote_version!(r, prep)
+            end
+            _remote_bail(r) && return
+            if commit === nothing
+                outdated || return # nothing is running here to fall back to: r.detail says what went wrong
+                @info "SpaceStation: keeping the server already running on $(r.host): the current version could not be prepared there" detail = r.detail
+            else
+                if outdated
+                    r.state = "checking"
+                    r.detail = "updating SpaceStation on $(r.host) to the latest version"
+                    _ssh_try(r.host, _retire_idle_servers_script(commit))
+                    # Whatever survived (it became busy in between) is still the server to use.
+                    scan = _scan_remote(r.host)
+                    scan.scanned || return _remote_unanswered!(r, "for a running SpaceStation server")
+                    remote = _choose_remote_server(scan.cands, r.secret)
+                    _remote_bail(r) && return
+                end
+                if remote === nothing
+                    remote = _launch_remote_hub!(r, commit)
+                    remote === nothing && return
+                end
+            end
+        end
+
+        _attach_verified!(r, remote)
     catch e
         r.state = "error"
         r.detail = sprint(showerror, e)
@@ -1355,6 +1610,8 @@ function cancel_remote_session!(host::String)
     end
     lock(REMOTE_SESSIONS_LOCK) do
         delete!(REMOTE_SESSIONS, host)
+        delete!(TUNNEL_AUTH_CHECKED, host)
+        delete!(TUNNEL_DENIED_STREAK, host)
     end
     nothing
 end
@@ -1389,6 +1646,50 @@ const TUNNEL_DEAD_STRIKES = 2
 const TUNNEL_DEAD_STREAK = Dict{String,Int}()
 const TUNNEL_WATCHDOG = Ref{Union{Task,Nothing}}(nothing)
 const MAX_RESTORED_REMOTES = 8
+# A tunnel that answers /ping says the path is up. It does not say that the server at its end is
+# still the one whose secret this session holds: a hub that was restarted on the node (by hand, by
+# another computer's connect, after its job ended and a new one began) has a new secret, answers
+# /ping all the same, and refuses everything the page asks through this hub. "Connected", and every
+# request a 403, until somebody thought of Disconnect and Connect. So a healthy tunnel is also asked,
+# now and then, with the session's secret; a server that REFUSES it twice in a row (not one that is
+# slow to answer) is looked for again, the way a dead tunnel is.
+const TUNNEL_AUTH_PERIOD = Ref(15.0)
+const TUNNEL_AUTH_RECHECK = Ref(3.0)
+const TUNNEL_AUTH_CHECKED = Dict{String,Float64}()
+const TUNNEL_DENIED_STRIKES = 2
+const TUNNEL_DENIED_STREAK = Dict{String,Int}()
+
+"""
+The periodic look at a healthy session's credentials. True when the server behind the tunnel has
+refused the session's secret `TUNNEL_DENIED_STRIKES` times in a row: the session has to be rebuilt.
+A session whose secret is accepted and whose host is not in the table yet (its hub was too busy to
+say what it was when the connect finished) is put there now.
+"""
+function _credentials_refused!(host::AbstractString, r::RemoteSession; auth=_tunnel_auth, connected=host_connected!)::Bool
+    now = time()
+    due = lock(REMOTE_SESSIONS_LOCK) do
+        now < get(TUNNEL_AUTH_CHECKED, host, 0.0) && return false
+        TUNNEL_AUTH_CHECKED[host] = now + TUNNEL_AUTH_PERIOD[]
+        true
+    end
+    due || return false
+    verdict = auth(r.local_port, r.secret; timeout=5)
+    if verdict == :denied
+        return lock(REMOTE_SESSIONS_LOCK) do
+            TUNNEL_AUTH_CHECKED[host] = now + TUNNEL_AUTH_RECHECK[] # the second look comes soon
+            (TUNNEL_DENIED_STREAK[host] = get(TUNNEL_DENIED_STREAK, host, 0) + 1) >= TUNNEL_DENIED_STRIKES
+        end
+    end
+    verdict == :ok || return false
+    lock(() -> delete!(TUNNEL_DENIED_STREAK, host), REMOTE_SESSIONS_LOCK)
+    if one_address_enabled() && remote_host(host) === nothing && _is_current_session(r)
+        try
+            connected(host, r.local_port, r.secret) && (r.detail = "connected — its workspaces open here")
+        catch
+        end
+    end
+    false
+end
 
 """
 What this session's path to the remote looks like right now: `:ok`, `:busy` (the tunnel is up and
@@ -1404,7 +1705,7 @@ end
 "Is this session's path to the remote usable — or at least intact — right now?"
 _tunnel_healthy(r::RemoteSession)::Bool = _tunnel_verdict(r) ∈ (:ok, :busy)
 
-function _supervise_tunnels_once()
+function _supervise_tunnels_once(; auth=_tunnel_auth)
     # Sessions worth looking after: the ones that are up, and the ones that WERE up (they have a port
     # and a secret) but whose last rebuild ended in an error — a scan that failed, a tunnel that did not
     # come up, a host that is off for the weekend. Those used to stay "error" until someone clicked
@@ -1413,14 +1714,21 @@ function _supervise_tunnels_once()
         [(h, r) for (h, r) in REMOTE_SESSIONS if !r.cancelled && (r.state == "ready" || (r.state == "error" && r.local_port > 0 && !isempty(r.secret)))]
     end
     for (host, r) in watched
+        refused = false
         if r.state == "ready"
             verdict = _tunnel_verdict(r)
             if verdict ∈ (:ok, :busy)
                 lock(REMOTE_SESSIONS_LOCK) do
-                    delete!(TUNNEL_RETRY, host) # healthy again: forget the backoff
                     delete!(TUNNEL_DEAD_STREAK, host)
                 end
-                continue
+                # the path is fine; is the server at its end still ours? (only one that just answered is asked)
+                refused = verdict == :ok && _credentials_refused!(host, r; auth)
+                if !refused
+                    lock(() -> delete!(TUNNEL_RETRY, host), REMOTE_SESSIONS_LOCK) # healthy: forget the backoff
+                    continue
+                end
+                lock(() -> delete!(TUNNEL_DENIED_STREAK, host), REMOTE_SESSIONS_LOCK)
+                _set_known_remote!(host, nothing) # what was remembered is what was refused: the rebuild is a discovery
             end
             if verdict == :dead
                 strikes = lock(REMOTE_SESSIONS_LOCK) do
@@ -1447,6 +1755,7 @@ function _supervise_tunnels_once()
         # Say so in the UI rather than leaving a stale "ready" while nothing works — and on the hub's
         # own output, with the reason, so a drop can be explained after the fact.
         why = r.state == "error" ? "last attempt ended in an error ($(r.detail))" :
+              refused ? "the server there no longer accepts this session's secret (it was restarted or replaced)" :
               r.tunnel === nothing ? "no tunnel process" :
               process_exited(r.tunnel) ? "the ssh tunnel process exited" :
               "connections through the tunnel were refused or reset $(TUNNEL_DEAD_STRIKES) times in a row"

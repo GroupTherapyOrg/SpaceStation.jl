@@ -694,3 +694,369 @@ end
         end
     end
 end
+
+# A connection file on a node is a claim, and it outlives the server that wrote it. Two nodes of one
+# cluster were connected at once: the second had a hub from an earlier job on record in the shared
+# home, a new hub was started there, the scan found the OLD record first ("something answers on its
+# port"), and the host was "connected" with a secret the new hub refused. Every page was a 403.
+@testset "A server's secret is proven before it is used" begin
+    state = mktempdir()
+    Pluto.TUNNEL_WATCHDOG_PAUSED[] = true
+    free_port() = (srv = Sockets.listen(Sockets.localhost, 0); port = Int(Sockets.getsockname(srv)[2]); close(srv); port)
+    # a server that owns one secret: /ping for anybody, everything else only with the secret
+    function serve_as(port, secret; notebooks="[]")
+        HTTP.serve!("127.0.0.1", port; verbose=-1) do request
+            uri = HTTP.URI(request.target)
+            uri.path == "/ping" && return HTTP.Response(200, "OK!")
+            get(HTTP.queryparams(uri), "secret", "") == secret || return HTTP.Response(403, "")
+            HTTP.Response(200, uri.path == "/api/v1/notebooks" ? notebooks : """{"hub":true}""")
+        end
+    end
+    withenv("XDG_STATE_HOME" => state, "SPACESTATION_STATE_HOME" => nothing) do
+        @testset "what the scan says" begin
+            file(port, secret, pid; commit="") = """{"pid": $(pid), "host": "127.0.0.1", "port": $(port), "node": "gpu-a", "secret": "$(secret)", "workspace": null, "hub": true, $(isempty(commit) ? "" : "\"commit\": \"$(commit)\", ")"started_at": 1.7e9}"""
+            scan = join([
+                "__CANDIDATE__ LIVE 100\n" * file(1234, "fresh1", 100; commit="0123abc"),
+                "__CANDIDATE__ STALE 90\n" * file(1234, "stale0", 90),
+                "__NODE_IDLE__", "__SCAN_DONE__\n",
+            ], "\n")
+            cands = Pluto._parse_remote_candidates(scan)
+            @test [c.status for c in cands] == [:live, :stale]
+            @test [c.commit for c in cands] == ["0123abc", ""]
+            # a stale file is not a server: not even for the session whose secret it holds
+            @test Pluto._choose_remote_server(cands, "").secret == "fresh1"
+            @test Pluto._choose_remote_server(cands, "stale0").secret == "fresh1"
+            @test Pluto._choose_remote_server(cands[2:2], "stale0") === nothing
+            # and neither is one whose secret the server behind the tunnel refused
+            @test Pluto._choose_remote_server(cands, ""; refused=Set(["fresh1"])) === nothing
+        end
+
+        if Sys.isunix() && Sys.which("bash") !== nothing
+            @testset "the scan asks the server, on the node" begin
+                mktempdir() do dir
+                    dir = realpath(dir)
+                    me = strip(read(`hostname`, String))
+                    home = joinpath(dir, "home"); shared = joinpath(home, ".local", "state", "pluto", "servers")
+                    nodedir = joinpath(dir, "node"); own = joinpath(nodedir, "state", "pluto", "servers")
+                    mkpath(shared); mkpath(own); mkpath(joinpath(home, ".spacestation"))
+                    write(joinpath(home, ".spacestation", "nodedir-$me"), nodedir * "\n")
+                    port = free_port()
+                    gone = run(`true`; wait=false); gone_pid = getpid(gone); wait(gone)
+                    hub = run(`sleep 600`; wait=false); hub_pid = getpid(hub) # the process the live record names (not this one: it has a shell under it, the scan's)
+                    record(pid, secret) = """{"pid": $(pid), "host": "127.0.0.1", "port": $(port), "node": "$(me)", "secret": "$(secret)", "workspace": null, "hub": true, "started_at": 1.7e9}\n"""
+                    name = "$(me)-$(port).json"
+                    # the hub of an earlier job, on record in the shared home; the hub that runs now, in the node's own directory
+                    write(joinpath(shared, name), record(gone_pid, "oldsecret"))
+                    write(joinpath(own, name), record(hub_pid, "newsecret"))
+                    server = serve_as(port, "newsecret")
+                    scan(; path=ENV["PATH"]) = read(pipeline(setenv(`$(Sys.which("bash")) -c $(Pluto._SCAN_REMOTE_SERVERS_SNIPPET)`, merge(Dict(ENV), Dict("HOME" => home, "PATH" => path))); stderr=devnull), String)
+                    try
+                        out = scan()
+                        cands = Pluto._parse_remote_candidates(out)
+                        @test [(c.status, c.secret) for c in cands] == [(:live, "newsecret"), (:stale, "oldsecret")]
+                        @test Pluto._choose_remote_server(cands, "").secret == "newsecret"
+                        @test occursin("__NODE_IDLE__", out)                 # a stale file is not a busy server either
+                        # the window in which this went wrong: the new hub answers, and the only record is the old one
+                        rm(joinpath(own, name))
+                        cands = Pluto._parse_remote_candidates(scan())
+                        @test [(c.status, c.secret) for c in cands] == [(:stale, "oldsecret")]
+                        @test Pluto._choose_remote_server(cands, "oldsecret") === nothing
+                        write(joinpath(own, name), record(hub_pid, "newsecret"))
+                        # a node without curl: bash asks the question itself
+                        bin = joinpath(dir, "bin"); mkpath(bin)
+                        for tool in ("hostname", "cat", "sed", "ps", "grep", "awk", "touch")
+                            symlink(Sys.which(tool), joinpath(bin, tool))
+                        end
+                        cands = Pluto._parse_remote_candidates(scan(; path=bin))
+                        @test [(c.status, c.secret) for c in cands] == [(:live, "newsecret"), (:stale, "oldsecret")]
+                    finally
+                        close(server)
+                        try kill(hub) catch end
+                    end
+                    # nothing answers: a file whose writer is gone is dead, as before
+                    cands = Pluto._parse_remote_candidates(scan())
+                    @test Set(c.status for c in cands if c.secret == "oldsecret") == Set([:dead])
+                end
+            end
+        end
+
+        @testset "ready is only said with a secret the server accepted" begin
+            cand(secret) = Pluto.RemoteCandidate(:live, 1234, secret, 100, false, true, "gpu-a", "")
+            port = free_port()
+            marked = Any[]; asked = String[]; dialled = Ref(0)
+            fake_tunnel(r, remote_port; kw...) = (dialled[] += 1; (:ok, port))
+            mark(r, local_port, remote_port, secret, node) = push!(marked, (local_port, remote_port, secret, node))
+            owns(secret) = (p, s; kw...) -> (push!(asked, s); s == secret ? :ok : :denied)
+            r = add_session!(Pluto.RemoteSession("proven-node", "connecting", "", 0, "", "", nothing, nothing, false))
+            try
+                # the file read first was a dead hub's: refused, looked for again without it, and the right one is used
+                seen_refused = Ref{Any}(nothing)
+                rescan(refused) = (seen_refused[] = copy(refused); (true, cand("newsecret")))
+                @test Pluto._attach_verified!(r, cand("oldsecret"); open_tunnel=fake_tunnel, auth=owns("newsecret"), rescan, mark_ready=mark, pause=0)
+                @test marked == [(port, 1234, "newsecret", "gpu-a")]
+                @test asked == ["oldsecret", "newsecret"] && seen_refused[] == Set(["oldsecret"]) && dialled[] == 2
+
+                # nothing else on the node: an error that says so, and never "connected" with a refused secret
+                empty!(marked); empty!(asked)
+                @test !Pluto._attach_verified!(r, cand("oldsecret"); open_tunnel=fake_tunnel, auth=owns("newsecret"), rescan=(refused -> (true, nothing)), mark_ready=mark, pause=0)
+                @test isempty(marked) && r.state == "error" && occursin("refuses the secret", r.detail)
+                Pluto._stop_placeholder!("proven-node")
+                # every record on the node is refused: it stops after a few looks
+                empty!(marked); n = Ref(0)
+                @test !Pluto._attach_verified!(r, cand("s0"); open_tunnel=fake_tunnel, auth=owns("none"), rescan=(refused -> (n[] += 1; (true, cand("s$(n[])")))), mark_ready=mark, pause=0)
+                @test isempty(marked) && n[] <= 3
+                Pluto._stop_placeholder!("proven-node")
+
+                # no answer is not a refusal: a server that is busy is still the server
+                empty!(marked)
+                @test Pluto._attach_verified!(r, cand("busysecret"); open_tunnel=fake_tunnel, auth=((p, s; kw...) -> :unknown), rescan=(refused -> error("not asked")), mark_ready=mark, pause=0)
+                @test marked == [(port, 1234, "busysecret", "gpu-a")]
+
+                # a tunnel that does not come up is reported as that
+                empty!(marked)
+                @test !Pluto._attach_verified!(r, cand("x"); open_tunnel=((r, p; kw...) -> (:failed, port)), auth=owns("x"), mark_ready=mark, pause=0)
+                @test isempty(marked) && occursin("tunnel did not come up", r.detail)
+            finally
+                Pluto._stop_placeholder!("proven-node")
+                drop_session!("proven-node")
+            end
+        end
+
+        @testset "one request, three answers" begin
+            port = free_port()
+            server = serve_as(port, "s3cret")
+            try
+                @test Pluto._tunnel_auth(port, "s3cret") == :ok
+                @test Pluto._tunnel_auth(port, "another") == :denied
+                @test Pluto._tunnel_auth(port, "") == :denied
+                @test Pluto._tunnel_reaches_server(port, "s3cret") && !Pluto._tunnel_reaches_server(port, "another")
+            finally
+                close(server)
+            end
+            @test Pluto._tunnel_auth(port, "s3cret"; timeout=2) == :unknown   # nobody there: no verdict about the secret
+        end
+
+        # A hub restarted on the node has a new secret and answers /ping all the same.
+        @testset "the watchdog notices a server that no longer accepts the session's secret" begin
+            period, recheck = Pluto.TUNNEL_AUTH_PERIOD[], Pluto.TUNNEL_AUTH_RECHECK[]
+            Pluto.TUNNEL_AUTH_PERIOD[] = 0.0; Pluto.TUNNEL_AUTH_RECHECK[] = 0.0
+            port = free_port()
+            srv = answer_ping(port)
+            proc = run(`sleep 600`; wait=false)
+            session = add_session!(Pluto.RemoteSession("swapped-node", "ready", "", port, "oldsecret", "julia", proc, nothing, false))
+            session.task = @async sleep(600) # "a rebuild is already running": keeps the test off real SSH
+            Pluto._set_known_remote!("swapped-node", (port=1234, secret="oldsecret", node="gpu-a"))
+            try
+                answer = Ref(:ok)
+                auth(p, s; kw...) = answer[]
+                registered = String[]
+                connected(host, p, s) = (push!(registered, host); true)
+                # accepted: nothing to fix, and a host that is not in the table yet is put there
+                @test !Pluto._credentials_refused!("swapped-node", session; auth, connected)
+                @test registered == ["swapped-node"] && session.detail == "connected — its workspaces open here"
+                # slow to answer: not a strike
+                answer[] = :unknown
+                @test !Pluto._credentials_refused!("swapped-node", session; auth, connected)
+                @test !haskey(Pluto.TUNNEL_DENIED_STREAK, "swapped-node")
+                # refused once, then accepted again: the count starts over
+                answer[] = :denied
+                @test !Pluto._credentials_refused!("swapped-node", session; auth, connected)
+                answer[] = :ok
+                @test !Pluto._credentials_refused!("swapped-node", session; auth, connected)
+                @test !haskey(Pluto.TUNNEL_DENIED_STREAK, "swapped-node")
+
+                # through the watchdog itself: one refusal is not a verdict, two in a row are
+                answer[] = :denied
+                sleep(0.3)
+                Pluto._supervise_tunnels_once(; auth)
+                @test session.state == "ready"
+                @test haskey(Pluto._read_known_remotes(), "swapped-node")
+                Pluto._supervise_tunnels_once(; auth)
+                @test session.state == "tunneling"                               # looked for again, like a dead tunnel
+                @test !haskey(Pluto._read_known_remotes(), "swapped-node")       # by a discovery: what was remembered was refused
+                @test !haskey(Pluto.TUNNEL_DENIED_STREAK, "swapped-node")
+
+                # between looks the server is not asked at all
+                Pluto.TUNNEL_AUTH_PERIOD[] = 3600.0
+                session.state = "ready"; calls = Ref(0)
+                lock(() -> delete!(Pluto.TUNNEL_AUTH_CHECKED, "swapped-node"), Pluto.REMOTE_SESSIONS_LOCK)
+                counting(p, s; kw...) = (calls[] += 1; :ok)
+                Pluto._credentials_refused!("swapped-node", session; auth=counting, connected)
+                Pluto._credentials_refused!("swapped-node", session; auth=counting, connected)
+                @test calls[] == 1
+            finally
+                Pluto.TUNNEL_AUTH_PERIOD[] = period; Pluto.TUNNEL_AUTH_RECHECK[] = recheck
+                try kill(proc) catch end
+                try close(srv) catch end
+                Pluto._stop_placeholder!("swapped-node")
+                Pluto._set_known_remote!("swapped-node", nothing)
+                lock(Pluto.REMOTE_SESSIONS_LOCK) do
+                    delete!(Pluto.REMOTE_SESSIONS, "swapped-node")
+                    delete!(Pluto.TUNNEL_RETRY, "swapped-node")
+                    delete!(Pluto.TUNNEL_AUTH_CHECKED, "swapped-node")
+                    delete!(Pluto.TUNNEL_DENIED_STREAK, "swapped-node")
+                end
+            end
+        end
+    end
+    Pluto.TUNNEL_WATCHDOG_PAUSED[] = false
+end
+
+# The installation on a cluster is on the shared home: one directory for every node. It used to be
+# moved to the new commit in place when a node was connected and nothing was busy ON THAT NODE; the
+# hub on another node then started its workspaces from code it was not, and refused them.
+@testset "An installed version is never changed" begin
+    if Sys.isunix() && all(tool -> Sys.which(tool) !== nothing, ("bash", "git", "tar"))
+        mktempdir() do dir
+            dir = realpath(dir)
+            home = joinpath(dir, "home"); mkpath(joinpath(home, ".spacestation"))
+            git(args...; at) = Base.run(pipeline(setenv(`git -C $at -c user.name=t -c user.email=t@example.com -c init.defaultBranch=main $args`); stdout=devnull, stderr=devnull))
+            origin = joinpath(dir, "origin"); mkpath(joinpath(origin, "src")); git("init"; at=origin)
+            function commit!(version)
+                write(joinpath(origin, "Project.toml"), "name = \"X\"\nversion = \"$version\"\n")
+                write(joinpath(origin, "src", "X.jl"), "const V = \"$version\"\n")
+                git("add", "."; at=origin); git("commit", "-m", version; at=origin); git("branch", "-M", "main"; at=origin)
+                String(strip(read(`git -C $origin rev-parse HEAD`, String)))
+            end
+            source(at) = read(joinpath(at, "src", "X.jl"), String)
+            first_commit = commit!("0.1.0")
+            clone = joinpath(home, ".spacestation", "Pluto.jl"); versions = joinpath(home, ".spacestation", "versions")
+            Base.run(pipeline(`git clone --depth 1 --branch main file://$origin $clone`; stdout=devnull, stderr=devnull))
+            base_env = merge(Dict(ENV), Dict("HOME" => home)); delete!(base_env, "SPACESTATION_NODE_VERSIONS")
+            prepare(; env...) = Pluto._parse_prepared_version(read(pipeline(setenv(`bash -c $(Pluto._prepare_version_script(; branch="main"))`, merge(base_env, Dict(String(k) => String(v) for (k, v) in env))); stderr=devnull), String))
+
+            # no clone yet, no answer at all: neither is a version
+            @test Pluto._parse_prepared_version("").state == :unknown
+            @test Pluto._parse_prepared_version("__NOCLONE__\n").state == :noclone
+            mktempdir() do empty_home
+                @test Pluto._parse_prepared_version(read(pipeline(setenv(`bash -c $(Pluto._prepare_version_script(; branch="main"))`, merge(base_env, Dict("HOME" => empty_home))); stderr=devnull), String)).state == :noclone
+            end
+
+            one = prepare()
+            @test one == (state=:ok, commit=first_commit, fresh=true, installed=false)
+            v1 = joinpath(versions, first_commit)
+            @test source(v1) == "const V = \"0.1.0\"\n" && strip(read(joinpath(v1, ".commit"), String)) == first_commit
+            @test !ispath(joinpath(v1, ".git"))                                  # an export, not a checkout
+            touch(joinpath(versions, ".installed-$first_commit"))
+            @test prepare().installed
+
+            # `main` moves on while a hub runs from the first version
+            second_commit = commit!("0.2.0")
+            two = prepare()
+            @test two == (state=:ok, commit=second_commit, fresh=true, installed=false)
+            @test source(joinpath(versions, second_commit)) == "const V = \"0.2.0\"\n"
+            @test source(v1) == "const V = \"0.1.0\"\n"                           # what runs is what it was
+            @test source(clone) == "const V = \"0.1.0\"\n"                        # and so is the clone a server from before versions runs from
+
+            # a node that cannot reach `origin`: the newest version installed here, and not one to replace a running server for
+            touch(joinpath(versions, ".installed-$second_commit"))
+            mv(origin, origin * ".away")
+            offline = prepare()
+            @test offline == (state=:ok, commit=second_commit, fresh=false, installed=true)
+            mv(origin * ".away", origin)
+
+            # two nodes connected at the same moment ask for the same new version at the same moment
+            third_commit = commit!("0.3.0")
+            both = asyncmap(_ -> prepare(), 1:4)
+            @test all(p -> p.state == :ok && p.commit == third_commit, both)
+            @test source(joinpath(versions, third_commit)) == "const V = \"0.3.0\"\n"
+            @test !any(n -> startswith(n, ".tmp-") || startswith(n, ".lock-"), readdir(versions))
+
+            # an export that died halfway is not a version: its lock is taken over, and it is made whole
+            fourth_commit = commit!("0.4.0")
+            mkpath(joinpath(versions, fourth_commit, "src")); mkpath(joinpath(versions, ".lock-$fourth_commit"))
+            Base.run(`touch -t 202001010000 $(joinpath(versions, ".lock-$fourth_commit"))`)
+            @test prepare().commit == fourth_commit
+            @test source(joinpath(versions, fourth_commit)) == "const V = \"0.4.0\"\n" && isfile(joinpath(versions, fourth_commit, ".commit"))
+
+            # old versions go, but never one that was used lately, and never one of the three newest
+            for (i, c) in enumerate((first_commit, second_commit, third_commit, fourth_commit))
+                Base.run(`touch -t 20200101000$i $(joinpath(versions, c))`)
+            end
+            Base.run(`touch -t 202001010000 $(joinpath(versions, ".used-$first_commit"))`)
+            fifth_commit = commit!("0.5.0")
+            @test prepare().commit == fifth_commit
+            @test !ispath(v1) && !ispath(joinpath(versions, ".installed-$first_commit")) # not among the newest three, last used long ago
+            @test isdir(joinpath(versions, second_commit))                        # as old, but a server ran from it this month
+            @test all(c -> isdir(joinpath(versions, c)), (third_commit, fourth_commit, fifth_commit))
+
+            # After a quick reconnect the node is only looked at: is `origin` ahead of what the hub here runs?
+            if Sys.which("curl") !== nothing
+                me = strip(read(`hostname`, String))
+                servers = joinpath(home, ".local", "state", "pluto", "servers"); mkpath(servers)
+                free_port() = (srv = Sockets.listen(Sockets.localhost, 0); port = Int(Sockets.getsockname(srv)[2]); close(srv); port)
+                port = free_port(); open_notebooks = Ref("[]"); stopped = Ref(0)
+                server = HTTP.serve!("127.0.0.1", port; verbose=-1) do request
+                    occursin("/api/v1/shutdown", request.target) && (stopped[] += 1)
+                    HTTP.Response(200, occursin("/api/v1/notebooks", request.target) ? open_notebooks[] : "OK")
+                end
+                hub = Base.run(pipeline(`sleep 600`; stdout=devnull, stderr=devnull); wait=false)
+                hubfile = joinpath(servers, "$(me)-$(port).json")
+                record(commit) = write(hubfile, """{"pid": $(getpid(hub)), "host": "127.0.0.1", "port": $(port), "node": "$(me)", "secret": "s3cret", "workspace": null, "hub": true, $(isempty(commit) ? "" : "\"commit\": \"$(commit)\", ")"started_at": 1.7e9}\n""")
+                run_sh(script) = read(pipeline(setenv(`bash -c $script`, base_env); stderr=devnull), String)
+                behind() = occursin("__BEHIND__", run_sh(Pluto._behind_script(; branch="main")))
+                retire(target) = run_sh(Pluto._retire_idle_servers_script(target))
+                try
+                    record(fifth_commit); @test !behind()                          # the hub here runs what `origin` has
+                    record(fourth_commit); @test behind()                          # an older version, and nothing is busy
+                    record(""); @test behind()                                     # a hub from before versions counts as older
+                    open_notebooks[] = """[{"notebook_id": "x"}]"""
+                    @test !behind()                                                # busy: it stays on the quick path
+                    # ...and a connect that would replace it stops nothing while a notebook is open
+                    @test occursin("__BUSY__", retire(fifth_commit)) && stopped[] == 0 && isfile(hubfile) && process_running(hub)
+                    open_notebooks[] = "[]"
+                    record(fifth_commit)
+                    @test occursin("__RETIRED__", retire(fifth_commit)) && stopped[] == 0 && process_running(hub) # already the version to run
+                    record(fourth_commit)
+                    @test occursin("__RETIRED__", retire(fifth_commit))
+                    @test stopped[] == 1 && !isfile(hubfile)                       # asked to stop, its record gone
+                    @test timedwait(() -> !process_running(hub), 10) == :ok        # and made sure of
+                finally
+                    close(server)
+                    try kill(hub) catch end
+                end
+            end
+
+            # the scripts that install and replace are valid shell
+            for script in (Pluto._install_version_script("/opt/my julia/bin/julia", fifth_commit), Pluto._install_poll_script(fifth_commit),
+                    Pluto._retire_idle_servers_script(fifth_commit), Pluto._prepare_version_script(), Pluto._SCAN_REMOTE_SERVERS_SNIPPET)
+                path, io = mktemp(); write(io, script); close(io)
+                @test success(`bash -n $path`)
+            end
+
+            # an install: detached, its marker beside the version, attached to when it is already under way
+            fake_julia = joinpath(dir, "my julia"); write(fake_julia, "#!/bin/sh\nsleep 1\npwd > \"$dir/installed-from\"\n"); chmod(fake_julia, 0o755)
+            install() = read(pipeline(setenv(`bash -c $(Pluto._install_version_script(fake_julia, fifth_commit))`, base_env); stderr=devnull), String)
+            poll() = read(pipeline(setenv(`bash -c $(Pluto._install_poll_script(fifth_commit))`, base_env); stderr=devnull), String)
+            @test occursin("__LAUNCHED__", install())
+            @test occursin("__ATTACHED__", install())                             # the one under way, not a second
+            @test occursin("__ALIVE__", poll()) && !occursin("__DONE__", poll())
+            @test timedwait(() -> occursin("__DONE__", poll()), 20) == :ok
+            @test isfile(joinpath(versions, ".installed-$fifth_commit"))
+            @test strip(read(joinpath(dir, "installed-from"), String)) == joinpath(versions, fifth_commit)
+            @test !occursin("__ALIVE__", poll())
+            @test prepare().installed
+
+            # the launch names the version to the hub, and the hub writes it into its connection file
+            @test_throws AssertionError Pluto._version_dir_sh("../../etc")
+            @test occursin("commit=$(fifth_commit)\n", Pluto._remote_launch_script("/j"; app=Pluto._version_dir_sh(fifth_commit), commit=fifth_commit))
+            withenv("SPACESTATION_APP_COMMIT" => fifth_commit) do
+                @test Pluto._registry_commit_field() == "\"commit\": \"$(fifth_commit)\", "
+                @test Pluto._child_env("/some/folder")["SPACESTATION_APP_COMMIT"] == fifth_commit   # and so do its workspace servers
+            end
+            withenv("SPACESTATION_APP_COMMIT" => "not a commit; rm -rf") do
+                @test Pluto._registry_commit_field() == ""
+            end
+            withenv("SPACESTATION_APP_COMMIT" => nothing) do
+                @test Pluto._registry_commit_field() == ""
+            end
+
+            # SPACESTATION_NODE_VERSIONS=0: the arrangement from before, the clone moves and is the version
+            sixth_commit = commit!("0.6.0")
+            old_way = prepare(; SPACESTATION_NODE_VERSIONS="0")
+            @test old_way.state == :ok && old_way.commit == sixth_commit
+            @test islink(joinpath(versions, sixth_commit)) && source(clone) == "const V = \"0.6.0\"\n"
+            @test source(joinpath(versions, fifth_commit)) == "const V = \"0.5.0\"\n" # the others are not touched by it
+        end
+    end
+end

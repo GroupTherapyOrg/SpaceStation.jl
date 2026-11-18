@@ -59,7 +59,8 @@ import SpaceStation as Pluto
                 for bin in (joinpath(rt, "julia", "bin", "julia"), joinpath(fake, "userjulia")); write(bin, stub); chmod(bin, 0o755); end
                 write(joinpath(rt, "cpu-target"), "generic\n")
                 write(joinpath(app, "src", "webserver", "node", "runtime.sh"), staged ? "echo 'RUNTIME $rt'\n" : "echo 'NORUNTIME testing'\n")
-                launch = Pluto._remote_launch_script(joinpath(fake, "userjulia"); app, code="run_the_hub()")
+                version = "0123456789abcdef0123456789abcdef01234567"
+                launch = Pluto._remote_launch_script(joinpath(fake, "userjulia"); app, commit=version, code="run_the_hub()")
                 withenv("HOME" => home, "TMPDIR" => joinpath(fake, "tmp"), "LD_LIBRARY_PATH" => "/shared/lib", "JULIA_DEPOT_PATH" => "/shared/depot",
                         "SLURM_TMPDIR" => nothing, "SPACESTATION_LAUNCH_WRAPPER" => nothing, "SPACESTATION_HUB" => nothing, "SPACESTATION_TUNNELED" => nothing) do
                     @test success(pipeline(`bash -c $launch`; stdout=devnull, stderr=devnull))
@@ -67,6 +68,7 @@ import SpaceStation as Pluto
                 @test timedwait(() -> isfile(joinpath(fake, "seen-cwd")) && filesize(joinpath(fake, "seen-cwd")) > 0, 20) == :ok
                 seen = Pluto.parse_env0(read(joinpath(fake, "seen-env"))); args = readlines(joinpath(fake, "seen-args"))
                 @test seen["SPACESTATION_HUB"] == "1" && seen["SPACESTATION_TUNNELED"] == "1"      # one command, markers included
+                @test seen["SPACESTATION_APP_COMMIT"] == version                                   # the hub is told which installed version it is
                 @test args[end-1:end] == ["-e", "run_the_hub()"] && "--threads=4,1" in args
                 @test startswith(seen["SPACESTATION_STATE_HOME"], joinpath(fake, "tmp"))           # node-local state either way
                 if staged

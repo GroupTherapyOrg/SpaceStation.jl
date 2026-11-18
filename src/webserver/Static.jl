@@ -89,8 +89,13 @@ end
 
 function error_response(
     status_code::Integer, title, advice, body="")
-    template = String(something(asset_bytes(project_relative_path(frontend_directory(), "error.jl.html")), UInt8[]))
-    style = String(something(asset_bytes(project_relative_path("frontend", "error.css")), UInt8[]))
+    # A COPY of the bytes: `String(::Vector{UInt8})` takes the vector's memory and leaves it empty, and
+    # these vectors are the ones the asset cache holds. Without the copy the first error page a server
+    # sent was whole and every one after it was empty (and so was `error.css`, for good): a browser
+    # shows its own "problem with this site" page for an error without a body, and ours, which says
+    # what to do, was never seen again.
+    template = String(copy(something(asset_bytes(project_relative_path(frontend_directory(), "error.jl.html")), UInt8[])))
+    style = String(copy(something(asset_bytes(project_relative_path("frontend", "error.css")), UInt8[])))
 
     body_title = body == "" ? "" : "Error message:"
     filled_in = replace(template, 

@@ -84,7 +84,12 @@ sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasu
 read -r JULIA_VERSION JULIA_ROOT < <("$JULIA" --startup-file=no --history-file=no -e 'print(VERSION, " ", dirname(Sys.BINDIR))' 2>/dev/null)
 [ -n "${JULIA_VERSION:-}" ] && [ -n "${JULIA_ROOT:-}" ] || fail "julia does not run: $JULIA"
 [ -x "$JULIA_ROOT/bin/julia" ] && [ -d "$JULIA_ROOT/lib/julia" ] || fail "not a julia install: $JULIA_ROOT"
-APP_ID=$(cd "$APP" && { git rev-parse HEAD 2>/dev/null || true; cat Project.toml Manifest.toml 2>/dev/null | sha | cut -c1-16; } | tr '\n' ' ')
+# An installed version (~/.spacestation/versions/<commit>) is an export, not a checkout: it names its
+# commit in a file. Without that it would be told apart by its Project and Manifest alone, which most
+# commits share, and a hub would be started from the runtime of an OLDER commit of the same release.
+# (And git is only asked where the app itself is a checkout: inside an export it would answer for
+# whatever repository the home directory happens to be in.)
+APP_ID=$(cd "$APP" && { if [ -f .commit ]; then cat .commit; elif [ -e .git ]; then git rev-parse HEAD 2>/dev/null || true; fi; cat Project.toml Manifest.toml 2>/dev/null | sha | cut -c1-16; } | tr '\n' ' ')
 KEY=$(printf '%s\n' "format-2" "$APP_ID" "$JULIA_VERSION" "$(uname -m)" "$CPU_TARGET" "$ROOT" | sha | cut -c1-16)
 RT="$ROOT/rt-$KEY"
 BUNDLE="$BUNDLES/$KEY.tar.gz"
