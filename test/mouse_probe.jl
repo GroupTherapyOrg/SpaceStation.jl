@@ -35,7 +35,14 @@ function watch(read_some::Function, say::Function)
         end
         occursin('q', replace(seen, r"\e\[<[\d;]*[Mm]?" => "")) && break
     end
-    say(GIVE_BACK * "MOUSE_PROBE_DONE\r\n")
+    say(GIVE_BACK)
+    # what was already on its way when the mouse was given back (the release of that click) is read
+    # here, and not left for the shell to find at its prompt
+    quiet = time() + 0.5
+    while time() < quiet
+        read_some()
+    end
+    say("MOUSE_PROBE_DONE\r\n")
 end
 
 @static if Sys.iswindows()
