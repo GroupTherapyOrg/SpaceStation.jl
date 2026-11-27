@@ -78,7 +78,7 @@ jobs:
                   [ "$(stat -c %Y "$src")" = "$m" ]
                   # what a cleaner leaves of one that was NOT used for a while: the directories, the marker, a
                   # fraction of the files. The marker is not believed: the runtime is staged again.
-                  n=$(cat "$RT/.files"); find "$RT/depot/packages" -type f -name '*.jl' | head -200 | xargs rm -f
+                  n=$(cat "$RT/.files"); find "$RT/depot/packages" -type f -name '*.jl' -print0 | head -z -n 200 | xargs -0 rm -f
                   [ -f "$RT/.complete" ]
                   out=$(bash src/webserver/node/runtime.sh "$J" "$GITHUB_WORKSPACE" /tmp/bundles 2>&1); echo "$out"
                   echo "$out" | grep -q "has lost files"

@@ -6,6 +6,7 @@
 # real _spawn_workspace_shell uses (Tests 2–3). Rich diagnostics are printed either way.
 
 import Base64
+import SHA
 
 if !Sys.iswindows()
     println("Not Windows — skipping ConPTY tests (this file only means anything on Windows).")
@@ -170,6 +171,81 @@ try
 catch e
     println("  EXCEPTION: ", sprint(showerror, e))
     push!(fails, "close-while-printing test threw")
+end
+
+println("\n== Test: terminals start on the console host we ship, and it is the one we say it is ==")
+try
+    dir = W._conpty_bundle_dir()
+    for (file, sha) in W.CONPTY_BUNDLE_SHA256
+        path = joinpath(dir, file)
+        check(isfile(path), "$file is in the tree")
+        isfile(path) && check(bytes2hex(SHA.sha256(read(path))) == sha, "$file is the file conpty/README.md names (SHA-256)")
+    end
+    host = W._console_host()
+    println("  console host: ", host === nothing ? "none" : host.kind)
+    check(host !== nothing && host.kind === :bundled, "the console host we ship loads")
+    hosts() = count("OpenConsole.exe", read(`tasklist /FI "IMAGENAME eq OpenConsole.exe" /FO CSV /NH`, String))
+    before = hosts()
+    pty = W.pty_spawn(["cmd.exe", "/K", "echo bundled_host_marker"]; dir = "C:\\")
+    out = drain(pty; timeout = 10, want = "bundled_host_marker")
+    check(occursin("bundled_host_marker", String(out)), "a shell on it prints through to us")
+    check(pty.console.kind === :bundled, "a terminal is started on it without being asked to")
+    println("  OpenConsole.exe processes: ", before, " before, ", hosts(), " with the terminal open")
+    check(hosts() == before + 1, "its OpenConsole.exe is what runs the terminal (not Windows' conhost.exe)")
+    W.pty_close!(pty)
+    withenv("SPACESTATION_INBOX_CONPTY" => "1") do
+        check(W._console_host().kind === :inbox, "SPACESTATION_INBOX_CONPTY=1 is Windows' own console host")
+    end
+catch e
+    println("  EXCEPTION: ", sprint(showerror, e))
+    push!(fails, "console host test threw")
+end
+
+# The wheel and a click in a program that takes the mouse (Claude Code, vim, tmux). On Windows 10
+# neither worked, and nothing here noticed: every test ran on the Windows of the CI machine, whose
+# console host is newer than the one most people have. What is tested now is the console host we
+# ship, which is the same on every Windows; Windows' own is run too, and what it does is printed
+# (it differs by Windows version, so it is the record, not a requirement).
+function mouse_reaches_a_program(console::Symbol)
+    julia = joinpath(Sys.BINDIR, Base.julia_exename())
+    pty = W.pty_spawn([julia, "--startup-file=no", joinpath(@__DIR__, "mouse_probe.jl")]; dir = "C:\\", console)
+    result = (; asked = false, wheel = false, press = false)
+    try
+        out = drain(pty; timeout = 90, want = "MOUSE_PROBE_READY")
+        s = String(copy(out))
+        ready = occursin("MOUSE_PROBE_READY", s)
+        # what a terminal has to be told, or it never sends a mouse report at all
+        asked = occursin(r"\e\[\?[\d;]*1000[\d;]*h", s) && occursin(r"\e\[\?[\d;]*1006[\d;]*h", s)
+        println("  [", console, "] probe ready: ", ready, "; its request for the mouse reached the terminal: ", asked)
+        ready || println("  [", console, "] output: ", repr(s))
+        W.pty_write(pty, "\e[<64;10;5M")                    # the wheel, one notch up, at column 10, row 5
+        w = String(drain(pty; timeout = 10, want = "wheel-up-arrived"))
+        W.pty_write(pty, "\e[<0;10;5M\e[<0;10;5m")           # the left button, down and up
+        c = String(drain(pty; timeout = 10, want = "press-arrived"))
+        result = (; asked, wheel = occursin("wheel-up-arrived", w), press = occursin("press-arrived", w * c))
+        println("  [", console, "] the wheel reached the program: ", result.wheel, "; a click did: ", result.press)
+        result.wheel && result.press || println("  [", console, "] output after the reports: ", repr(w * c))
+    finally
+        W.pty_close!(pty)
+    end
+    result
+end
+
+println("\n== Test: the mouse reaches a program that takes it (the wheel scrolls, a click clicks) ==")
+try
+    r = mouse_reaches_a_program(:bundled)
+    check(r.asked, "a program's request for the mouse reaches the terminal")
+    check(r.wheel, "the wheel reaches the program")
+    check(r.press, "a click reaches the program")
+catch e
+    println("  EXCEPTION: ", sprint(showerror, e))
+    push!(fails, "mouse test threw")
+end
+try
+    r = mouse_reaches_a_program(:inbox)
+    println("  for the record, Windows' own console host on this machine (", Sys.windows_version(), "): ", r)
+catch e
+    println("  Windows' own console host: EXCEPTION: ", sprint(showerror, e))
 end
 
 println("\n", isempty(fails) ? "ALL CONPTY TESTS PASSED ✅" : "FAILURES ($(length(fails))) ❌:")

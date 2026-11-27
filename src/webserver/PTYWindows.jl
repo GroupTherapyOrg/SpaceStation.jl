@@ -11,7 +11,9 @@
 #
 # Wiring (mirrors Microsoft's EchoCon sample):
 #   • Two anonymous pipes: one we WRITE keystrokes into, one we READ shell output from.
-#   • CreatePseudoConsole(size, in_read, out_write) attaches the ConPTY to the PTY ends.
+#   • CreatePseudoConsole(size, in_read, out_write) attaches the ConPTY to the PTY ends. It is the
+#     one in the console host we ship (`conpty/`, see "Which console host" below), not the one in
+#     Windows.
 #   • CreateProcessW with a PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE attribute launches the
 #     shell attached to that console; conhost translates its console calls into the VT/ANSI
 #     bytes xterm.js expects and writes them to our output pipe.
@@ -34,9 +36,99 @@ const _STARTUPINFOW_DWFLAGS_OFFSET = 60    # dwFlags within STARTUPINFOW (x64)
 const _STARTUPINFOEXW_ATTRLIST_OFFSET = 104
 const _PROCESS_INFORMATION_SIZE = 24  # HANDLE hProcess; HANDLE hThread; DWORD pid; DWORD tid
 
+"Null-terminated UTF-16 for a Win32 wide-string argument."
+_cwstr(s::AbstractString) = push!(transcode(UInt16, String(s)), UInt16(0))
+
+# ── Which console host ──
+#
+# Between a program in a terminal and us sits a console host: it turns what the program does with
+# its console into the bytes a terminal reads, and the bytes a terminal sends into the program's
+# input. Windows has one built in (`conhost.exe`, reached through kernel32), and it is as old as the
+# Windows it came with. The one in every Windows 10 never passes on a program's request for the
+# mouse and drops the mouse reports a terminal sends: with Claude Code, vim, or anything else that
+# takes the mouse, the wheel did nothing and nothing could be clicked, and no setting changes that.
+#
+# So a terminal is started on the console host we ship: Microsoft's own `conpty.dll` and the
+# `OpenConsole.exe` beside it, from the Windows Terminal project (`conpty/README.md` says which
+# version and where from). VS Code, Windows Terminal, WezTerm and Zed do the same, for the same
+# reason; with it a terminal behaves alike on every Windows from 10 1809 on. `conpty.dll` exports the
+# three calls of kernel32 under a `Conpty` prefix, with the same arguments, and its handle is the
+# same kind of handle (it goes into the same process attribute).
+#
+# The one in Windows is still the fallback, when ours is not there or does not load (and a warning
+# says so, once), and `SPACESTATION_INBOX_CONPTY=1` asks for it.
+
+"The files of the console host we ship, with the SHA-256 each must have (`conpty/README.md`)."
+const CONPTY_BUNDLE_SHA256 = (
+    "conpty.dll" => "3319b484b80bb53d1f4d0a9eb0ea60fd0f61da69db7280ca43b84215f19245ff",
+    "OpenConsole.exe" => "7f68c840226505004215c0b82d4e502c24b5bc3f4b93c4baaaa19bd679c0def8",
+)
+
+"A console host, as the calls we make into it."
+struct ConsoleHost
+    kind::Symbol            # :bundled (conpty.dll, and the OpenConsole.exe beside it) or :inbox (Windows' own)
+    create::Ptr{Cvoid}      # CreatePseudoConsole
+    resize::Ptr{Cvoid}      # ResizePseudoConsole
+    close::Ptr{Cvoid}       # ClosePseudoConsole
+    release::Ptr{Cvoid}     # ConptyReleasePseudoConsole, or C_NULL: Windows' own has none
+end
+
+"Where the console host we ship lies. Found when it is asked for, never at compile time: an installed package can be moved."
+function _conpty_bundle_dir()
+    root = try Base.pkgdir(@__MODULE__) catch; nothing end
+    joinpath(root === nothing ? (@__DIR__) : joinpath(root, "src", "webserver"), "conpty", "win-x64")
+end
+
+_proc_address(lib::Ptr{Cvoid}, name::String) =
+    ccall((:GetProcAddress, "kernel32"), Ptr{Cvoid}, (Ptr{Cvoid}, Cstring), lib, name)
+
+"The console host of that kind, or `nothing` when it cannot be had."
+function _load_console_host(kind::Symbol)::Union{Nothing,ConsoleHost}
+    if kind === :bundled
+        Sys.ARCH === :x86_64 || return nothing
+        dir = _conpty_bundle_dir()
+        dll = joinpath(dir, "conpty.dll")
+        # both or neither: a conpty.dll without its OpenConsole.exe quietly starts Windows' own host
+        (isfile(dll) && isfile(joinpath(dir, "OpenConsole.exe"))) || return nothing
+        lib = ccall((:LoadLibraryW, "kernel32"), Ptr{Cvoid}, (Ptr{UInt16},), _cwstr(dll))
+        lib == C_NULL && return nothing
+        calls = (_proc_address(lib, "ConptyCreatePseudoConsole"), _proc_address(lib, "ConptyResizePseudoConsole"),
+                 _proc_address(lib, "ConptyClosePseudoConsole"))
+        any(==(C_NULL), calls) && return nothing
+        ConsoleHost(:bundled, calls..., _proc_address(lib, "ConptyReleasePseudoConsole"))
+    else
+        lib = ccall((:GetModuleHandleW, "kernel32"), Ptr{Cvoid}, (Ptr{UInt16},), _cwstr("kernel32.dll"))
+        lib == C_NULL && return nothing
+        calls = (_proc_address(lib, "CreatePseudoConsole"), _proc_address(lib, "ResizePseudoConsole"),
+                 _proc_address(lib, "ClosePseudoConsole"))
+        any(==(C_NULL), calls) && return nothing   # before Windows 10 1809
+        ConsoleHost(:inbox, calls..., C_NULL)
+    end
+end
+
+# Filled when a terminal is first started, never while the package is compiled: these are addresses
+# in this process.
+const _CONSOLE_HOSTS = Dict{Symbol,Union{Nothing,ConsoleHost}}()
+
+"""
+The console host to start a terminal on: the one we ship, or Windows' own when ours cannot be had
+or `SPACESTATION_INBOX_CONPTY=1` asks for it. `want` (`:bundled`, `:inbox`) names one, for the tests.
+"""
+function _console_host(want::Symbol=:auto)::Union{Nothing,ConsoleHost}
+    want === :auto && (want = get(ENV, "SPACESTATION_INBOX_CONPTY", "") == "1" ? :inbox : :bundled)
+    first_ask = !haskey(_CONSOLE_HOSTS, want)
+    host = get!(() -> _load_console_host(want), _CONSOLE_HOSTS, want)
+    if host === nothing && want === :bundled
+        first_ask && @warn "SpaceStation's own console host could not be loaded; terminals use the one in Windows, in which (on Windows 10) the mouse does not reach programs" dir=_conpty_bundle_dir()
+        return _console_host(:inbox)
+    end
+    host
+end
+
 # ── PTY struct (same interface fields as PTY.jl's) ──
 
 mutable struct PTY
+    console::ConsoleHost     # the console host this one was made by: it is resized and closed by the same
     hpc::Ptr{Cvoid}          # HPCON (pseudo-console handle)
     input_write::Ptr{Cvoid}  # we write keystrokes here → shell stdin
     output_read::Ptr{Cvoid}  # we read shell output here
@@ -70,9 +162,6 @@ function _create_pipe()
     ok == 0 && error("CreatePipe failed: error=$(_last_error())")
     (rd[], wr[])
 end
-
-"Null-terminated UTF-16 for a Win32 wide-string argument."
-_cwstr(s::AbstractString) = push!(transcode(UInt16, String(s)), UInt16(0))
 
 # Pack a COORD {SHORT X=cols; SHORT Y=rows} into the DWORD it occupies by value in the
 # x64 calling convention — sidesteps by-value struct ABI concerns for CreatePseudoConsole.
@@ -168,24 +257,40 @@ end
 
 Spawn `cmd` attached to a new ConPTY. `dir` becomes the child's working directory
 (CreateProcessW's lpCurrentDirectory). Output is delivered via `pty.output`; write input
-via `pty_write`.
+via `pty_write`. `console` names the console host (`:bundled`, `:inbox`); left alone it is the one
+we ship (see "Which console host").
 """
 function pty_spawn(cmd::Vector{String}; rows::Int=24, cols::Int=80,
                    env::Union{Dict{String,String}, Nothing}=nothing,
-                   dir::Union{String, Nothing}=nothing)
+                   dir::Union{String, Nothing}=nothing,
+                   console::Symbol=:auto)
     isempty(cmd) && error("pty_spawn: cmd must not be empty")
+    host = _console_host(console)
+    host === nothing && error("no pseudo-console on this Windows (needs Windows 10 1809+ / Server 2019+)")
 
     (in_rd,  in_wr)  = _create_pipe()   # shell reads stdin from in_rd; we write to in_wr
     (out_rd, out_wr) = _create_pipe()   # shell writes stdout to out_wr; we read from out_rd
 
     # Create the pseudo-console attached to the PTY ends of the pipes.
     hpc = Ref{Ptr{Cvoid}}(C_NULL)
-    hr = ccall((:CreatePseudoConsole, "kernel32"), Clong,
+    create(h::ConsoleHost) = ccall(h.create, Clong,
                (UInt32, Ptr{Cvoid}, Ptr{Cvoid}, UInt32, Ptr{Ptr{Cvoid}}),
                _coord(rows, cols), in_rd, out_wr, UInt32(0), hpc)
+    hr = create(host)
+    if hr < 0 && host.kind === :bundled && console === :auto
+        # ours would not start (its OpenConsole.exe kept from running, say): a terminal on Windows'
+        # own console host is better than no terminal
+        inbox = _console_host(:inbox)
+        if inbox !== nothing
+            @warn "SpaceStation's own console host did not start; this terminal uses the one in Windows" hresult=string(reinterpret(UInt32, Int32(hr)); base=16)
+            host = inbox
+            hpc[] = C_NULL
+            hr = create(host)
+        end
+    end
     if hr < 0
         foreach(_close_handle, (in_rd, in_wr, out_rd, out_wr))
-        error("CreatePseudoConsole failed: HRESULT=0x$(string(reinterpret(UInt32, hr); base=16)) " *
+        error("CreatePseudoConsole failed: HRESULT=0x$(string(reinterpret(UInt32, Int32(hr)); base=16)) " *
               "(needs Windows 10 1809+ / Server 2019+)")
     end
     # ConPTY dup'd the PTY ends into conhost; drop our copies. Keep in_wr and out_rd.
@@ -211,7 +316,7 @@ function pty_spawn(cmd::Vector{String}; rows::Int=24, cols::Int=80,
     ret = GC.@preserve attr si pi cmdline cwstr_dir envblock begin
         ok = ccall((:InitializeProcThreadAttributeList, "kernel32"), Cint,
                    (Ptr{UInt8}, UInt32, UInt32, Ptr{Csize_t}), attr, UInt32(1), UInt32(0), sz)
-        ok == 0 && (ccall((:ClosePseudoConsole, "kernel32"), Cvoid, (Ptr{Cvoid},), hpc[]);
+        ok == 0 && (ccall(host.close, Cvoid, (Ptr{Cvoid},), hpc[]);
                     _close_handle(in_wr); _close_handle(out_rd);
                     error("InitializeProcThreadAttributeList failed: error=$(_last_error())"))
         ok2 = ccall((:UpdateProcThreadAttribute, "kernel32"), Cint,
@@ -219,7 +324,7 @@ function pty_spawn(cmd::Vector{String}; rows::Int=24, cols::Int=80,
                     attr, UInt32(0), _PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
                     hpc[], Csize_t(sizeof(Ptr{Cvoid})), C_NULL, C_NULL)
         ok2 == 0 && (ccall((:DeleteProcThreadAttributeList, "kernel32"), Cvoid, (Ptr{UInt8},), attr);
-                     ccall((:ClosePseudoConsole, "kernel32"), Cvoid, (Ptr{Cvoid},), hpc[]);
+                     ccall(host.close, Cvoid, (Ptr{Cvoid},), hpc[]);
                      _close_handle(in_wr); _close_handle(out_rd);
                      error("UpdateProcThreadAttribute failed: error=$(_last_error())"))
 
@@ -248,17 +353,22 @@ function pty_spawn(cmd::Vector{String}; rows::Int=24, cols::Int=80,
 
     if ret == 0
         err = _last_error()
-        ccall((:ClosePseudoConsole, "kernel32"), Cvoid, (Ptr{Cvoid},), hpc[])
+        ccall(host.close, Cvoid, (Ptr{Cvoid},), hpc[])
         _close_handle(in_wr); _close_handle(out_rd)
         error("CreateProcessW failed: error=$err")
     end
+
+    # Ours keeps its console host alive for as long as we hold the handle, whatever is still attached
+    # to it. Released, the host goes when the last program on it has gone, which closes our end of
+    # the output pipe: that is how the reader learns that a shell which exited by itself is gone.
+    host.release == C_NULL || ccall(host.release, Clong, (Ptr{Cvoid},), hpc[])
 
     hprocess = GC.@preserve pi unsafe_load(Ptr{Ptr{Cvoid}}(pointer(pi)))
     hthread  = GC.@preserve pi unsafe_load(Ptr{Ptr{Cvoid}}(pointer(pi) + 8))
     pid      = GC.@preserve pi unsafe_load(Ptr{UInt32}(pointer(pi) + 16))
 
     output = Channel{Vector{UInt8}}(64)
-    pty = PTY(hpc[], in_wr, out_rd, hprocess, hthread, Cint(pid), rows, cols, true,
+    pty = PTY(host, hpc[], in_wr, out_rd, hprocess, hthread, Cint(pid), rows, cols, true,
               output, (@async nothing), nothing)
     pty.reader_task = _start_pty_reader(pty)
     pty
@@ -285,7 +395,7 @@ function pty_resize!(pty::PTY, rows::Int, cols::Int)
     (rows == pty.rows && cols == pty.cols) && return
     pty.rows = rows
     pty.cols = cols
-    ccall((:ResizePseudoConsole, "kernel32"), Clong,
+    ccall(pty.console.resize, Clong,
           (Ptr{Cvoid}, UInt32), pty.hpc, _coord(rows, cols))
     nothing
 end
@@ -330,7 +440,7 @@ function pty_running_child(pty::PTY)::Union{Nothing,String}
                 stop = something(findfirst(==(0x0000), units), length(units) + 1)
                 name = lowercase(transcode(String, units[1:stop-1]))
                 endswith(name, ".exe") && (name = name[1:end-4])
-                name == "conhost" || return isempty(name) ? "a program" : name
+                (name == "conhost" || name == "openconsole") || return isempty(name) ? "a program" : name
             end
             ok = ccall((:Process32NextW, "kernel32"), Cint, (Ptr{Cvoid}, Ptr{UInt8}), snap, entry)
         end
@@ -374,7 +484,8 @@ function pty_close!(pty::PTY)
         try timedwait(() -> istaskdone(pty.reader_task), 2.0; pollint=0.005) catch end
     end
     _close_handle(output_read)
-    @threadcall((:ClosePseudoConsole, "kernel32"), Cvoid, (Ptr{Cvoid},), hpc)
+    close_console = pty.console.close
+    @threadcall(close_console, Cvoid, (Ptr{Cvoid},), hpc)
     _close_handle(input_write)
     if hprocess != C_NULL
         ccall((:TerminateProcess, "kernel32"), Cint, (Ptr{Cvoid}, UInt32), hprocess, UInt32(1))

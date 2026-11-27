@@ -42,7 +42,10 @@ shots = joinpath(dir, "artifacts")
 mkpath(shots)
 node = Sys.iswindows() ? "node.exe" : "node"
 p = cd(dir) do
-    run(ignorestatus(`$node walkthrough/walkthrough.mjs http://localhost:$port/ $(session.secret) $workspace $shots`))
+    # the julia that runs this, by its full path: a step runs a script in the terminal, whose shell may not have it on its PATH
+    walk = addenv(`$node walkthrough/walkthrough.mjs http://localhost:$port/ $(session.secret) $workspace $shots`,
+        "WALKTHROUGH_JULIA" => joinpath(Sys.BINDIR, Base.julia_exename()))
+    run(ignorestatus(walk))
 end
 close(server)
 exit(p.exitcode)
