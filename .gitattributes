@@ -1,2 +1,6 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# The console host shipped for Windows (src/webserver/conpty): never touched by line-ending conversion
+*.dll binary
+*.exe binary

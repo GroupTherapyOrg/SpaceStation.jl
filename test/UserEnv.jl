@@ -1,5 +1,6 @@
 using Test
 import SpaceStation as Pluto
+import SHA
 
 # A hub on a cluster runs with a cut-down environment of its own; what it starts FOR the user gets the
 # environment the user launched from, saved by the launcher as `env -0` (webserver/UserEnv.jl).
@@ -148,5 +149,30 @@ end
         @test any(startswith("PATH="), cmd.env)
         @test cmd.exec[end-2:end] == ["--", "--no-browser", "some folder"]
         @test sort(redirects(command)) == [0, 1, 2]                              # its output is this command's
+    end
+end
+
+# A terminal on Windows runs on the console host that is shipped in the package (webserver/conpty):
+# the one in Windows 10 does not let the mouse through to a program. Two files, Microsoft's own, that
+# must arrive on every machine exactly as they were published, whatever git, a tarball or an
+# installer did on the way. Checked on every system, so a change that loses or alters them fails
+# where it is made and not only on Windows. (That terminals really start on it, and that the wheel and
+# a click reach a program, is test/conpty_windows.jl and the shell walkthrough.)
+@testset "The console host for Windows is shipped whole" begin
+    source = read(joinpath(pkgdir(Pluto), "src", "webserver", "PTYWindows.jl"), String)
+    dir = joinpath(pkgdir(Pluto), "src", "webserver", "conpty", "win-x64")
+    named = collect(eachmatch(r"\"(conpty\.dll|OpenConsole\.exe)\" => \"([0-9a-f]{64})\"", source))
+    @test length(named) == 2
+    for m in named
+        file, sha = m.captures
+        @test isfile(joinpath(dir, file))
+        @test bytes2hex(SHA.sha256(read(joinpath(dir, file)))) == sha
+    end
+    @test sort(readdir(dir)) == ["OpenConsole.exe", "conpty.dll"]
+    readme = read(joinpath(dirname(dir), "README.md"), String)
+    @test all(m -> occursin(m.captures[2], readme), named)        # the README names the same files
+    @test isfile(joinpath(dirname(dir), "LICENSE"))
+    if Sys.iswindows()
+        @test Pluto._console_host().kind === :bundled
     end
 end

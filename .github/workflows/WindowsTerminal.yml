@@ -10,13 +10,17 @@ on:
     paths:
       - 'src/webserver/PTYWindows.jl'
       - 'src/webserver/CollabTerminal.jl'
+      - 'src/webserver/conpty/**'
       - 'test/conpty_windows.jl'
+      - 'test/mouse_probe.jl'
       - '.github/workflows/WindowsTerminal.yml'
   pull_request:
     paths:
       - 'src/webserver/PTYWindows.jl'
       - 'src/webserver/CollabTerminal.jl'
+      - 'src/webserver/conpty/**'
       - 'test/conpty_windows.jl'
+      - 'test/mouse_probe.jl'
       - '.github/workflows/WindowsTerminal.yml'
   workflow_dispatch:
 

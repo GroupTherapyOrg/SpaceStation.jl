@@ -489,6 +489,29 @@ await step("terminal: what a program copies itself (OSC 52) reaches the clipboar
         expect(got === "program-copy-ok", `the copy key gave ${JSON.stringify(got.slice(0, 80))}`)
     }
 })
+// A program that takes the mouse (Claude Code, vim, tmux) scrolls and is clicked by the reports the
+// terminal sends it. On a Windows 10 server neither arrived: the console host of that Windows keeps
+// the program's request for the mouse to itself and drops the reports. The server starts terminals
+// on the console host it ships for that reason; this is the whole way, browser to program, on all
+// three systems. test/mouse_probe.jl is the program.
+await step("terminal: the wheel and a click reach a program that takes the mouse", true, async () => {
+    const julia = process.env.WALKTHROUGH_JULIA ?? "julia"
+    const probe = path.resolve("..", "mouse_probe.jl")
+    await focus_terminal()
+    await page.keyboard.type(`${win ? "& " : ""}"${julia}" --startup-file=no "${probe}"`)
+    await page.keyboard.press("Enter")
+    await saw("MOUSE_PROBE_READY", 1, 120000)
+    const at = await page.evaluate(() => {
+        const r = (document.querySelector("#terminal-panel .terminal-body.active .xterm-screen") ?? document.querySelector("#terminal-panel .xterm-screen")).getBoundingClientRect()
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+    })
+    await page.mouse.move(at.x, at.y)
+    await page.mouse.wheel({ deltaY: -300 })
+    await saw("wheel-up-arrived", 1, 20000)
+    await page.mouse.click(at.x, at.y)
+    await saw("press-arrived", 1, 20000)
+    return (await saw("MOUSE_PROBE_DONE", 1, 20000)).slice(-5)
+})
 await step("terminal: a second one; closing it while a program runs asks first, then closes", true, async () => {
     await page.evaluate(() => document.querySelector("button.new-terminal-tab").click())
     await until(() => page.evaluate(() => document.querySelectorAll(".terminal-tab").length === 2), { timeout: 20000, what: "two terminal tabs" })
